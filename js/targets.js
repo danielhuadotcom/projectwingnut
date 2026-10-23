@@ -28,6 +28,17 @@ const NAVAL_DEPTH = 5, NAVAL_MARGIN = Math.round(30 * NAVAL_SCALE);
 // Land placement: least ground height (m) under every corner and edge midpoint of a unit's drawn footprint (ashore, not
 // half in the sea), and the least gap (m) between two land units' footprints
 const LAND_DRY = 0.5, LAND_GAP = 4;
+// Flak (GroundForces.update): AA guns (types that shoot 'gun') fire every 2.7-3.3 s at the player inside their range and
+// line of sight, but at most the difficulty's aaGuns of them engage at once: the nearest with line of sight, re-picked
+// every AA_PICK s (an engaged gun competes at AA_STICKY of its distance, so near-equal guns don't trade places every
+// pick; a gun ready to fire while the pick has a free place takes it at once). An engaged gun's burst lands 25 m plus a
+// random spread from the player (wider the faster they fly, times the difficulty's aaError) and damages them inside
+// FLAK_HIT m. A gun over the cap keeps the same cadence but only throws, with chance BARRAGE_CHANCE a cycle, a harmless
+// barrage burst BARRAGE_MIN-BARRAGE_MAX m from the player. Without aaGuns / aaError (no difficulty given) up to AA_MAX
+// guns engage and aim with error 1.
+const AA_PICK = 0.5, AA_MAX = 32, AA_STICKY = 0.8, AA_STICKY2 = AA_STICKY * AA_STICKY;
+const FLAK_HIT = 45;
+const BARRAGE_CHANCE = 0.3, BARRAGE_MIN = 160, BARRAGE_MAX = 400;
 
 export const DEFAULT_GROUND_TYPES = {
   tank:     { shape: 'box',   size: [4, 2.5, 7],    hp: 30,  shoots: false,     naval: false },
@@ -78,6 +89,7 @@ export class GroundTarget {
     this.heading = 0;
     this.immortal = false;                       // allied props: nothing damages them (set for every target: one shape)
     this.sinkT = -1;                             // s since a scripted sinking began (GroundForces.sink), -1 = none
+    this.engaged = false;                        // AA gun picked to fire at the player (GroundForces._pickGuns)
   }
   applyDamage(amount) {
     if (!this.alive || this.immortal) return false;
@@ -190,6 +202,10 @@ export class GroundForces {
     this.targets = [];
     this.sinking = [];      // targets going down (sink), animated by updateSinking
     this.obstacle = null;   // optional (point) => true if solid structure (tunnel ridge) blocks that point (sight lines, hulls)
+    this._aaSel = new Array(AA_MAX).fill(null);   // AA guns engaging the player, nearest first (_pickGuns)
+    this._aaCand = new Array(2 * CAPACITY).fill(null);   // the pick's candidates (guns in range), nearest first,
+    this._aaKey = new Float64Array(2 * CAPACITY);        // by squared distance (x AA_STICKY2 for guns engaged already)
+    this._aaN = 0; this._aaT = 0;                 // how many; s until the next pick
   }
   /** Line of sight from a ground unit to `to`, from 2 m over the unit's roof: terrain tested exactly along the segment
    *  (losTerrain), then the obstacle callback (structures) sampled along it. t needs position plus size (drawn,
@@ -353,16 +369,22 @@ export class GroundForces {
     }
     for (const t of this.targets) t.alive = false;
     this.targets.length = 0; this.sinking.length = 0;
+    this._aaSel.fill(null); this._aaCand.fill(null); this._aaN = 0; this._aaT = 0;
   }
   aliveCount() { let n = 0; for (const t of this.targets) if (t.alive) n++; return n; }
   /**
    * Air defenses: SAM sites fire missiles at the player inside their range, rationed like the bandits' launches (js/ai.js
    * launchAllowed: the difficulty's cap on enemy missiles after the player, 1.5 s since the last launch at them; a held
    * launcher keeps its missile and cooldown and looks again next frame); AA sites throw flak bursts near the player
-   * (onFlak(position, hit) lets the game spawn the puff and apply damage). Allied props never fire.
+   * (onFlak(position, hit, gun) lets the game spawn the puff and apply damage), at most diff.aaGuns of them at once and
+   * the rest a harmless barrage now and then (header: Flak). Allied props never fire.
    */
-  update(dt, player, weapons, onFlak) {
+  update(dt, player, weapons, onFlak, diff) {
     if (!player || !player.alive) return;
+    const cap = diff && diff.aaGuns >= 0 ? Math.min(AA_MAX, Math.round(diff.aaGuns)) : AA_MAX;
+    const err = diff && diff.aaError > 0 ? diff.aaError : 1;
+    this._aaT -= dt;
+    if (this._aaT <= 0) { this._aaT = AA_PICK; this._pickGuns(player.position, cap); }
     for (const t of this.targets) {
       if (!t.alive || !t.def.shoots || t.team === 'player') continue;
       t.cool -= dt;
@@ -382,14 +404,49 @@ export class GroundForces {
         t.cool = m ? 9 + Math.random() * 6 : 2;
       } else if (t.def.shoots === 'gun') {
         t.cool = 2.7 + Math.random() * 0.6;   // fires and reloads every ~3 s
-        if (onFlak) {
-          // burst near the player, closer when slow or flying straight at low altitude
-          const miss = 25 + Math.random() * 90 * (0.6 + player.speed / 400);
+        if (!onFlak) continue;
+        if (!t.engaged && this._aaN < cap) { this._aaSel[this._aaN++] = t; t.engaged = true; }   // a free place: take it now
+        if (t.engaged) {
+          // burst near the player: 25 m off plus a spread that widens with their speed, times the difficulty's aim error
+          const miss = 25 + Math.random() * 90 * (0.6 + player.speed / 400) * err;
           _v.set(Math.random() - 0.5, Math.random() - 0.3, Math.random() - 0.5).normalize().multiplyScalar(miss).add(player.position);
-          onFlak(_v, miss < 45);
+          onFlak(_v, miss < FLAK_HIT, t);
+        } else if (Math.random() < BARRAGE_CHANCE) {
+          // over the cap: a harmless barrage burst well clear of the player (mirrored up if under the ground, else none)
+          const P = player.position, r = BARRAGE_MIN + Math.random() * (BARRAGE_MAX - BARRAGE_MIN);
+          _v.set(Math.random() - 0.5, Math.random() - 0.3, Math.random() - 0.5).normalize().multiplyScalar(r).add(P);
+          if (_v.y < this.world.getHeight(_v.x, _v.z) + 30) _v.y = 2 * P.y - _v.y;
+          if (_v.y >= this.world.getHeight(_v.x, _v.z) + 30) onFlak(_v, false, t);
         }
       }
     }
+  }
+  /** The AA engagement pick (update, every AA_PICK s): flags `engaged` on the `cap` nearest live enemy guns that have P
+   *  (the player) inside their range and in sight, and clears it on every other unit. A gun engaged already competes at
+   *  AA_STICKY of its distance. Allocation-free: the guns in range are insertion-sorted into fixed arrays, then sight-
+   *  tested nearest first until `cap` pass; once all that are left fit, they go in untested (the cap can't leave any
+   *  gun out, and every gun still checks its sight line when it fires). */
+  _pickGuns(P, cap) {
+    const C = this._aaCand, K = this._aaKey, S = this._aaSel;
+    let m = 0, n = 0;
+    if (cap > 0) {
+      for (const t of this.targets) {
+        if (!t.alive || t.team === 'player' || t.def.shoots !== 'gun' || m === C.length) continue;
+        const r = t.def.range || 3000, d2 = t.position.distanceToSquared(P);
+        if (d2 > r * r) continue;
+        const key = t.engaged ? d2 * AA_STICKY2 : d2;
+        let i = m++;
+        while (i > 0 && K[i - 1] > key) { K[i] = K[i - 1]; C[i] = C[i - 1]; i--; }
+        K[i] = key; C[i] = t;
+      }
+    }
+    for (const t of this.targets) t.engaged = false;
+    for (let i = 0; i < m && n < cap; i++) {
+      const t = C[i];
+      if (m - i <= cap - n || this.hasLineOfSight(t, P)) { t.engaged = true; S[n++] = t; }
+    }
+    for (let i = n; i < this._aaN; i++) S[i] = null;      // drop the stale tail
+    this._aaN = n;
   }
   dispose() {
     for (const k of ['box', 'prism']) { const m = this.meshes[k]; m.removeFromParent(); m.geometry.dispose(); m.dispose(); }

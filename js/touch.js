@@ -10,8 +10,13 @@
 // input.js reads `input.touch = instance` every frame ({ active, lx, ly, rx, ry, buttons, used }) and owns the
 // expo/shape: sticks report raw -1..1 (circular gate, small radial deadzone rescaled so there is no step).
 //
+// Fixed sticks: each base ring stays where the layout puts it. It is re-anchored on resize / rotation / fullscreen
+// changes only, never by a touch. Deflection is measured from that fixed center: (finger - center) / travel, clamped
+// to length 1, so a thumb that slides out of the ring keeps full deflection. The knob follows the finger 1:1, even
+// outside the ring, and springs back to center on release.
+//
 // Zero per-frame work: the DOM is only touched inside pointer / resize handlers (knob transforms, class toggles);
-// the knob spring-back and the floating base's glide home are CSS transitions. Pure DOM: no Three.js import.
+// the knob spring-back is a CSS transition. Pure DOM: no Three.js import.
 //
 // Multi-touch: Pointer Events with per-control pointerId capture. Moves/ups are routed by pointerId from window
 // listeners, so a finger keeps driving its control wherever it wanders. While the flight controls are shown, a
@@ -19,12 +24,11 @@
 // events from them (input.js would read those as mouse-aim input). Hidden or inactive = nothing has pointer events,
 // so the page's menus are never blocked.
 
-const TRAVEL = 60;             // px of knob travel for full deflection
+const TRAVEL = 60;             // px from the fixed base center to full deflection (just inside the ring)
 const DEADZONE = 0.08;         // radial deadzone as a fraction of TRAVEL (output rescaled to start at 0 past it)
 const RING_R = 66;             // stick base ring radius (px); keep in sync with .wn-stk in the CSS below
 const ZONE_W = 0.4;            // stick zones: the left / right 40% of the width ...
 const ZONE_TOP = 0.3;          // ... below the top 30% of the height
-const EDGE_KEEP = 24;          // a following stick base keeps its center this far inside the safe area
 const MIN_PRESS_MS = 90;       // a quick tap is reported held at least this long so a slow frame can't miss it
 const TAP_MS = 350;            // menu tap (flight controls hidden): max duration ...
 const TAP_SLOP = 16;           // ... and max travel (px) for a confirm / back pulse
@@ -93,9 +97,10 @@ const CSS = `
 .wn-flight .wn-rot{top:calc(var(--wn-st) + var(--wn-m) + var(--wn-rth) + var(--wn-g) + var(--wn-bph) + 16px)}
 .wn-paused .wn-rot{top:calc(var(--wn-st) + var(--wn-m) + var(--wn-pz) + 14px)}
 .wn-rot svg{width:18px;height:18px;flex:none;fill:none;stroke:var(--wn-c);stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
-/* floating sticks: the element sits at its transform point (base center); visuals only, the sink takes the touches */
+/* fixed sticks: the element sits at its transform point (the base center, set by _layout only); visuals only, the sink
+   takes the touches. The knob is not clipped to the ring: it follows the finger anywhere on screen. */
 .wn-stk{position:absolute;left:0;top:0;z-index:2;width:132px;height:132px;margin:-66px 0 0 -66px;pointer-events:none;opacity:.45;
-  will-change:transform;transition:transform .32s cubic-bezier(.2,.8,.2,1),opacity .32s ease}
+  will-change:transform;transition:opacity .32s ease}
 .wn-stk.wn-act{opacity:1;transition:none}
 .wn-ring{position:absolute;inset:0;border-radius:50%;border:1.5px solid var(--wn-c7);
   background:radial-gradient(closest-side,rgba(3,12,20,.1),rgba(3,12,20,.3) 72%,rgba(156,235,255,.14) 100%);
@@ -159,9 +164,9 @@ export class TouchControls {
    *                          `active` on in 'auto' mode)
    *   onActiveChange(active) called when `active` flips
    *   onInput(touch)         called synchronously whenever the reported state changes (same moments `used` is set)
-   *   deadzone, travel, follow   tuning: radial deadzone (0..1 of travel), knob travel px, base follows the thumb
+   *   deadzone, travel       tuning: radial deadzone (0..1 of travel), px from the base center to full deflection
    */
-  constructor(container, { onAnyTouch = null, onActiveChange = null, onInput = null, deadzone = DEADZONE, travel = TRAVEL, follow = true } = {}) {
+  constructor(container, { onAnyTouch = null, onActiveChange = null, onInput = null, deadzone = DEADZONE, travel = TRAVEL } = {}) {
     const doc = (container && container.ownerDocument) || document;
     this._doc = doc;
     this._win = doc.defaultView || window;
@@ -186,7 +191,6 @@ export class TouchControls {
     this._onInput = typeof onInput === 'function' ? onInput : null;
     this._dz = clamp(Number(deadzone) || 0, 0, 0.5);
     this._travel = Math.max(20, Number(travel) || TRAVEL);
-    this._follow = follow !== false;
     this._zoneW = ZONE_W; this._zoneTop = ZONE_TOP;
     this._vis = 'hidden';                // 'hidden' | 'flight' | 'paused'
     this._coarse = false; this._sawTouch = false; this._mouseSup = false; this._padSup = false;
@@ -209,8 +213,10 @@ export class TouchControls {
     this._els = { lt: q('.wn-lt'), lb: q('.wn-lb'), rb: q('.wn-rb'), rt: q('.wn-rt'), flr: q('.wn-flr'), pause: q('.wn-pause') };
     const mk = (side, cls) => {
       const el = q(cls);
+      // bx, by: the fixed base center (container px, written by _layout only) · fx, fy: the holding finger (client px)
+      // rl, rt: the container's client origin while held
       return { side, el, knob: el.querySelector('.wn-knob'), lab: Array.prototype.slice.call(el.querySelectorAll('.wn-ring span')),
-        id: null, bx: 0, by: 0, restX: 0, restY: 0, rl: 0, rt: 0, w: 0, h: 0, mask: 0 };
+        id: null, bx: 0, by: 0, fx: 0, fy: 0, rl: 0, rt: 0, mask: 0 };
     };
     this._sticks = { l: mk('l', '.wn-stl'), r: mk('r', '.wn-str') };
     this._placeKnob(this._sticks.l, 0, 0); this._placeKnob(this._sticks.r, 0, 0);
@@ -261,6 +267,8 @@ export class TouchControls {
     } catch (e) { this._ro = null; }
     win.addEventListener('resize', H.layout);          // safe-area insets change on rotation even when RO is missing
     win.addEventListener('orientationchange', H.layout);
+    doc.addEventListener('fullscreenchange', H.layout);
+    doc.addEventListener('webkitfullscreenchange', H.layout);
 
     this._layout();
     this._refreshActive();
@@ -348,6 +356,8 @@ export class TouchControls {
     win.removeEventListener('gamepadconnected', H.pad);
     win.removeEventListener('resize', H.layout);
     win.removeEventListener('orientationchange', H.layout);
+    doc.removeEventListener('fullscreenchange', H.layout);
+    doc.removeEventListener('webkitfullscreenchange', H.layout);
     doc.removeEventListener('visibilitychange', H.vis);
     try { if (this._mq) { if (this._mq.removeEventListener) this._mq.removeEventListener('change', H.mq); else if (this._mq.removeListener) this._mq.removeListener(H.mq); } } catch (e) { /* ignore */ }
     try { if (this._ro) this._ro.disconnect(); } catch (e) { /* ignore */ }
@@ -379,7 +389,8 @@ export class TouchControls {
     c.toggle('wn-paused', this._vis === 'paused');
   }
 
-  /** Resize / rotation: cache size + safe-area insets, place the idle sticks, feed the CSS a few px variables. */
+  /** Resize / rotation / fullscreen: cache the safe-area insets, anchor the fixed stick bases, feed the CSS a few px
+   *  variables. The only place the bases move. */
   _layout() {
     const root = this.root;
     if (!root || this._disposed) return;
@@ -390,9 +401,9 @@ export class TouchControls {
     sf.l = parseFloat(cs.paddingLeft) || 0; sf.r = parseFloat(cs.paddingRight) || 0;
     sf.t = parseFloat(cs.paddingTop) || 0; sf.b = parseFloat(cs.paddingBottom) || 0;
     const inset = Math.max(RING_R + 26, 0.16 * w);
-    const restY = h - sf.b - RING_R - Math.max(16, 0.06 * h);
+    const restY = Math.round(h - sf.b - RING_R - Math.max(16, 0.06 * h));   // whole px: crisp rings, exact centers
     const L = this._sticks.l, R = this._sticks.r;
-    L.restX = sf.l + inset; R.restX = w - sf.r - inset; L.restY = R.restY = restY;
+    L.bx = Math.round(sf.l + inset); R.bx = Math.round(w - sf.r - inset); L.by = R.by = restY;
     // FLR: above the left stick's resting ring (more clearance on tall screens so a high thumb landing doesn't hit it),
     // but no higher than the top of the stick zone
     const flrY = Math.max(h * this._zoneTop - 10, restY - RING_R - Math.max(34, 0.08 * h) - 68);
@@ -412,10 +423,13 @@ export class TouchControls {
     const st = root.style;
     st.setProperty('--wn-ltw', px(ltw)); st.setProperty('--wn-lth', px(lth));
     st.setProperty('--wn-rtw', px(rtw)); st.setProperty('--wn-rth', px(rth)); st.setProperty('--wn-bpw', px(bpw));
-    st.setProperty('--rest-lx', px(L.restX)); st.setProperty('--flr-y', px(flrY)); st.setProperty('--pause-x', px(pauseX));
+    st.setProperty('--rest-lx', px(L.bx)); st.setProperty('--flr-y', px(flrY)); st.setProperty('--pause-x', px(pauseX));
     root.classList.toggle('wn-portrait', h > w);
-    if (L.id === null) { L.bx = L.restX; L.by = L.restY; this._placeBase(L); }
-    if (R.id === null) { R.bx = R.restX; R.by = R.restY; this._placeBase(R); }
+    // re-anchor both bases, held or not; a thumb that stays down through the change is re-measured against the new
+    // center, so the reported deflection keeps matching the knob
+    this._placeBase(L); this._placeBase(R);
+    if (L.id !== null) { L.rl = r.left; L.rt = r.top; this._stickTo(L, L.fx, L.fy); }
+    if (R.id !== null) { R.rl = r.left; R.rt = r.top; this._stickTo(R, R.fx, R.fy); }
   }
 
   // ===============================================================================================================
@@ -474,13 +488,13 @@ export class TouchControls {
     if (s.id !== null) return;                       // that stick already has a thumb: ignore the extra finger
     this._capture(this._sink, e.pointerId);
     this._owners.set(e.pointerId, { el: this._sink, name: '', stick: s });
-    this._stickStart(s, e.pointerId, x, y, r);
+    this._stickStart(s, e.pointerId, e.clientX, e.clientY, r);
   }
 
   _onWinMove(e) {
     const o = this._owners.get(e.pointerId);
     if (o !== undefined) {
-      if (o.stick) this._stickMove(o.stick, e.clientX - o.stick.rl, e.clientY - o.stick.rt);
+      if (o.stick) this._stickTo(o.stick, e.clientX, e.clientY);
       return;
     }
     const tp = this._tap;
@@ -582,39 +596,32 @@ export class TouchControls {
   }
 
   // ===============================================================================================================
-  // Floating sticks
+  // Fixed sticks
   // ===============================================================================================================
-  _stickStart(s, id, x, y, r) {
-    s.id = id; s.rl = r.left; s.rt = r.top; s.w = r.width; s.h = r.height;
-    s.bx = x; s.by = y;                              // the base appears under the thumb: touch-down is always neutral
-    s.el.classList.add('wn-act');                    // transitions off: base jumps, knob tracks 1:1
-    this._placeBase(s); this._placeKnob(s, 0, 0);
+  /** A thumb landed in a stick's zone. The base stays where it is: the knob jumps under the thumb and an off-center
+   *  touch-down deflects at once, like a fixed stick (the deadzone absorbs small offsets). */
+  _stickStart(s, id, cx, cy, r) {
+    s.id = id; s.rl = r.left; s.rt = r.top;
+    s.el.classList.add('wn-act');                    // knob transition off: it tracks the finger 1:1
+    this._stickTo(s, cx, cy);
   }
 
-  _stickMove(s, x, y) {
-    const T = this._travel;
-    let dx = x - s.bx, dy = y - s.by, d = Math.hypot(dx, dy);
-    if (d > T && this._follow) {
-      // past full deflection the base trails the thumb, so reversing responds immediately
-      const k = (d - T) / d, sf = this._safe;
-      const nbx = clamp(s.bx + dx * k, sf.l + EDGE_KEEP, s.w - sf.r - EDGE_KEEP);
-      const nby = clamp(s.by + dy * k, sf.t + EDGE_KEEP, s.h - sf.b - EDGE_KEEP);
-      if (nbx !== s.bx || nby !== s.by) { s.bx = nbx; s.by = nby; this._placeBase(s); }
-      dx = x - s.bx; dy = y - s.by; d = Math.hypot(dx, dy);
-    }
-    const kd = d > T ? T / d : 1;
-    this._placeKnob(s, dx * kd, dy * kd);
+  /** The holding finger is at client (cx, cy). Deflection = (finger - fixed base center) / travel, clamped to length 1,
+   *  then the radial deadzone (rescaled so there is no step). The knob follows the finger, even outside the ring. */
+  _stickTo(s, cx, cy) {
+    s.fx = cx; s.fy = cy;
+    const dx = cx - s.rl - s.bx, dy = cy - s.rt - s.by, d = Math.hypot(dx, dy);
+    this._placeKnob(s, dx, dy);
+    const m = Math.min(d / this._travel, 1);
     let vx = 0, vy = 0;
-    const m = Math.min(d, T) / T;
-    if (m > this._dz && d > 0) { const sc = (m - this._dz) / (1 - this._dz) / d; vx = dx * sc; vy = dy * sc; }
+    if (m > this._dz) { const sc = (m - this._dz) / (1 - this._dz) / d; vx = dx * sc; vy = dy * sc; }
     this._setStick(s, vx, vy);
   }
 
   _stickEnd(s) {
     s.id = null;
-    s.el.classList.remove('wn-act');                 // transitions back on: knob springs to center, base glides home
-    s.bx = s.restX; s.by = s.restY;
-    this._placeBase(s); this._placeKnob(s, 0, 0);
+    s.el.classList.remove('wn-act');                 // transition back on: the knob springs to center (the base never moved)
+    this._placeKnob(s, 0, 0);
     this._setStick(s, 0, 0);
   }
 

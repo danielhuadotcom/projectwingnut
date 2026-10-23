@@ -12,9 +12,10 @@
 //           retry. The end screen shows rounds cleared, kills, score and the local best. No map, economy or upgrades.
 //   Ramp    A smooth function of the round number: smoothstep from round 1 (Easy) to MERC_ROUND (Mercenary) across the
 //           rows of the game's DIFFICULTY table. Every numeric field follows it (enemy HP and skill, attacker caps,
-//           committed-flight caps, the enemy missile backstop, playerShare), then holds; player armor (damage taken) and
-//           enemy missile agility follow the same curve but top out at the Hard row (TOPS). Past MERC_ROUND only the
-//           target count and the mix keep growing.
+//           committed-flight caps, the enemy missile backstop, playerShare, the flak guns firing at once and their aim
+//           error: aaGuns 2 > 4 > 6 > 14, aaError 1.6 > 1.0), then holds; player armor (damage taken) and enemy missile
+//           agility follow the same curve but top out at the Hard row (TOPS). Past MERC_ROUND only the target count and
+//           the mix keep growing.
 //   Bounty  Every 5th round adds one named ace with a boss bar (the types with bars, except Q12 MAINSPRING, which stays
 //           the campaign's final boss).
 //   Ammo    Killing everything in a round needs at most AMMO_SHARE of the full missile load: per unit, hits-to-kill at
@@ -35,8 +36,9 @@ import { AIRCRAFT_TYPES, GROUND_TYPES } from './missions.js';
 
 // ---- tuning -------------------------------------------------------------------------------------------------------
 export const MERC_ROUND = 18;      // the ramp reaches the Mercenary row here (Normal ~round 8, Hard ~round 12)
-export const AMMO_SHARE = 0.55;    // most of the full missile load a round may need ("about 50-60 %")...
-export const BOUNTY_AMMO_SHARE = 0.6;   // ...and a bounty round, whose ace alone takes a good part of it
+export const AMMO_SHARE = 0.275;   // most of the full missile load a round may need (half of the 55 % rule set for the old 120-missile load,
+                                    // so the doubled 240-missile load is margin, not bigger rounds)
+export const BOUNTY_AMMO_SHARE = 0.3;   // ...and a bounty round, whose ace alone takes a good part of it
 export const HIT_RATE = 0.6;       // missiles that hit, of those fired
 export const SQUAD_SHARE = 0.05;   // squadmates' share of non-boss air kills (js/squad.js KILL_SHARE), taken off the bill
 export const BOUNTY_EVERY = 5;     // a bounty ace joins every 5th round
@@ -175,7 +177,6 @@ export function difficultyAt(table, level, tops = TOPS) {
  * The ramp for a round. diff: a DIFFICULTY row for the game to use as-is (this.diff), with groups [] (generated rounds
  * have no difficulty-tagged groups). skillBase: the progress term of the brain skill (replaces 0.38 + 0.06 x mission
  * index); enemySkill: skillBase + diff.skill, clamped like spawnAircraft (before the per-type fighter bonus).
- * enemyMissiles: missiles per armed bandit (the campaign's 2 for its first missions, 3 after).
  */
 export function rampAt(round, table) {
   const t = rampProgress(round), level = 3 * t;
@@ -185,7 +186,7 @@ export function rampAt(round, table) {
   const skillBase = lerp(SKILL_BASE, SKILL_MAX - top, t);
   const enemySkill = clamp(skillBase + (Number(diff.skill) || 0), SKILL_MIN, SKILL_MAX);
   const label = level >= 3 ? 'MERCENARY' : LEVELS[Math.floor(level)].toUpperCase() + (level % 1 >= 0.5 ? '+' : '');   // e.g. 'HARD+'
-  return { round: Math.max(1, round), t, level, label, diff, skillBase, enemySkill, enemyMissiles: level < 0.5 ? 2 : 3 };
+  return { round: Math.max(1, round), t, level, label, diff, skillBase, enemySkill };
 }
 
 // ---- hits, cost, points -------------------------------------------------------------------------------------------
@@ -347,7 +348,7 @@ export function generateRound(round, opts) {
   const surfaceCap = restM - cost(air), per = surfaceCap / (nGround + nNaval);
   const sites = SURFACE_SPOTS.slice();
   const site = (lo, hi) => ({ position: sites.splice(Math.floor(rand() * sites.length), 1)[0], distance: Math.round((lo + rand() * (hi - lo)) / 100) * 100 });
-  const land = site(6000, 9500), sea = site(6500, 10000);
+  const land = site(4000, 5000), sea = site(4000, 5000);   // close to the round start: the fight starts within seconds
   // add(): one group per type, at most TYPE_MAX (and 24) of it in the round; returns how many didn't fit
   const room = (kind, type) => {
     const g = surface.find((x) => x.kind === kind && x.type === type);

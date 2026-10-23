@@ -15,15 +15,21 @@ import * as THREE from 'https://cdnjs.cloudflare.com/ajax/libs/three.js/0.170.0/
 //     of holding, regardless of the cap.
 // Triggers are local: committing one flight never commits another. Checks run at 3 Hz, and nothing allocates per frame.
 //
-// Placement: campaign groups are placed from the mission data (js/main.js, with a fixed frame and seed per mission);
-// generated groups (Infinity mode) take genericStations(), 4-9 km from the player, spread in bearing, preferably 2.5 km
-// apart. Both keep each station's orbit on the map, clear of the tunnel ridge and high enough over the terrain under it.
+// Placement keeps time to engagement short (behavior, not distance, makes the variety): holding flights sit within
+// HOLD_MAX of the phase's anchor (the player, at the start), inbound flights spawn within INBOUND_MAX and come in near
+// top speed, scrambles climb out within SCRAMBLE_MAX. Campaign groups are placed from the mission data (js/main.js,
+// with a fixed frame and seed per mission); generated groups (Infinity mode) take genericStations(), 2.5-4.5 km from
+// the player, spread in bearing, preferably 2.5 km apart. Every station's orbit stays on the map, clear of the tunnel
+// ridge and high enough over the terrain under it.
 
-export const COMMIT_RANGE = 5000;  // m: the player or a squadmate this close to a holding flight commits it
+export const COMMIT_RANGE = 2200;  // m: the player or a squadmate this close to a holding flight commits it
+export const HOLD_MAX = 4500;      // m: holding stations (patrols) at most this far from the phase's anchor
+export const INBOUND_MAX = 7000;   // m: inbound waves (task 'engage') at most this far out (missions.js validation)
+export const SCRAMBLE_MAX = 5000;  // m: scrambles climb out at most this far from the phase's anchor
 const TICK = 1 / 3;                // s between commit checks
 const QUIET_GAP = 5;               // s: with no flight committed, the timer releases the next one this soon
 const LOITER_MAX = 4;              // stagger intervals a flight may hold before the cap stops applying to it
-const CLIMB_TIME = 12;             // s of climb-out after a scramble
+const CLIMB_TIME = 8;              // s of climb-out after a scramble
 const TERRAIN_CLEAR = 450;         // m: holding altitude over the highest terrain under the orbit
 const MAX_ALT = 4500;              // m: holding altitude ceiling (higher only over terrain that needs it)
 const RIDGE_CLEAR = 500;           // m: gap between an orbit and the tunnel ridge's bounding sphere
@@ -48,8 +54,8 @@ export function isHolding(e) {
   return !!F && F.loiter && !F.passive;
 }
 
-/** Orbit radius (m) for a flight cruising at `speed` m/s: about a 9 deg/s turn, 500 m for the slowest. */
-export function orbitRadius(speed) { return THREE.MathUtils.clamp(speed * 7, 500, 1400); }
+/** Orbit radius (m) for a flight cruising at `speed` m/s: about an 11 deg/s turn, 450 m for the slowest. */
+export function orbitRadius(speed) { return THREE.MathUtils.clamp(speed * 5, 450, 1000); }
 
 class Flight {
   constructor() {
@@ -237,8 +243,8 @@ export class Flights {
   // ---- generic path (Infinity mode) ------------------------------------------------------------------------------
   /**
    * Generic stations: n orbit centres around (px, pz), written into out[k] (Vector3: x, holding altitude, z). The first
-   * station (when first is true) sits 4-5.5 km out so the fight starts soon; the rest 7-9 km out, beyond contact range
-   * with their orbit. Each is the best of a 24-bearing x 3-distance sweep: hard limits first (orbitFits), then spread
+   * station (when first is true) sits 2.5-3 km out so the fight starts at once; the rest 3.5-4.5 km out, just beyond
+   * contact range with their orbit. Each is the best of a 24-bearing x 3-distance sweep: hard limits first (orbitFits), then spread
    * (distance to the nearest station taken so far, up to 6 km; under 2.5 km is penalized, not forbidden), then
    * closeness to the preferred bearing `pref` (rad from north, clockwise; NaN = none), plus seeded jitter from rand().
    * `taken` lists stations already in use (Vector3s). R = orbit radius, py = base altitude.
@@ -251,7 +257,7 @@ export class Flights {
       for (let j = 0; j < 24; j++) {
         const b = off + j * step;
         for (let q = 0; q < 3; q++) {
-          const d = THREE.MathUtils.clamp((near ? 4200 + q * 650 : 7000 + q * 1000) + (rand() - 0.5) * 400, 4000, 9000);
+          const d = near ? THREE.MathUtils.clamp(2500 + q * 250 + (rand() - 0.5) * 200, 2500, 3000) : THREE.MathUtils.clamp(3500 + q * 500 + (rand() - 0.5) * 200, 3500, 4500);
           const x = px + Math.sin(b) * d, z = pz - Math.cos(b) * d;
           if (!this.orbitFits(x, z, R)) continue;
           let sep = 6000;
@@ -262,7 +268,7 @@ export class Flights {
           if (s > bs) { bs = s; bx = x; bz = z; }
         }
       }
-      if (bs === -Infinity) this.fitStation(out[k], px + Math.sin(off) * 7000, pz - Math.cos(off) * 7000, R);
+      if (bs === -Infinity) this.fitStation(out[k], px + Math.sin(off) * 4000, pz - Math.cos(off) * 4000, R);
       else out[k].set(bx, 0, bz);
       out[k].y = this.orbitAlt(out[k].x, out[k].z, R, py + (rand() - 0.4) * 600);
     }

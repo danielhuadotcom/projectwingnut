@@ -321,13 +321,20 @@ export class EnemyBrain {
         _pt.set(Math.sin(time * 0.05) * 6000, 1500, Math.cos(time * 0.05) * 6000);
         this.steerToward(_pt, 0.5); this.throttleTarget = 0;
       } else if (this.aggressor === false && targetAlive) {
-        // No attack slot (difficulty limit): orbit a ~3.5 km ring around the target without attacking, ready to cut in
+        // No attack slot (difficulty limit): orbit a ~2.4 km ring around the target without attacking, ready to cut in;
+        // from farther out, boost straight in (time to engagement: in the fight within seconds, weapons held)
         _tmp.subVectors(ac.position, target.position); _tmp.y = 0;
         const dh = _tmp.length() || 1; _tmp.multiplyScalar(1 / dh);
-        const pull = THREE.MathUtils.clamp((3500 - dh) / 1500, -1, 1);
-        _pt.set(ac.position.x - _tmp.z * 1500 + _tmp.x * pull * 1500, Math.max(target.position.y + 300, 900),
-          ac.position.z + _tmp.x * 1500 + _tmp.z * pull * 1500);
-        this.steerToward(_pt, 0.5); this.throttleTarget = 0;
+        if (dh > 3000) {
+          _pt.copy(target.position).addScaledVector(this.velEst, 2); _pt.y = Math.max(target.position.y + 300, 900);
+          this.steerToward(_pt, 0.7); this.throttleTarget = 1;
+        } else {   // on the ring: keep pace with the target (thrust on the speed difference and the gap to the ring)
+          const pull = THREE.MathUtils.clamp((2400 - dh) / 1200, -1, 1);
+          _pt.set(ac.position.x - _tmp.z * 1500 + _tmp.x * pull * 1500, Math.max(target.position.y + 300, 900),
+            ac.position.z + _tmp.x * 1500 + _tmp.z * pull * 1500);
+          this.steerToward(_pt, 0.5);
+          this.throttleTarget = THREE.MathUtils.clamp((target.speed - ac.speed) / 120 + (dh - 2400) / 800, -0.5, 1);
+        }
       } else {
         // Pursue: lead pursuit toward where the target will be when our rounds arrive
         const tLead = Math.min(dist, 1100) / 950;   // lead only matters inside cannon range

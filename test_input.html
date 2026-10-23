@@ -17,7 +17,7 @@
 <div id="wrap">
   <h1>PROJECT WINGNUT — js/input.js live test</h1>
   <div class="note">Keys: W/S or Up/Down = pitch (S/Down = nose up) · A/D or Left/Right = roll · Q/E = yaw · Shift,+ = boost / H,- = airbrake (no Ctrl)
-Space = gun · F / Enter = missile · X = flares · Tab = target (hold = padlock) · V = look back · C = free look · Esc / P = pause · I = invert-pitch edge · R = restart
+Space = gun · F / Enter = missile · X = flares · Tab = target (hold = padlock) · V = look back · C = free look · Esc / P = pause · I = invert-pitch edge · R = restart · U = fullscreen callback
 Gamepad (standard mapping): L-stick X yaw, L-stick Y throttle, R-stick roll/pitch, LT missile, RT gun, RB target, LB look back, L3 flares, Start pause, Back invert edge, Y restart</div>
   <pre id="log"></pre>
   <pre id="out">loading…</pre>
@@ -114,6 +114,29 @@ function selfTest() {
   key('keydown', 'KeyX'); t.update(DT); check('X: flaresPressed', t.flaresPressed === true); t.update(DT); check('flaresPressed one frame', t.flaresPressed === false); key('keyup', 'KeyX'); t.update(DT);
   key('keydown', 'KeyC'); t.update(DT); check('C held: freeLook', t.freeLook === true); key('keyup', 'KeyC'); t.update(DT); check('C up: freeLook off', t.freeLook === false);
   key('keydown', 'KeyQ'); steps(10); check('Q: yaw -1', t.yaw === -1); key('keyup', 'KeyQ'); key('keydown', 'KeyE'); steps(20); check('E: yaw +1', t.yaw === 1); key('keyup', 'KeyE'); steps(6);
+
+  // U = fullscreen: onFullscreenKey runs inside the keydown handler itself (browsers only grant fullscreen there)
+  let fsKeys = 0, fsType = '';
+  t.onFullscreenKey = (e) => { fsKeys++; fsType = e && e.type; };
+  const uEv = key('keydown', 'KeyU');
+  check('U: onFullscreenKey called inside the keydown dispatch', fsKeys === 1 && fsType === 'keydown' && uEv.defaultPrevented, fsKeys);
+  t.update(DT);
+  check('U: no flight action or menu edge', !t.missile && !t.missilePressed && !t.gun && !t.pausePressed && !t.flaresPressed && !t.restartPressed &&
+    !t.menuConfirm && !t.menuLeft && !t.menuRight && !t.menuUp && !t.menuDown && !t.menuBack);
+  key('keydown', 'KeyU', { repeat: true }); check('U: repeat ignored', fsKeys === 1, fsKeys);
+  key('keyup', 'KeyU'); t.update(DT);
+  key('keydown', 'KeyU', { shiftKey: true }); check('Shift+U toggles too (Shift is held for boost)', fsKeys === 2, fsKeys); key('keyup', 'KeyU'); t.update(DT);
+  const ctlU = key('keydown', 'KeyU', { ctrlKey: true });
+  check('Ctrl+U left to the browser', fsKeys === 2 && !ctlU.defaultPrevented, fsKeys); key('keyup', 'KeyU', { ctrlKey: true }); t.update(DT);
+  const inpU = document.createElement('input'); document.body.appendChild(inpU);
+  key('keydown', 'KeyU', {}, inpU); check('U typed into an input ignored', fsKeys === 2, fsKeys); key('keyup', 'KeyU', {}, inpU); inpU.remove();
+  key('keydown', 'KeyF'); t.update(DT);
+  check('F stays missile, not fullscreen', fsKeys === 2 && t.missilePressed === true, fsKeys); key('keyup', 'KeyF'); t.update(DT);
+  t.onFullscreenKey = null;
+  let uErrs = 0; const onUErr = () => uErrs++; window.addEventListener('error', onUErr);
+  key('keydown', 'KeyU'); key('keyup', 'KeyU'); t.update(DT);
+  window.removeEventListener('error', onUErr);
+  check('U without a callback: nothing happens', uErrs === 0, uErrs);
 
   // invert pitch toggle + persistence
   // invert pitch: I only reports the toggle edge (the setting is changed from the settings menu, never mid-flight)

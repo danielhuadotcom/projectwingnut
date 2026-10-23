@@ -347,6 +347,91 @@ async function runSelfTest() {
   check('every screen visited', ['title', 'missions', 'pause', 'debrief', 'settings', 'controls', 'credits', 'confirm'].every((s) => visited.has(s)), [...visited]);
   check('navigation sounds fired', sounds.move > 0 && sounds.select > 0 && sounds.back > 0 && sounds.adjust > 0, sounds);
 
+  // FULLSCREEN: a Graphics row mirroring the browser's state, reachable from the title and the pause menu. This page has
+  // no real user activation, so requestFullscreen / exitFullscreen are stubbed (refusing as Chrome does for a gamepad
+  // press) and the fullscreenchange that entering or Esc fires is simulated; tools drive the real API with puppeteer.
+  {
+    const realReq = Element.prototype.requestFullscreen, realExit = Document.prototype.exitFullscreen;
+    let fsCalls = 0, fsExits = 0, fsRejections = 0;
+    const onRej = () => fsRejections++;
+    window.addEventListener('unhandledrejection', onRej);
+    Element.prototype.requestFullscreen = function () { fsCalls++; return Promise.reject(new TypeError('Permissions check failed')); };
+    Document.prototype.exitFullscreen = function () { fsExits++; return Promise.resolve(); };
+    const tick = () => new Promise((r) => setTimeout(r, 30));
+    const fsChange = async (on) => {
+      if (on) Object.defineProperty(document, 'fullscreenElement', { configurable: true, get: () => document.documentElement });
+      else delete document.fullscreenElement;
+      document.dispatchEvent(new Event('fullscreenchange')); document.dispatchEvent(new Event('webkitfullscreenchange'));
+      await tick();
+    };
+    try {
+      const gfx = scr('settings').querySelector('[data-tabpanel="graphics"]'), row = gfx.querySelector('.m-row[data-key="fullscreen"]');
+      const desc = () => row.querySelector('.m-desc'), helpText = SETTING_DEFS.find((d) => d.key === 'fullscreen').desc;
+      const isOn = () => row.getAttribute('aria-checked') === 'true' && row.querySelector('.m-seg [data-val="true"]').classList.contains('is-on');
+      check('Fullscreen is a switch row in Graphics, after Performance overlay', row && row.classList.contains('m-row--toggle') &&
+        row.getAttribute('role') === 'switch' && row.querySelector('.m-label').textContent === 'Fullscreen' && row.querySelectorAll('.m-seg button').length === 2 &&
+        row.previousElementSibling && row.previousElementSibling.dataset.key === 'perfOverlay');
+      check('Fullscreen row shown where the browser has fullscreen', document.fullscreenEnabled === true && !row.hidden);
+      check('controls card lists U for fullscreen', /U\s*Fullscreen/.test(scr('controls').querySelector('.m-card--kb').textContent));
+      menu.show('title'); await settle(); reach('settings', 'down'); press('ok'); reach('graphics', 'left');
+      check('Fullscreen reachable from the title', menu.screen === 'settings' && reach('fullscreen', 'down'), focused());
+      check('Fullscreen starts Off, with its help line', !isOn() && desc().textContent === helpText);
+      // gamepad A (the fake input is a pad): no user activation, the browser refuses, and the row says why
+      press('ok'); await tick();
+      check('gamepad confirm asks for fullscreen', fsCalls === 1, fsCalls);
+      check('refused: note on the row, still Off', desc().textContent === 'Fullscreen needs a click or key press.' && desc().classList.contains('m-desc--warn') && !isOn(), desc().textContent);
+      press('right'); await tick(); check('gamepad right asks too', fsCalls === 2, fsCalls);
+      // a key press asks inside its keydown handler; update() then skips that key's edge
+      row.dispatchEvent(new KeyboardEvent('keydown', { code: 'Enter', key: 'Enter', bubbles: true, cancelable: true }));
+      check('Enter asks inside the keydown handler', fsCalls === 3, fsCalls);
+      press('ok'); await tick();
+      check('the edge of that key press asks no second time', fsCalls === 3, fsCalls);
+      row.querySelector('.m-seg [data-val="true"]').click(); await tick();
+      check('clicking On asks', fsCalls === 4, fsCalls);
+      check('refused click or key: browser note', desc().textContent === 'The browser refused fullscreen.', desc().textContent);
+      await fsChange(true);
+      check('fullscreenchange in: On, note cleared', isOn() && desc().textContent === helpText && !desc().classList.contains('m-desc--warn'), desc().textContent);
+      press('ok'); await tick(); check('confirm while On asks to leave', fsExits === 1 && fsCalls === 4, [fsExits, fsCalls]);
+      await fsChange(false);
+      check('fullscreenchange out (Esc): Off', !isOn());
+      // not a saved setting
+      check('fullscreen is not saved', !('fullscreen' in DEFAULT_SETTINGS) && !('fullscreen' in loadSettings()) && menu.setSetting('fullscreen', true) === false &&
+        !('fullscreen' in settings));
+      let stored = null;
+      try { saveSettings({ ...settings, fullscreen: true }); stored = JSON.parse(localStorage.getItem('wingnut.settings')); } catch { /* blocked */ }
+      check('saveSettings drops fullscreen', !stored || !('fullscreen' in stored), stored);
+      const asked = fsCalls + fsExits;
+      gfx.querySelector('[data-act="reset-tab"]').click();
+      check('Restore defaults leaves fullscreen alone', fsCalls + fsExits === asked && !isOn());
+      menu.hide();
+      // from the pause menu
+      menu.show('pause', { missionIndex: 2 }); await settle(); reach('settings', 'down'); press('ok'); reach('graphics', 'left');
+      check('Fullscreen reachable from the pause menu', menu.screen === 'settings' && reach('fullscreen', 'down'), focused());
+      menu.hide();
+      // no fullscreen (iPhone Safari, an iframe without allow="fullscreen"): no row, no key on the card, toggling does nothing
+      Object.defineProperty(document, 'fullscreenEnabled', { configurable: true, get: () => false });
+      Object.defineProperty(document, 'webkitFullscreenEnabled', { configurable: true, get: () => false });
+      const host2 = document.createElement('div'); document.body.appendChild(host2);
+      const nofs = new Menu(host2, { settings: { ...settings }, missions: MISSIONS });
+      const row2 = nofs.el.querySelector('.m-row[data-key="fullscreen"]'), c0 = fsCalls, r2 = await nofs.toggleFullscreen();
+      check('no fullscreen: row hidden, toggle refused without asking', row2 && row2.hidden && row2.getClientRects().length === 0 && r2 === false && fsCalls === c0);
+      check('no fullscreen: no U on the controls card', !/Fullscreen/.test(nofs.el.querySelector('.m-card--kb').textContent));
+      nofs.show('settings', { tab: 'graphics' });
+      await new Promise((r) => setTimeout(r, Math.max(0, (nofs._lockUntil || 0) - performance.now()) + 20));
+      const nav2 = (k) => { for (const e of EDGES) fake[e] = false; fake[k] = true; nofs.update(1 / 60, fake); fake[k] = false; nofs.update(1 / 60, fake); };
+      nav2('menuDown'); nav2('menuDown'); nav2('menuDown');
+      const f2 = nofs.el.querySelector('.is-focus');
+      check('no fullscreen: navigation skips the row', f2 && f2.dataset.act === 'reset-tab', f2 && (f2.dataset.act || f2.dataset.key));
+      nofs.dispose(); host2.remove();
+      await tick();
+      check('no unhandled rejections from fullscreen requests', fsRejections === 0, fsRejections);
+    } finally {
+      Element.prototype.requestFullscreen = realReq; Document.prototype.exitFullscreen = realExit;
+      delete document.fullscreenElement; delete document.fullscreenEnabled; delete document.webkitFullscreenEnabled;
+      window.removeEventListener('unhandledrejection', onRej);
+    }
+  }
+
   // Restore the stored settings (the game shares this origin)
   for (const key of Object.keys(DEFAULT_SETTINGS)) menu.setSetting(key, before[key]);
   menu.hide();

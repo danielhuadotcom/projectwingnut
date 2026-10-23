@@ -126,7 +126,7 @@ requestAnimationFrame(hudLoop);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const frames2 = () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
 const near = (a, b, eps) => Math.abs(a - b) <= eps;
-const DZ = 0.08, TR = 60;                         // module defaults (deadzone fraction, knob travel px)
+const DZ = 0.08, TR = 60;                         // module defaults (deadzone fraction, px to full deflection)
 const shape = (d) => { const m = Math.min(d, TR) / TR; return m <= DZ ? 0 : (m - DZ) / (1 - DZ); };
 
 class Finger {
@@ -161,7 +161,12 @@ const xy = (el) => { const m = /translate3d\(([-\d.]+)px,\s*([-\d.]+)px/.exec(el
 async function run() {
   await frames2();
   const W = game.clientWidth, H = game.clientHeight;
-  const stl = root.querySelector('.wn-stl'), str = root.querySelector('.wn-str'), knobL = stl.querySelector('.wn-knob');
+  const stl = root.querySelector('.wn-stl'), str = root.querySelector('.wn-str'), knobL = stl.querySelector('.wn-knob'), knobR = str.querySelector('.wn-knob');
+  // the stick bases are fixed: their transforms and ring boxes must never change in response to a touch
+  const ringBox = (el) => { const r = el.querySelector('.wn-ring').getBoundingClientRect(); return [r.left, r.top, r.width, r.height].join(','); };
+  const baseL = xy(stl), baseR = xy(str), boxL = ringBox(stl), boxR = ringBox(str);
+  const fixed = () => xy(stl).join() === baseL.join() && xy(str).join() === baseR.join() && ringBox(stl) === boxL && ringBox(str) === boxR;
+  const bases = () => xy(stl).join(',') + ' | ' + xy(str).join(',');
 
   // ---- 0. setup, styles, layout ----
   check('active after setMode("on")', touch.active === true);
@@ -184,17 +189,17 @@ async function run() {
   const hdg = Math.min(0.26 * W, 0.31 * Math.min(W, H)), tapeL = W / 2 - hdg, tapeR = W / 2 + hdg, pz = rects.pause;
   results.pauseClearOfHudHeadingTape = pz ? (pz.x >= tapeR - 0.5 || pz.x + pz.w <= tapeL + 0.5 || pz.y > 60) : null;
 
-  // ---- 1. left stick (floating) ----
+  // ---- 1. left stick (fixed base) ----
   const A = new Finger(11), Bf = new Finger(12), C = new Finger(13), D = new Finger(14), E = new Finger(15);
-  // touch the sticks at their resting centers: on the sink in any viewport (FLR sits above the ring by design)
-  const [ax, ay] = xy(stl).map(Math.round);
+  // touch the sticks at their base centers (whole px): on the sink in any viewport (FLR sits above the ring by design)
+  check('stick bases sit on whole px', baseL.concat(baseR).every((v) => v === Math.round(v)), bases());
+  const [ax, ay] = baseL;
   touch.used = false;
   const evA = A.down(ax, ay);
   check('stick touch lands on the sink', A.el === sink, A.el && (A.el.id || A.el.className));
   check('touch-down preventDefault-ed (no synthesized mouse events)', evA.defaultPrevented === true);
-  check('touch-down is neutral', touch.lx === 0 && touch.ly === 0);
-  const [bx0, by0] = xy(stl);
-  check('left base jumps under the thumb', near(bx0, ax, 0.5) && near(by0, ay, 0.5), bx0 + ',' + by0);
+  check('touch-down at the center is neutral', touch.lx === 0 && touch.ly === 0);
+  check('left base stays put on touch-down', fixed(), bases());
   A.move(ax, ay - 60);
   check('left stick up = boost: ly = +1', near(touch.ly, 1, 1e-3) && near(touch.lx, 0, 1e-3), f2(touch.lx) + ',' + f2(touch.ly));
   check('used set on change', touch.used === true);
@@ -236,15 +241,38 @@ async function run() {
   check('left stick springs back to center', touch.lx === 0 && touch.ly === 0);
   check('left knob returns (CSS spring)', near(xy(knobL)[0], 0, 0.01) && near(xy(knobL)[1], 0, 0.01) && !stl.classList.contains('wn-act'));
   check('right stick unaffected by left release', near(touch.ry, eRy, 2e-3));
+  check('bases never moved (two sticks, four fingers, releases)', fixed(), bases());
 
-  // ---- 6. the base trails the thumb past full deflection ----
+  // ---- 6. out of the ring: the base stays, the knob follows the finger, deflection clamps to 1 ----
   Bf.move(rx0, ry0 - 100);
   check('full push saturates at ry = -1 (nose down)', near(touch.ry, -1, 1e-3) && near(touch.rx, 0, 1e-3), f2(touch.rx) + ',' + f2(touch.ry));
-  check('base followed the thumb', near(xy(str)[1], ry0 - 40, 0.5), xy(str).join(','));
+  check('base stays put past full deflection', fixed(), bases());
+  check('knob follows the finger out of the ring', near(xy(knobR)[0], 0, 0.05) && near(xy(knobR)[1], -100, 0.05), xy(knobR).join(','));
+  const ox = -Math.min(170, rx0 - 8), oy = -Math.min(120, ry0 - 8), od = Math.hypot(ox, oy);   // far out, up and inward
+  Bf.move(rx0 + ox, ry0 + oy);
+  check('far outside the ring: deflection clamps to length 1 along the finger', near(touch.rx, ox / od, 1e-3) && near(touch.ry, oy / od, 1e-3), f2(touch.rx) + ',' + f2(touch.ry));
+  check('knob tracks the finger far outside the ring', near(xy(knobR)[0], ox, 0.05) && near(xy(knobR)[1], oy, 0.05), xy(knobR).join(','));
+  check('base still put', fixed(), bases());
   Bf.move(rx0, ry0 - 70);
-  check('reversal responds at once', near(touch.ry, -shape(30), 1e-3), f2(touch.ry));
+  check('coming back: still full deflection outside the travel radius', near(touch.ry, -1, 1e-3) && near(touch.rx, 0, 1e-3), f2(touch.ry));
+  Bf.move(rx0, ry0 - 30);
+  check('deflection measured from the fixed center', near(touch.ry, -shape(30), 1e-3), f2(touch.ry));
   Bf.cancel();
   check('pointercancel releases the stick', touch.rx === 0 && touch.ry === 0);
+  check('right knob springs back to center', near(xy(knobR)[0], 0, 0.01) && near(xy(knobR)[1], 0, 0.01) && !str.classList.contains('wn-act'));
+
+  // ---- 6b. touches that start off-center deflect at once (the deadzone absorbs small offsets); no re-centering ----
+  for (const [px, py] of [[30, 0], [-25, -40], [0, 50], [3, 2], [-80, -50], [-70, 20]]) {
+    A.down(ax + px, ay + py);
+    const d = Math.hypot(px, py), k = d > 0 ? shape(d) / d : 0;
+    check('off-center touch-down ' + px + ',' + py + ' deflects at once', A.el === sink && near(touch.lx, px * k, 1e-3) && near(touch.ly, -py * k, 1e-3),
+      f2(touch.lx) + ',' + f2(touch.ly));
+    check('off-center touch-down ' + px + ',' + py + ': knob under the finger, base put',
+      near(xy(knobL)[0], px, 0.05) && near(xy(knobL)[1], py, 0.05) && fixed(), xy(knobL).join(',') + ' / ' + bases());
+    A.up();
+  }
+  check('after the off-center touches: stick zero, knob home, bases put', touch.lx === 0 && touch.ly === 0 &&
+    near(xy(knobL)[0], 0, 0.01) && near(xy(knobL)[1], 0, 0.01) && fixed(), bases());
 
   // ---- 7. taps and holds ----
   const T = new Finger(21);
@@ -350,13 +378,21 @@ async function run() {
   const hintOk = (portrait) => root.classList.contains('wn-portrait') === portrait && (cs(hint).display === 'flex') === portrait;
   const startPortrait = H > W;
   check('rotate hint matches the start orientation', hintOk(startPortrait), cs(hint).display);
+  const before = bases();
+  const hx = ax + 20, hy = ay - 10, Hd = new Finger(71); Hd.down(hx, hy);   // a thumb held (off-center) through the resize
   if (startPortrait) { game.style.bottom = 'auto'; game.style.height = Math.round(W * 0.6) + 'px'; }
   else { game.style.right = 'auto'; game.style.width = Math.round(H * 0.6) + 'px'; }
   await sleep(60); await frames2();
   check('rotate hint follows a flip (' + (startPortrait ? 'to landscape' : 'to portrait') + ')', hintOk(!startPortrait), cs(hint).display);
+  const [nx, ny] = xy(stl), dnx = hx - nx, dny = hy - ny, dn = Math.hypot(dnx, dny), kn = dn > 0 ? shape(dn) / dn : 0;
+  check('bases re-anchor to the new layout on resize (not to the held thumb)', bases() !== before && (nx !== hx || ny !== hy), bases());
+  check('held thumb re-measured from the re-anchored base', near(touch.lx, dnx * kn, 1e-3) && near(touch.ly, -dny * kn, 1e-3) &&
+    near(xy(knobL)[0], dnx, 0.05) && near(xy(knobL)[1], dny, 0.05), f2(touch.lx) + ',' + f2(touch.ly) + ' knob ' + xy(knobL).join(','));
+  Hd.up();
   game.style.right = ''; game.style.width = ''; game.style.bottom = ''; game.style.height = '';
   await sleep(60); await frames2();
   check('rotate hint restored', hintOk(startPortrait), cs(hint).display);
+  check('bases back at their layout positions', bases() === before && fixed(), bases());
   check('onActiveChange reported the flips', activeChanges.length >= 2, activeChanges.join(','));
 }
 

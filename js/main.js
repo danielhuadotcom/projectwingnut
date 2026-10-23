@@ -17,9 +17,10 @@ import { MISSIONS, AIRCRAFT_TYPES, GROUND_TYPES } from './missions.js';
 import { Awacs } from './awacs.js';
 import { Tunnel } from './tunnel.js';
 import { Menu, loadSettings } from './menu.js';
+import { fullscreenSupported, onFullscreenChange } from './fullscreen.js';
 import { TouchControls } from './touch.js';
 import { Music } from './music.js';
-import { Flights, SLOTS as FLIGHT_SLOTS, mulberry32, isHolding, orbitRadius } from './flights.js';
+import { Flights, SLOTS as FLIGHT_SLOTS, mulberry32, isHolding, orbitRadius, HOLD_MAX, SCRAMBLE_MAX } from './flights.js';
 import { InfinityRun } from './infinity.js';
 
 // Fallback campaign (replaced by js/missions.js data once it exists): PW-style missions made of phases of groups.
@@ -64,12 +65,14 @@ const MAX_ENEMIES = 6;
 // squadmates fly (the rest go after the squadmates; js/squad.js). Bandit flights (js/flights.js): flightCap = most
 // flights the commit timer lets be committed at once, stagger = s between its releases (a phase's own stagger, in
 // Normal seconds, scales by the same ratio), playerMissiles = most enemy missiles after the player at once (a bandit
-// holds its shot beyond that, or within 1.5 s of the last launch at the same target: EnemyBrain.canLaunchAt).
+// holds its shot beyond that, or within 1.5 s of the last launch at the same target: EnemyBrain.canLaunchAt). Flak
+// (js/targets.js, header: Flak): aaGuns = most AA guns firing at the player at once (the nearest in sight; the others
+// throw an occasional harmless barrage), aaError = their aim error (x the bursts' spread; 1 = the old aim).
 const DIFFICULTY = {
-  easy:      { armor: 0.35, enemyHp: 0.8,  skill: -0.15, aggressors: 1,        missileTurn: 0.5, groups: [],                      playerShare: 0.3, flightCap: 1, stagger: 30, playerMissiles: 1 },
-  normal:    { armor: 0.5,  enemyHp: 1.0,  skill: 0,     aggressors: 2,        missileTurn: 0.6, groups: [],                      playerShare: 0.4, flightCap: 2, stagger: 20, playerMissiles: 2 },
-  hard:      { armor: 0.7,  enemyHp: 1.15, skill: 0.1,   aggressors: 4,        missileTurn: 0.7, groups: ['hard'],                playerShare: 0.5, flightCap: 2, stagger: 15, playerMissiles: 3 },
-  mercenary: { armor: 1.0,  enemyHp: 1.3,  skill: 0.2,   aggressors: Infinity, missileTurn: 0.8, groups: ['hard', 'mercenary'], playerShare: 0.6, flightCap: 3, stagger: 10, playerMissiles: 4 },
+  easy:      { armor: 0.35, enemyHp: 0.8,  skill: -0.15, aggressors: 1,        missileTurn: 0.5, groups: [],                      playerShare: 0.3, flightCap: 1, stagger: 30, playerMissiles: 1, aaGuns: 2,  aaError: 1.6 },
+  normal:    { armor: 0.5,  enemyHp: 1.0,  skill: 0,     aggressors: 2,        missileTurn: 0.6, groups: [],                      playerShare: 0.4, flightCap: 2, stagger: 20, playerMissiles: 2, aaGuns: 4,  aaError: 1.3 },
+  hard:      { armor: 0.7,  enemyHp: 1.15, skill: 0.1,   aggressors: 4,        missileTurn: 0.7, groups: ['hard'],                playerShare: 0.5, flightCap: 2, stagger: 15, playerMissiles: 3, aaGuns: 6,  aaError: 1.1 },
+  mercenary: { armor: 1.0,  enemyHp: 1.3,  skill: 0.2,   aggressors: Infinity, missileTurn: 0.8, groups: ['hard', 'mercenary'], playerShare: 0.6, flightCap: 3, stagger: 10, playerMissiles: 4, aaGuns: 14, aaError: 1.0 },
 };
 const ENEMY_MISSILE_TURN = 0.6;  // enemy shots turn at 60% of the player's rate (difficulty adjusts it)
 // Player-team missiles (the player's and the squadmates'): a lock means the target is reachable. Faster and longer-legged
@@ -109,11 +112,12 @@ const cruiseScale = (type) => {
   return THREE.MathUtils.clamp(kmh / 1100, 0.3, 1.2);
 };
 const _site = new THREE.Vector3(), _st = new THREE.Vector3();   // air group placement scratch (spawnGroup, spawnAirGroup)
-// hud.js target markers: a hostile's marker class, and its rough model radius (m) at its drawn size, for the marker size:
-// ground units and ships by their drawn footprint (GroundTarget.size), aircraft by the ~15 m airframe times this frame's
-// drawn scale (Aircraft.visualScale, updated before buildFrame)
+// A hostile's class (INFINITY's kill tally), and its model radius (m) at its drawn size, which sizes its hud.js marker
+// so the brackets frame the model from any angle: ground units and ships by the bounding sphere of their drawn box
+// (GroundTarget.size), aircraft by the airframe (nose tip ~7.95 m from its centre) times this frame's drawn scale
+// (Aircraft.visualScale, updated before buildFrame)
 const hudKind = (e) => (e.isGround ? (e.naval ? 'naval' : 'ground') : 'air');
-const hudRadius = (e) => { if (!e.isGround) return 7.5 * (e.visualScale || 1); const S = e.size || e.def.size; return 0.5 * Math.max(S[0], S[2]); };
+const hudRadius = (e) => { if (!e.isGround) return 8 * (e.visualScale || 1); const S = e.size || e.def.size; return 0.5 * Math.hypot(S[0], S[1], S[2]); };
 // HUD contact slots (screen markers and radar blips): the largest phase (66 hostiles, M6 phase 1 on Mercenary) plus
 // missiles in flight; buildFrame fills them in priority order should a phase ever outgrow them
 const HUD_CONTACTS = 96;
@@ -273,6 +277,11 @@ class Game {
     this.weapons.missileCooldown = 0.2;          // hardpoints pace the player; this only stops double-taps in one frame
     this.applyQuality(this.quality);
     window.addEventListener('resize', () => this.resize());
+    // Fullscreen (js/fullscreen.js; Settings › Graphics, key U): entering and leaving fire resize. Check the size on the
+    // change event too, and a frame later, for browsers that report the change before the new size applies (only on a
+    // real change: renderer.setSize clears the canvas even at the same size)
+    const refit = () => { if (this.glHost.clientWidth !== this.post.width || this.glHost.clientHeight !== this.post.height) this.resize(); };
+    onFullscreenChange(() => { refit(); requestAnimationFrame(refit); });
     document.addEventListener('visibilitychange', () => { this.last = performance.now(); this.tabHidden(document.hidden); });
     const gesture = () => { this.audio.unlock(); this.awacs.preload(); this.music.play(); };
     // capture phase: menu panels stop propagation of their clicks, but audio must still unlock on the first gesture
@@ -485,6 +494,7 @@ class Game {
     const M = this.mission = list[((i % n) + n) % n];
     this.resetPlayer();
     this.setSortieFrame();                 // the frame every phase of the mission is placed in (spawnGroup)
+    this._nextAnchor = null;               // (nextPhase: later phases are anchored where the previous one's targets stood)
     if (this.flights) this.flights.clear();
     (this._pending || (this._pending = [])).length = 0; this._sites = {};
     this.chase.snap(this.player);
@@ -517,6 +527,10 @@ class Game {
     // every air group of a phase with a boss flies with the boss: committed at once (spawnAirGroup)
     this._bossPhase = P.groups.some((g) => g.kind === 'air' && spawns(g) && (this.airTypes[g.type] || {}).bars > 0);
     const Q = this._pending || (this._pending = []); Q.length = 0;
+    // the phase's anchor (the frame's origin): the sortie start, then where the previous phase's targets stood, so a
+    // phase is laid out around where the fight is, the same way on every attempt
+    const F = this.sortieFrame || this.setSortieFrame();
+    if (this._nextAnchor) { F.x = this._nextAnchor.x; F.z = this._nextAnchor.z; }
     this.seeded(this.placementSeed(-1), () => this.spawnAllies(false));   // allied units first: enemy groups keep clear
     const place = (pass) => P.groups.forEach((g, gi) => {   // pass 1: groups placed from others (near)
       if (!spawns(g) || !!g.near !== (pass === 1)) return;
@@ -530,13 +544,12 @@ class Game {
     for (const g of P.groups) if (g.kind !== 'air' && spawns(g) && !(g.after > 0)) { const c = this.enemyCentroid(g.type, _v3); if (c) S[g.type] = { x: c.x, z: c.z }; }
     place(1);
     for (const q of Q) if (q.g.near && S[q.g.near]) q.site = S[q.g.near];   // a delayed group's site is fixed now
+    let ax = 0, az = 0, an = 0;   // the next phase's anchor: the centre of this phase's required surface sites, if any
+    for (const g of P.groups) if (g.kind !== 'air' && spawns(g) && !g.optional && !(g.after > 0) && S[g.type]) { ax += S[g.type].x; az += S[g.type].z; an++; }
+    if (an) this._nextAnchor = { x: ax / an, z: az / an };
     this.seeded(this.placementSeed(-2), () => this.spawnAllies(true));    // allied units placed beside this phase's enemies
     if (this.flights) this.flights.restart(this.time);
     this.rebuildCombatList();
-    // HUD "TGT" tags: when most of a phase's hostiles are optional, its required ones are the priority (buildFrame)
-    let req = 0, opt = 0;
-    for (const e of this.combatList) if (e !== this.player) { if (e.optional) opt++; else req++; }
-    this.priorityPhase = opt > 0 && req <= opt;
     this.directBandits();                  // the new bandits take whichever hunting role is short
     this._slotT = 0;                       // and attack slots (who may fire) are handed out on the next frame
     if (this.squad) this.squad.newWave();  // squadmates pick a bandit within a second
@@ -600,7 +613,8 @@ class Game {
     this.infT = -1; this.waveTimer = 0;
     this.wave = plan.round; this.phaseIndex = plan.round - 1;
     this.setSortieFrame();
-    this._bossPhase = false; this.priorityPhase = false;
+    this.fitSurfaceSpots(plan.groups);
+    this._bossPhase = false;
     let ground = 0, naval = 0;
     const air = [];
     plan.groups.forEach((g, gi) => {
@@ -617,6 +631,22 @@ class Game {
     if (parts.length) this.message(parts.join(' · ') + ' TARGETS', false, 4);
     if (plan.round > 1) { if (nAir) this.say('newContacts', 2); this.audio.ui('wave'); }
     if (ground) this.say('groundTargets'); else if (naval) this.say('navalTargets');
+  }
+  /** INFINITY: the round's land spot and its sea spot each on the first side (the planned one first) whose terrain at
+   *  the planned distance suits it (dry land, open sea), so surface groups start ~4-5 km out rather than wherever the
+   *  site search has to go. Every land group keeps the one land spot, every sea group the one sea spot. */
+  fitSurfaceSpots(groups) {
+    const F = this.sortieFrame, deg = { ahead: 0, right: 90, behind: 180, left: 270 }, order = ['ahead', 'right', 'behind', 'left'];
+    for (const naval of [false, true]) {
+      const G = groups.filter((g) => g.kind !== 'air' && (g.kind === 'naval') === naval);
+      if (!G.length) continue;
+      const d = G[0].distance || 4500, i0 = Math.max(0, order.indexOf(G[0].position));
+      for (let k = 0; k < 4; k++) {
+        const side = order[(i0 + k) % 4], b = F.bearing + deg[side] * Math.PI / 180;
+        const h = this.world.getHeight(F.x + Math.sin(b) * d, F.z - Math.cos(b) * d);
+        if (naval ? h < -5 : h > 5) { for (const g of G) g.position = side; break; }
+      }
+    }
   }
   /** Round flow (updateGame, in place of the campaign's phases): AREA CLEAR once nothing hostile is left (`left` = live
    *  enemy aircraft and surface units), a full rearm and a hull patch, then the next round after the intermission. */
@@ -852,6 +882,10 @@ class Game {
     if (task === 'escort' && !charges) task = 'patrol';   // nothing to escort (its group didn't spawn): hold an orbit
     const fx = -Math.sin(heading), fz = -Math.cos(heading), rx = Math.cos(heading), rz = -Math.sin(heading);
     const a0 = rand() * Math.PI * 2, runway = rand() * Math.PI * 2, escorts = charges ? [] : null;
+    // time to engagement: a patrol's centre within HOLD_MAX - 500 m of the anchor (its flights within HOLD_MAX), a
+    // scramble within SCRAMBLE_MAX (the end of the base nearest the fight)
+    const near = (x, z, lim) => { const d = Math.hypot(x - O.x, z - O.z); return d > lim ? _v.set(O.x + (x - O.x) * lim / d, 0, O.z + (z - O.z) * lim / d) : _v.set(x, 0, z); };
+    if (task === 'patrol' || task === 'scramble') { near(cx, cz, task === 'patrol' ? HOLD_MAX - 500 : SCRAMBLE_MAX); cx = _v.x; cz = _v.z; }
     for (let j = 0, i0 = 0; j < k; j++, i0 += size) {
       const m = Math.min(size, n - i0), side = rand() < 0.5 ? 1 : -1;
       let x = cx, z = cz, y = alt, h = heading, Fl;
@@ -872,8 +906,9 @@ class Game {
         Fl = this.spawnFlight(typeName, type, m, _st.x, Math.max(this.world.getHeight(_st.x, _st.z), 0) + 130, _st.z, runway, side, 'climb');
         for (const ac of Fl.members) { ac.speed *= 0.65; ac.velocity.multiplyScalar(0.65); ac.brain.transitAlt = alt; }   // just off the ground (unarmed: then transit at alt)
       } else {
-        if (j > 0) { const a = a0 + (j - 1) * 2 * Math.PI / Math.max(1, k - 1), r = 2600 + (rand() - 0.5) * 600; x += Math.cos(a) * r; z += Math.sin(a) * r; }
-        FL.fitStation(_st, x, z, R);
+        if (j > 0) { const a = a0 + (j - 1) * 2 * Math.PI / Math.max(1, k - 1), r = 2200 + (rand() - 0.5) * 600; x += Math.cos(a) * r; z += Math.sin(a) * r; }
+        near(x, z, HOLD_MAX);
+        FL.fitStation(_st, _v.x, _v.z, R);
         const sy = FL.orbitAlt(_st.x, _st.z, R, alt + (rand() - 0.5) * 300), th = rand() * Math.PI * 2, dir = rand() < 0.5 ? 1 : -1;
         // the lead starts on its orbit, heading along it (EnemyBrain._hold: tangent (-u.z, u.x) * dir)
         const ux = Math.cos(th), uz = Math.sin(th);
@@ -887,7 +922,8 @@ class Game {
   }
   /** Spawn members 0..m of a flight (spawnAircraft each): the lead at (x, y, z) on `heading`, the others on their
    *  formation slots (js/flights.js SLOTS, mirrored by side); every spawn point on the map, 350 m over the terrain
-   *  (100 m for a scramble) and out of the tunnel ridge. Registers the flight (Flights.add) and returns it. */
+   *  (100 m for a scramble) and out of the tunnel ridge; an 'engage' (inbound) flight near top speed, afterburner lit.
+   *  Registers the flight (Flights.add) and returns it. */
   spawnFlight(typeName, type, m, x, y, z, heading, side, mode) {
     const M = this._fm || (this._fm = []), lim = WORLD_HALF * 0.88, floor = mode === 'climb' ? 100 : 350;
     const fx = -Math.sin(heading), fz = -Math.cos(heading), rx = Math.cos(heading), rz = -Math.sin(heading);
@@ -896,7 +932,9 @@ class Game {
       const s = FLIGHT_SLOTS[i], lat = s[0] * side, back = s[2];
       const sx = THREE.MathUtils.clamp(x + rx * lat - fx * back, -lim, lim), sz = THREE.MathUtils.clamp(z + rz * lat - fz * back, -lim, lim);
       const sy = this.clearSpawnY(sx, Math.max(y + s[1], Math.max(this.world.getHeight(sx, sz), 0) + floor), sz);
-      M.push(this.spawnAircraft(typeName, type, new THREE.Vector3(sx, sy, sz), heading, i));
+      const ac = this.spawnAircraft(typeName, type, new THREE.Vector3(sx, sy, sz), heading, i);
+      if (mode === 'engage') { ac.speed = FLIGHT.AB_SPEED * ac.speedScale * 0.95; ac.velocity.setLength(ac.speed); ac.throttle = 1; }   // inbound near top speed
+      M.push(ac);
     }
     return this.flights.add(M, m, mode, this.time, side);
   }
@@ -914,7 +952,7 @@ class Game {
   }
   /**
    * Generated air groups (Infinity mode): the generic placement, kept apart from the campaign's authored layout. Each
-   * group { type, count, flight? } splits into flights that hold at stations 4-9 km from the player
+   * group { type, count, flight? } splits into flights that hold at stations 2.5-4.5 km from the player
    * (Flights.genericStations: spread in bearing, preferably 2.5 km apart, orbits on the map, clear of the tunnel ridge and
    * above the terrain) and commit by the campaign's rules (contact, attack, the commit timer under the difficulty's cap
    * and stagger). When nothing else is out there, the first flight sits nearer and goes first. Every random draw comes
@@ -973,7 +1011,7 @@ class Game {
     ac.handling.yaw = THREE.MathUtils.clamp((type.yaw || 12) / 14, 0.6, 1.2);
     ac.gunRate = 12;                                     // enemy cannons fire at about half the player's rate
     const R = this.infinity ? this.infinity.ramp : null;   // INFINITY: the round's ramp stands in for the mission index
-    ac.speed = FLIGHT.CRUISE_SPEED * ac.speedScale; ac.missiles = type.armed === false || type.armed === 'gun' ? 0 : R ? R.enemyMissiles : (this.missionIndex < 2 ? 2 : 3); ac.ammo = 9999;
+    ac.speed = FLIGHT.CRUISE_SPEED * ac.speedScale; ac.missiles = type.armed === false || type.armed === 'gun' ? 0 : 999; ac.ammo = 1e9;   // missiles unlimited: cooldowns and the in-flight caps pace them
     ac.getForward(_fwd); ac.velocity.copy(_fwd).multiplyScalar(ac.speed);
     const skill = THREE.MathUtils.clamp((R ? R.skillBase : 0.38 + this.missionIndex * 0.06) + (type.role === 'fighter' ? 0.05 : 0) + (this.skillOffset || 0), 0.2, 0.95);
     ac.brain.skill = skill; ac.brain.state = 'pursue'; ac.brain.stateTime = 0; ac.brain.missileCooldown = 10 + Math.random() * 8;
@@ -1510,7 +1548,7 @@ class Game {
     if (this.missileDecoyed) { this.missileDecoyed = false; if (!(this._decoyMsgT > this.time)) { this._decoyMsgT = this.time + 2; this.message('MISSILE DEFEATED', false, 1.6); this.say('missileDefeated', 2); } }
     for (let i = 0; i < this.hardpoints.length; i++) if (this.hardpoints[i] > 0) this.hardpoints[i] = Math.max(0, this.hardpoints[i] - dt);
     if (this.flareT > 0) this.flareT = Math.max(0, this.flareT - dt);
-    this.ground.update(dt, p, weapons, this._onFlak);
+    this.ground.update(dt, p, weapons, this._onFlak, this.diff || DIFFICULTY.normal);   // flak: the difficulty's aaGuns, aaError
     weapons.update(dt, this.combatList, this.camera, this.teamTargets);
     if (this.combatDirty) this.rebuildCombatList();   // a unit died this frame: drop it from the target lists
     // Mission progression: a phase is cleared when no enemy aircraft or ground/naval targets remain (friendlies don't count)
@@ -1730,6 +1768,9 @@ class Game {
       onSound: (kind) => { unlock(); if (kind === 'select' || kind === 'back') this.audio.ui('select'); },
       onInfinity: () => { unlock(); this.audio.ui('start'); this.startInfinity(); this.fireGrace = 0.5; },
     });
+    // U toggles fullscreen inside its keydown handler (browsers grant it only to a user activation); off where the browser
+    // has no fullscreen. A refusal in flight shows on the HUD (in the menus the Fullscreen row shows a note).
+    if (fullscreenSupported()) this.input.onFullscreenKey = () => this.menu.toggleFullscreen().then((ok) => { if (!ok && !this.menu.open) this.message('FULLSCREEN REFUSED', false, 2); });
     // apply every persisted setting once (quality was applied during init)
     for (const k of Object.keys(this.settings)) if (k !== 'quality') this.applySetting(k, this.settings[k]);
     this.updateGraphicsLabel();
@@ -1904,6 +1945,9 @@ class Game {
       if (ly < 0 && ang < 0.35 && Math.abs(rollErr) > 2.2) { roll = lx * 3; pitch = ly * 5; }   // slightly below: push
       yaw = lx * 1.2;
     }
+    // The jet pushes at only PUSH_FACTOR of its pull rate: scale push commands to match, so small downward corrections are
+    // as crisp as upward ones (a hard push still tops out at the jet's limit; well below the nose it rolls and pulls)
+    if (pitch < 0) pitch /= FLIGHT.PUSH_FACTOR;
     // Arcade safety net: the instructor won't fly you into the ground (manual roll still can)
     const h = Math.max(this.world.getHeight(p.position.x, p.position.z), 0);
     _v2.copy(p.position).addScaledVector(p.velocity, 2.2);
@@ -1985,13 +2029,13 @@ class Game {
 
   // ---------- HUD frame ----------
   makeFrame() {
-    const mk = () => ({ x: 0, y: 0, onScreen: false, behind: false, type: 'enemy', hostile: true, distance: 0, isTarget: false, kind: 'air', r: 0, tag: false });
+    const mk = () => ({ x: 0, y: 0, onScreen: false, behind: false, type: 'enemy', hostile: true, distance: 0, isTarget: false, r: 0 });
     return {
       w: 1, h: 1, dt: 0, time: 0, state: 'title',
       player: { speed: 0, altitude: 0, radarAlt: 0, heading: 0, pitch: 0, roll: 0, gLoad: 1, throttle: 0, afterburner: false, health: 100, ammo: 0, missiles: 0, maxMissiles: 8, stall: false },
       velocityVector: { x: 0, y: 0, visible: false },
       target: null,
-      _target: { x: 0, y: 0, onScreen: false, behind: false, distance: 0, name: '', health: 1, lock: 0, locked: false, inSeekerCone: false, closure: 0, lead: null, _lead: { x: 0, y: 0 }, kind: 'air', r: 0, tag: false },
+      _target: { x: 0, y: 0, onScreen: false, behind: false, distance: 0, name: '', health: 1, lock: 0, locked: false, inSeekerCone: false, closure: 0, lead: null, _lead: { x: 0, y: 0 }, r: 0 },
       contacts: [], _contactPool: Array.from({ length: HUD_CONTACTS }, mk),
       radar: { range: RADAR_RANGE, blips: [], _pool: Array.from({ length: HUD_CONTACTS }, () => ({ dx: 0, dz: 0, type: 'enemy', isTarget: false, relAlt: 0 })) },
       warnings: { missileIncoming: false, pullUp: false, stall: false, overG: false },
@@ -2012,12 +2056,12 @@ class Game {
     return out;
   }
   /** HUD contact slot i and its radar blip for hostile e: screen position from the probe S (projected already) or
-   *  projected here, marker class, projected model radius r (pxm: px per metre at 1 m) and TGT tag (pri: priorityPhase). */
-  hudContact(i, e, S, pxm, pri) {
+   *  projected here, and the projected model radius r (px; pxm: px per metre at 1 m) that sizes its marker. */
+  hudContact(i, e, S, pxm) {
     const f = this.frame, p = this.player, c = f._contactPool[i], b = f.radar._pool[i];
     if (S) { c.x = S.x; c.y = S.y; c.onScreen = S.onScreen; c.behind = S.behind; } else this.project(e.position, c);
     c.type = 'enemy'; c.hostile = true; c.distance = e.position.distanceTo(p.position); c.isTarget = e === this.target;
-    c.kind = hudKind(e); c.r = hudRadius(e) * pxm / Math.max(1, e.position.distanceTo(this.camera.position)); c.tag = e.bossBars > 0 || (pri && !e.optional);
+    c.r = hudRadius(e) * pxm / Math.max(1, e.position.distanceTo(this.camera.position));
     b.dx = e.position.x - p.position.x; b.dz = e.position.z - p.position.z; b.type = 'enemy'; b.isTarget = c.isTarget; b.relAlt = e.position.y - p.position.y;
   }
   buildFrame(dt) {
@@ -2047,9 +2091,8 @@ class Game {
       G.visible = G.onScreen && this.camMode !== 'rear' && p.alive;
       f.gunCross = G;
     }
-    // Target. Every hostile marker also gets its class, projected model radius r (px, from px per metre at 1 m: pxm) and
-    // TGT tag (bosses, and the required units of a mostly optional phase)
-    const t = this.target, pri = !!this.priorityPhase;
+    // Target. Every hostile marker also gets the projected radius r (px, from px per metre at 1 m: pxm) of its model
+    const t = this.target;
     const pxm = f.h * 0.5 * (cam.zoom || 1) / Math.tan(THREE.MathUtils.degToRad(cam.fov) * 0.5);
     if (t && t.alive && this.state !== 'title') {
       const T = f._target; this.project(t.position, T);
@@ -2058,7 +2101,7 @@ class Game {
       // lock progress only while it can build (in the cone and in sight) or holds: a blocked target shows none
       T.lock = this.inCone || this.locked ? this.lockTimer / LOCK_TIME : 0; T.locked = this.locked; T.inSeekerCone = this.inCone;
       _v.subVectors(p.velocity, t.velocity); T.closure = _v.dot(_v2) / Math.max(T.distance, 1e-3);
-      T.kind = hudKind(t); T.r = hudRadius(t) * pxm / Math.max(1, t.position.distanceTo(cam.position)); T.tag = t.bossBars > 0 || (pri && !t.optional);
+      T.r = hudRadius(t) * pxm / Math.max(1, t.position.distanceTo(cam.position));
       // Gun lead (within 1.2 km, target ahead): solve from the gun muzzle. Rounds inherit our velocity and drop
       // slightly, so the launch direction is toward T + (vT - vP)*tof, lifted by the drop; refine twice.
       p.getForward(_fwd);
@@ -2092,22 +2135,22 @@ class Game {
     const S = f._probe || (f._probe = { x: 0, y: 0, onScreen: false, behind: false });
     const tFirst = !!t && t.alive && t !== p && t.team !== 'player';
     let n = 0, no = 0, remaining = 0;
-    if (tFirst) this.hudContact(n++, t, null, pxm, pri);
+    if (tFirst) this.hudContact(n++, t, null, pxm);
     for (const e of this.combatList) {
       if (!e.alive || e === p || e.team === 'player') continue; remaining++;   // friendlies are listed below
       if (e === t && tFirst) continue;
       this.project(e.position, S);
       if (!S.onScreen) { OL[no++] = e; continue; }
-      if (n < cap) { this.hudContact(n++, e, S, pxm, pri); continue; }
+      if (n < cap) { this.hudContact(n++, e, S, pxm); continue; }
       let far = -1, fd = e.position.distanceTo(p.position);   // full of on-screen hostiles: replace the farthest
       for (let i = tFirst ? 1 : 0; i < cap; i++) if (CP[i].distance > fd) { fd = CP[i].distance; far = i; }
-      if (far >= 0) this.hudContact(far, e, S, pxm, pri);
+      if (far >= 0) this.hudContact(far, e, S, pxm);
     }
-    for (let i = 0; i < no; i++) { if (n < cap) this.hudContact(n++, OL[i], null, pxm, pri); OL[i] = null; }
+    for (let i = 0; i < no; i++) { if (n < cap) this.hudContact(n++, OL[i], null, pxm); OL[i] = null; }
     for (const m of this.weapons.missiles) {
       if (!m.alive || m.owner === p || (m.owner && m.owner.team === 'player') || n >= cap) continue;
       const c = CP[n]; this.project(m.position, c); c.type = 'missile'; c.hostile = m.target === p; c.distance = m.position.distanceTo(p.position); c.isTarget = false;
-      c.r = 0; c.tag = false;
+      c.r = 0;
       const b = f.radar._pool[n]; b.dx = m.position.x - p.position.x; b.dz = m.position.z - p.position.z; b.type = 'missile'; b.isTarget = false; b.relAlt = m.position.y - p.position.y;
       n++;
     }

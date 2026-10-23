@@ -46,6 +46,7 @@ The jet flies toward the aim circle. The key preset is under Settings › Contro
 | C (hold) | Free look | Free look |
 | V | Look back | Look back |
 | P / Esc | Pause | Pause |
+| U | Fullscreen | Fullscreen |
 
 ### Touch
 

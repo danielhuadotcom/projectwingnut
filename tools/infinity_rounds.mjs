@@ -75,12 +75,12 @@ function printTable() {
     `bounty every ${I.BOUNTY_EVERY}th round: ${I.BOUNTIES.join(', ')} · squadmates every round: COTTER #2, RIVET #3`);
   console.log(`main.js    ${rules.map(([n, ok]) => `${n} ${ok ? 'ok' : 'NOT FOUND (re-check js/infinity.js unitHp / rampAt)'}`).join(' · ')}`);
   console.log('');
-  const head = ['rnd', 'level', '', 'hp', 'skill', ...ramped.map((k) => SHORT[k] || k), 'msl/bandit'];
+  const head = ['rnd', 'level', '', 'hp', 'skill', ...ramped.map((k) => SHORT[k] || k)];
   console.log(head[0].padStart(3) + ' ' + head[1].padStart(5) + ' ' + ''.padEnd(9) + head.slice(3).map((h) => h.padStart(Math.max(5, h.length))).join(' ') +
     ' | air gnd nav all | hits  missiles  load | score x');
   for (let r = r0; r <= r1; r++) {
     const R = I.generateRound(r, runOpts), P = R.ramp, d = P.diff;
-    const vals = [d.enemyHp, P.enemySkill, ...ramped.map((k) => d[k]), P.enemyMissiles];
+    const vals = [d.enemyHp, P.enemySkill, ...ramped.map((k) => d[k])];
     const cols = head.slice(3).map((h, i) => fmt(vals[i]).padStart(Math.max(5, h.length))).join(' ');
     const c = R.counts;
     console.log(String(r).padStart(3) + ' ' + P.level.toFixed(2).padStart(5) + ' ' + P.label.padEnd(9) + cols + ' | ' +

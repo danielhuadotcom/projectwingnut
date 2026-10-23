@@ -1,10 +1,10 @@
 // js/hud.js — PROJECT WINGNUT · fighter-style 2D canvas HUD overlay.
 // Pure Canvas2D: deliberately NO Three.js import (the HUD only receives screen-space data — see SPEC.md "js/hud.js").
 //
-// Visual language: phosphor green primary, amber cautions, red warnings/hostiles, green friendlies. Target markers are
-// shaped by type (air / ground / naval); the selected target's is thicker with a hot core, and closes solid when locked.
+// Visual language: phosphor green primary, amber cautions, red warnings/hostiles, white for the lock cue.
 // Every line/glyph is drawn in two passes (thick dark under, thin bright over) and text is stroked dark then filled,
-// which keeps the HUD legible over bright sky/snow without shadowBlur (far too expensive per frame).
+// which keeps the HUD legible over bright sky/snow without shadowBlur (far too expensive per frame). Target and
+// squadmate markers are the exception: one thin line, no dark halo, sized to clear the model so nothing covers it.
 // Geometry scales from s = clamp(min(w,h)/900, 0.6, 2.2); text uses ts = max(0.78, s) so phones stay readable.
 
 const TAU = Math.PI * 2;
@@ -25,8 +25,6 @@ const COL = {
   seg: 'rgba(0,0,0,0.45)',     // empty gauge segments
   ally: '#7CFF6A',             // friendlies: squadmates on screen and on the radar, allied ground/naval on the radar
   allySoft: 'rgba(124,255,106,0.72)',
-  core: '#FFE9E4',             // hot inner line of the selected target's (red) marker
-  halo: 'rgba(0,0,0,0.62)',    // thin dark halo under target markers and their arrowheads
 };
 
 const NO_DASH = [];
@@ -41,17 +39,13 @@ const ALLY_MAX = 8;                        // squadmate markers drawn per frame
 const ALLY_NEAR = 1500, ALLY_FAR = 8000;   // m: squadmate markers shrink and fade between these distances
 const ARC_A = 0.95, ARC_C = Math.cos(ARC_A), ARC_S = Math.sin(ARC_A);   // half-angle of the "( )" bracket arcs
 const TOUCH_KEYS = ['lt', 'lb', 'rb', 'rt', 'flr', 'pause'];           // touch buttons (frame.touchRects) labels avoid
-// Target markers. Half-size = clamp(r * MK_GROW + MK_PAD, L.mkMin, L.mkMax) for a projected model radius of r px;
-// below PIP_R px a solid centre pip marks the model. Shapes: air square corners, ground diamond corners (vertices GND_K
-// half-sizes out), naval a hull (deck / keel half-widths HULL_TOP / HULL_BOT, half-height HULL_H, per half-size).
-const MK_GROW = 1.1, MK_PAD = 3, PIP_R = 3.5, GND_K = 1.15;
-const HULL_TOP = 1.3, HULL_BOT = 0.85, HULL_H = 0.66;
-const HULL_L = Math.hypot(HULL_TOP - HULL_BOT, 2 * HULL_H), HULL_UX = (HULL_TOP - HULL_BOT) / HULL_L, HULL_UY = 2 * HULL_H / HULL_L;
-const MK_NEAR = 3000, MK_FAR = 5500;       // m: non-selected hostiles dim a little past these (never hidden)
-const MK_ALPHA = [1, 0.8, 0.62];           // alpha per distance band
-const TAG_MAX = 4;                         // "TGT" tags on non-selected contacts per frame, nearest first
+// Hostile markers frame the drawn model: half-size = max(the fixed size, r * MK_GROW + MK_PAD * s) for a projected model
+// radius of r px (frame contact / target .r), capped at MK_MAX * min(w, h)
+const MK_GROW = 1.1, MK_PAD = 3, MK_MAX = 0.4;
+// Hostiles farther than MK_FAR_M (m), other than the selected target, get no brackets: only a small dim caret just above
+// the model (MK_FAR_A alpha), pointing down at it, never over it, no label
+const MK_FAR_M = 4500, MK_FAR_A = 0.55;
 const MAX_CONTACTS = 128;                  // safety bound on frame.contacts and radar blips (js/main.js fills at most 96)
-const LOCK_HZ = 2.5;                       // locked-marker pulse
 const CARDINAL = { 0: 'N', 90: 'E', 180: 'S', 270: 'W' };
 const WARN_DEFS = [
   { key: 'missileIncoming', text: 'MISSILE', color: COL.red },
@@ -115,10 +109,9 @@ export class HUD {
     this._gunKey = NaN; this._gunStr = '';
     this._rngKey = NaN; this._rngStr = '';
     this._allyRects = new Float32Array(4 * ALLY_MAX);   // squadmate label boxes placed this frame (x0, y0, x1, y1)
-    // target markers: tagged-contact picks, marker extents scratch, selected-target layout and keep-out (_prepTarget)
-    this._tagI = new Int16Array(TAG_MAX); this._tagD = new Float32Array(TAG_MAX); this._tagR = new Float32Array(4 * TAG_MAX);
-    this._mex = 0; this._mey = 0;
-    this._tOn = false; this._tH = 0; this._tEx = 0; this._tEy = 0; this._tLx = 0; this._tLy = 0; this._tLw = 0; this._tAlignR = false; this._tSideT = -1;
+    // selected target, laid out before anything draws (_prepTarget): box half-size, info block position and whether it
+    // sits over the box (since _tClearT, the last time the spot under it covered the gun cross), squadmate keep-out
+    this._tHalf = 0; this._tX = 0; this._tY = 0; this._tAbove = false; this._tClearT = -1;
     this._kx0 = 0; this._kx1 = -1; this._ky0 = 0; this._ky1 = -1;
     this._inBlocked = null; this._inConn = null; this._inName = null; this._inUsing = null; this._inLocked = null; this._inMaxW = -1;
     this._inLines = []; this._inColor = COL.green; this._inGlyph = false;
@@ -170,18 +163,10 @@ export class HUD {
     L.lwThin = Math.max(1, L.lw * 0.65);
     L.outline = s < 1.3 ? 1 : 1.3;              // dark halo width (px per side) under lines
     L.textOutline = clamp(2 * ts, 2, 3.6);      // strokeText width under glyphs
-    // target markers: 2 px strokes (thicker on big screens; 1.5x for the selected target) over a thin dark halo,
-    // half-sizes L.mkMin..L.mkMax (18..64 px boxes up to s = 1); the selected target's label lines and health bar
-    L.mkLw = clamp(1.8 * s, 2, 3.4); L.mkSel = L.mkLw * 1.5; L.mkCore = Math.max(1, L.mkSel * 0.38);
-    L.mkHalo = s < 1.3 ? 1.25 : 1.6; L.mkPip = 0.8;
-    L.mkMin = 9 * Math.max(1, s); L.mkMax = 32 * Math.max(1, s);
-    L.tLh1 = Math.round(14 * ts); L.tLh2 = Math.round(12 * ts); L.tGap = Math.round(7 * s);
-    L.tBarW = Math.round(40 * s); L.tBarH = Math.max(2, Math.round(3 * s)); L.tBarGap = Math.round(3 * s);
-    L.tLabelH = L.tLh1 + L.tLh2 + L.tBarGap + L.tBarH;
     const F = (px, wt) => (wt ? wt + ' ' : '') + Math.max(9, Math.round(px)) + 'px ' + FONT;
     L.fTiny = F(9.5 * ts); L.fSmall = F(11 * ts); L.fMed = F(13 * ts);
     L.fBig = F(20 * ts, 500); L.fHdg = F(15 * ts, 600); L.fLock = F(14 * ts, 700); L.fPill = F(11 * ts, 700);
-    L.fWarn = F(26 * ts, 700); L.fMsg = F(15 * ts, 500); L.fMsgBig = F(23 * ts, 700); L.fTag = F(9.5 * ts, 700);
+    L.fWarn = F(26 * ts, 700); L.fMsg = F(15 * ts, 500); L.fMsgBig = F(23 * ts, 700);
     // central attitude region
     L.clipR = 0.30 * m; L.rungHalf = 0.14 * m; L.rungGap = 0.045 * m; L.horizonHalf = 0.26 * m;
     L.ppd = 12 * s; L.tick = 6 * s; L.bankR = L.clipR + 12 * s;
@@ -219,15 +204,7 @@ export class HUD {
     L.pillW1 = Math.round(ctx.measureText('PADLOCK').width + 22 * s);
     L.pillW2 = Math.round(ctx.measureText('REAR VIEW').width + 22 * s);
     ctx.font = L.fSmall;
-    L.chSmall = ctx.measureText('0000000000').width / 10;   // monospace advance: squadmate labels are laid out by length
-    ctx.font = L.fMed;
-    L.chMed = ctx.measureText('0000000000').width / 10;     // (and the target label's name line, and TGT tags)
-    ctx.font = L.fTag;
-    L.chTag = ctx.measureText('0000000000').width / 10;
-    // target label keep-outs: the speed and altitude tapes with their scale numbers and readout boxes
-    L.koSpd0 = L.cx - L.sideOff - 8 * s - L.spdBoxW; L.koSpd1 = L.cx - L.sideOff + 13 * s + 4 * L.chSmall;
-    L.koAlt0 = L.cx + L.sideOff - 13 * s - 5 * L.chSmall; L.koAlt1 = L.cx + L.sideOff + 8 * s + L.altBoxW;
-    L.koTape0 = L.cy - L.tapeHalf - 6 * s; L.koTape1 = L.cy + L.tapeHalf + 6 * s;
+    L.chSmall = ctx.measureText('0000000000').width / 10;   // monospace advance: squadmate and target labels are laid out by length
     try {
       const g = ctx.createRadialGradient(L.cx, L.cy, m * 0.55, L.cx, L.cy, Math.max(w, h) * 0.78);
       g.addColorStop(0, 'rgba(255,30,20,0)'); g.addColorStop(0.55, 'rgba(255,30,20,0.35)'); g.addColorStop(1, 'rgba(255,30,20,0.85)');
@@ -241,6 +218,11 @@ export class HUD {
   _stroke(color, lw) {
     const ctx = this.ctx;
     ctx.lineWidth = lw + 2 * this.L.outline; ctx.strokeStyle = COL.dark; ctx.stroke();
+    ctx.lineWidth = lw; ctx.strokeStyle = color; ctx.stroke();
+  }
+  /** One-pass stroke, no dark halo: target and squadmate markers, kept thin so the model they frame stays clear. */
+  _line(color, lw) {
+    const ctx = this.ctx;
     ctx.lineWidth = lw; ctx.strokeStyle = color; ctx.stroke();
   }
   /** Fill the current path with a dark halo (filled glyphs: carets, pips, triangles). */
@@ -313,7 +295,7 @@ export class HUD {
     this._drawHealth(p);
     if (compact) this._drawCompactWeapons(p); else this._drawWeapons(p);
     if (!compact) { this._drawRadar(radar, p); this._drawScore(frame); }
-    this._prepTarget(frame, compact ? frame.touchRects : null);   // target layout first: squadmate labels avoid it
+    this._prepTarget(frame.target, gc);                  // target box and info block first: squadmate labels avoid them
     this._drawAllies(frame.allies, compact ? frame.touchRects : null);
     this._drawContacts(frame.contacts);
     this._drawTarget(frame.target);
@@ -782,7 +764,7 @@ export class HUD {
   _drawAllies(allies, touch) {
     if (!allies || !allies.length) return;
     const ctx = this.ctx, L = this.L, s = L.s, n = Math.min(allies.length, ALLY_MAX), R = this._allyRects;
-    // target keep-out: its marker with the TGT / LOCK cues and its label (_prepTarget)
+    // target keep-out: the box, its LOCK cue and its info block (_prepTarget)
     const kx0 = this._kx0, kx1 = this._kx1, ky0 = this._ky0, ky1 = this._ky1;
     const ch = L.chSmall, lh = Math.round(12 * L.ts), pad = 3 * s;
     let nr = 0;
@@ -797,7 +779,7 @@ export class HUD {
       ctx.beginPath();
       ctx.moveTo(x - r * ARC_C, y + r * ARC_S); ctx.arc(x, y, r, Math.PI - ARC_A, Math.PI + ARC_A);
       ctx.moveTo(x + r * ARC_C, y - r * ARC_S); ctx.arc(x, y, r, -ARC_A, ARC_A);
-      this._mkStroke(COL.ally, L.mkLw);
+      this._line(COL.ally, L.lw);
       if (x > kx0 && x < kx1 && y > ky0 && y < ky1) continue;          // close to the target box: brackets only
       const cs = a.callsign || a.name || 'ALLY', ds = fDec1(Math.round(d / 100) / 10);
       const len = cs.length + 1 + ds.length, hw = len * ch * 0.5 + 2;
@@ -809,7 +791,10 @@ export class HUD {
         if (x1 > kx0 && x0 < kx1 && y1 > ky0 && y0 < ky1) continue;
         let free = true;
         for (let j = 0; j < nr && free; j++) if (x1 > R[4 * j] && x0 < R[4 * j + 2] && y1 > R[4 * j + 1] && y0 < R[4 * j + 3]) free = false;
-        if (free && this._onTouch(x0, y0, x1, y1, touch)) free = false;
+        if (free && touch) for (let j = 0; j < TOUCH_KEYS.length && free; j++) {
+          const b = touch[TOUCH_KEYS[j]];
+          if (b && x1 > b.x - 2 && x0 < b.x + b.w + 2 && y1 > b.y - 2 && y0 < b.y + b.h + 2) free = false;
+        }
         if (free) ly = y0;
       }
       if (ly < 0) continue;                                           // no free slot: brackets only
@@ -823,126 +808,42 @@ export class HUD {
   }
 
   // ---- contacts & target --------------------------------------------------------------------------------------
-  // Hostile markers: the shape tells the type (air: square corners, ground: diamond corners, naval: a hull, wide deck
-  // line over a narrower keel), the size follows the projected model radius (L.mkMin..L.mkMax) and a solid centre pip
-  // marks models only a few pixels across. Markers are batched into one path per style and stroked twice, a thin dark
-  // halo and then the color, so they read on bright sky, sea glare, haze and terrain.
-
-  /** Marker half-size (px) for a projected model radius of r px. */
-  _mkSize(r) { const L = this.L; return clamp((r > 0 ? r : 0) * MK_GROW + MK_PAD, L.mkMin, L.mkMax); }
-  /** Half extents of a marker of half-size h, written to this._mex / this._mey. */
-  _mkExt(kind, h) {
-    if (kind === 'ground') this._mex = this._mey = h * GND_K;
-    else if (kind === 'naval') { this._mex = h * HULL_TOP; this._mey = h * HULL_H; }
-    else this._mex = this._mey = h;
-  }
-  /** Append one marker to the current path: its corner brackets, or the closed outline when `closed` (locked). */
-  _mkPath(kind, x, y, h, closed) {
-    const ctx = this.ctx;
-    if (kind === 'ground') {
-      const q = h * GND_K;
-      if (closed) { ctx.moveTo(x, y - q); ctx.lineTo(x + q, y); ctx.lineTo(x, y + q); ctx.lineTo(x - q, y); ctx.closePath(); return; }
-      const a = q * 0.32;                                  // chevron arms run along the diamond's edges
-      ctx.moveTo(x - a, y - q + a); ctx.lineTo(x, y - q); ctx.lineTo(x + a, y - q + a);
-      ctx.moveTo(x + q - a, y - a); ctx.lineTo(x + q, y); ctx.lineTo(x + q - a, y + a);
-      ctx.moveTo(x + a, y + q - a); ctx.lineTo(x, y + q); ctx.lineTo(x - a, y + q - a);
-      ctx.moveTo(x - q + a, y + a); ctx.lineTo(x - q, y); ctx.lineTo(x - q + a, y - a);
-    } else if (kind === 'naval') {
-      const tw = h * HULL_TOP, bw = h * HULL_BOT, hh = h * HULL_H;
-      if (closed) { ctx.moveTo(x - tw, y - hh); ctx.lineTo(x + tw, y - hh); ctx.lineTo(x + bw, y + hh); ctx.lineTo(x - bw, y + hh); ctx.closePath(); return; }
-      const a = h * 0.42, ax = a * HULL_UX, ay = a * HULL_UY;  // slanted arms run along the hull sides
-      ctx.moveTo(x - tw + a, y - hh); ctx.lineTo(x - tw, y - hh); ctx.lineTo(x - tw + ax, y - hh + ay);
-      ctx.moveTo(x + tw - a, y - hh); ctx.lineTo(x + tw, y - hh); ctx.lineTo(x + tw - ax, y - hh + ay);
-      ctx.moveTo(x - bw + a * 0.8, y + hh); ctx.lineTo(x - bw, y + hh); ctx.lineTo(x - bw - ax, y + hh - ay);
-      ctx.moveTo(x + bw - a * 0.8, y + hh); ctx.lineTo(x + bw, y + hh); ctx.lineTo(x + bw + ax, y + hh - ay);
-    } else {
-      if (closed) { ctx.rect(x - h, y - h, 2 * h, 2 * h); return; }
-      const a = h * 0.45;
-      ctx.moveTo(x - h, y - h + a); ctx.lineTo(x - h, y - h); ctx.lineTo(x - h + a, y - h);
-      ctx.moveTo(x + h - a, y - h); ctx.lineTo(x + h, y - h); ctx.lineTo(x + h, y - h + a);
-      ctx.moveTo(x + h, y + h - a); ctx.lineTo(x + h, y + h); ctx.lineTo(x + h - a, y + h);
-      ctx.moveTo(x - h + a, y + h); ctx.lineTo(x - h, y + h); ctx.lineTo(x - h, y + h - a);
-    }
-  }
-  /** Append the centre pip: a tiny closed square that the stroke fills in and the halo pass outlines. */
-  _pipPath(x, y) { const p = this.L.mkPip; this.ctx.rect(x - p, y - p, 2 * p, 2 * p); }
-  /** Two-pass marker stroke of the current path: dark halo under, color over (with square caps the halo wraps the ends). */
-  _mkStroke(color, lw) {
-    const ctx = this.ctx;
-    ctx.lineWidth = lw + 2 * this.L.mkHalo; ctx.strokeStyle = COL.halo; ctx.stroke();
-    ctx.lineWidth = lw; ctx.strokeStyle = color; ctx.stroke();
-  }
-  /** Fill the current path over the same dark halo (off-screen arrowheads). */
-  _mkFill(color) {
-    const ctx = this.ctx;
-    ctx.lineWidth = 2 * this.L.mkHalo; ctx.strokeStyle = COL.halo; ctx.stroke();
-    ctx.fillStyle = color; ctx.fill();
-  }
-  /** Distance band of a non-selected hostile: 0 near (full strength), 1, 2 far (dimmest). Tagged units stay in band 0. */
-  _band(c) { const d = c.distance || 0; return c.tag || d < MK_NEAR ? 0 : d < MK_FAR ? 1 : 2; }
-  /** Keeps the TAG_MAX nearest tagged contacts (indices into contacts, nearest first) in this._tagI; returns the count. */
-  _tagInsert(nt, i, d) {
-    const I = this._tagI, D = this._tagD;
-    let k = nt;
-    if (nt < TAG_MAX) nt++;
-    else if (d >= D[TAG_MAX - 1]) return nt;
-    else k = TAG_MAX - 1;
-    while (k > 0 && D[k - 1] > d) { I[k] = I[k - 1]; D[k] = D[k - 1]; k--; }
-    I[k] = i; D[k] = d;
-    return nt;
-  }
-  /** True if the rect overlaps one of the touch layout's buttons (frame.touchRects; null on other layouts). */
-  _onTouch(x0, y0, x1, y1, touch) {
-    if (!touch) return false;
-    for (let j = 0; j < TOUCH_KEYS.length; j++) {
-      const b = touch[TOUCH_KEYS[j]];
-      if (b && x1 > b.x - 2 && x0 < b.x + b.w + 2 && y1 > b.y - 2 && y0 < b.y + b.h + 2) return true;
-    }
-    return false;
+  /** Marker half-size (px): `min`, or more when the drawn model projects larger (radius r px, frame .r), so the
+   *  brackets frame the model with some clearance and never cross it. */
+  _mkHalf(r, min) {
+    const L = this.L;
+    return clamp((r > 0 ? r : 0) * MK_GROW + MK_PAD * L.s, min, Math.max(min, MK_MAX * L.m));
   }
 
-  /**
-   * Contacts other than the selected target: one path per distance band (far bands dim a little, nothing is hidden),
-   * drawn far to near, then friendly contacts (green) if any. Bosses and mission-priority units (contact.tag) get a "TGT"
-   * tag, the TAG_MAX nearest of them. Missiles keep their own glyph and range readout.
-   */
   _drawContacts(contacts) {
     if (!contacts || !contacts.length) return;
-    const ctx = this.ctx, L = this.L, s = L.s, n = Math.min(contacts.length, MAX_CONTACTS);
-    let nt = 0;
-    ctx.lineCap = 'square'; ctx.lineJoin = 'miter';
-    for (let b = MK_ALPHA.length - 1; b >= -1; b--) {    // b = -1: friendly contacts
+    const ctx = this.ctx, L = this.L, s = L.s, n = Math.min(contacts.length, MAX_CONTACTS), hs0 = 11 * s;
+    for (let pass = 0; pass < 2; pass++) {              // pass 0: hostile (red), pass 1: friendly (green)
       ctx.beginPath(); let any = false;
       for (let i = 0; i < n; i++) {
         const c = contacts[i];
         if (!c || !c.onScreen || c.isTarget || c.type === 'missile' || !isFinite(c.x) || !isFinite(c.y)) continue;
-        if (b < 0 ? c.hostile !== false : c.hostile === false || this._band(c) !== b) continue;
-        this._mkPath(c.kind, c.x, c.y, this._mkSize(c.r), false);
-        if (!(c.r >= PIP_R)) this._pipPath(c.x, c.y);
-        if (c.tag && b >= 0) nt = this._tagInsert(nt, i, c.distance || 0);
+        if ((c.hostile !== false) !== (pass === 0) || c.distance > MK_FAR_M) continue;   // far: caret below
+        const x = c.x, y = c.y, hs = this._mkHalf(c.r, hs0), arm = hs * (5 / 11);
+        ctx.moveTo(x - hs, y - hs + arm); ctx.lineTo(x - hs, y - hs); ctx.lineTo(x - hs + arm, y - hs);
+        ctx.moveTo(x + hs - arm, y - hs); ctx.lineTo(x + hs, y - hs); ctx.lineTo(x + hs, y - hs + arm);
+        ctx.moveTo(x + hs, y + hs - arm); ctx.lineTo(x + hs, y + hs); ctx.lineTo(x + hs - arm, y + hs);
+        ctx.moveTo(x - hs + arm, y + hs); ctx.lineTo(x - hs, y + hs); ctx.lineTo(x - hs, y + hs - arm);
         any = true;
       }
-      if (!any) continue;
-      ctx.globalAlpha = this.alpha * (b < 0 ? 1 : MK_ALPHA[b]);
-      this._mkStroke(b < 0 ? COL.ally : COL.red, L.mkLw);
+      if (any) this._line(pass === 0 ? COL.red : COL.green, L.lwThin);
     }
-    ctx.globalAlpha = this.alpha; ctx.lineCap = 'butt'; ctx.lineJoin = 'round';
-    if (nt > 0) {                                        // tags clear of the selected target's label and of each other
-      const R = this._tagR, hw = 1.5 * L.chTag + 1, th = L.tLh2;
-      let nr = 0;
-      ctx.font = L.fTag;
-      for (let k = 0; k < nt; k++) {
-        const c = contacts[this._tagI[k]];
-        this._mkExt(c.kind, this._mkSize(c.r));
-        const ty = c.y - this._mey - 3 * s, x0 = c.x - hw, x1 = c.x + hw, y0 = ty - th;
-        if (x1 > this._kx0 && x0 < this._kx1 && ty > this._ky0 && y0 < this._ky1) continue;
-        let free = true;
-        for (let j = 0; j < nr && free; j++) if (x1 > R[4 * j] && x0 < R[4 * j + 2] && ty > R[4 * j + 1] && y0 < R[4 * j + 3]) free = false;
-        if (!free) continue;
-        R[4 * nr] = x0; R[4 * nr + 1] = y0; R[4 * nr + 2] = x1; R[4 * nr + 3] = ty; nr++;
-        this._text('TGT', c.x, ty, COL.amber, 'center', 'bottom');
-      }
+    // far hostiles: one path of small "v" carets, the tip clear of the model's top
+    ctx.beginPath(); let far = false;
+    const cw = 3 * s, chh = 3 * s;
+    for (let i = 0; i < n; i++) {
+      const c = contacts[i];
+      if (!c || !c.onScreen || c.isTarget || c.type === 'missile' || c.hostile === false || !(c.distance > MK_FAR_M) || !isFinite(c.x) || !isFinite(c.y)) continue;
+      const ty = c.y - Math.max(4 * s, (c.r > 0 ? c.r : 0) * MK_GROW + 2 * s);
+      ctx.moveTo(c.x - cw, ty - chh); ctx.lineTo(c.x, ty); ctx.lineTo(c.x + cw, ty - chh);
+      far = true;
     }
+    if (far) { ctx.globalAlpha = this.alpha * MK_FAR_A; this._line(COL.red, L.lwThin); ctx.globalAlpha = this.alpha; }
     ctx.font = L.fTiny;
     for (let i = 0; i < n; i++) {
       const c = contacts[i];
@@ -956,119 +857,73 @@ export class HUD {
   }
 
   /**
-   * Selected-target layout, once per frame before anything draws: marker size and extents, the label box (name over
-   * distance and closure, health bar under) beside the marker: on the right, or on the left when that covers less
-   * (_lblScore: touch buttons, the lead ring, the reticle, the tapes, other markers) or the right is off screen; it
-   * switches sides at most every 0.4 s so it never flickers. Also the keep-out rect squadmate labels avoid, and the
-   * cached distance strings.
+   * Selected target, laid out once per frame before anything draws: the distance and closure strings, the box half-size
+   * (at least 22 px, more to frame a model that projects larger) and the info block's place: under the box, or above it
+   * (and its LOCK cue) while under it would cover the gun cross, moving back once that spot has been clear for 0.4 s.
+   * Also the keep-out rect squadmate labels avoid.
    */
-  _prepTarget(f, touch) {
-    this._tOn = false; this._kx0 = 0; this._kx1 = -1; this._ky0 = 0; this._ky1 = -1;
-    const t = f.target;
+  _prepTarget(t, gc) {
+    this._kx0 = 0; this._kx1 = -1; this._ky0 = 0; this._ky1 = -1;
     if (!t) return;
-    const L = this.L, s = L.s;
+    const L = this.L, s = L.s, ts = L.ts;
     const dk = Math.round((t.distance || 0) / 100);
     if (dk !== this._distKey) { this._distKey = dk; this._distStr = fDec1(dk / 10) + ' KM'; }
     const ck = Math.round(t.closure || 0);
     if (ck !== this._clKey) { this._clKey = ck; this._clStr = (ck >= 0 ? '+' : '-') + fInt(Math.abs(ck)) + ' M/S'; }
-    const name = t.name || 'TARGET';
-    const w = this._tLw = Math.max(name.length * L.chMed, (this._distStr.length + 1 + this._clStr.length) * L.chSmall, L.tBarW);
-    if (!(t.onScreen && !t.behind && isFinite(t.x) && isFinite(t.y))) return;
-    this._tOn = true;
-    const x = t.x, y = t.y, h = this._tH = this._mkSize(t.r) + 2 * s;
-    this._mkExt(t.kind, h);
-    const ex = this._tEx = this._mex, ey = this._tEy = this._mey, hgt = L.tLabelH, m = 4 * s;
-    const top = clamp(y - hgt * 0.5, m, L.h - m - hgt), xr = x + ex + L.tGap, xl = x - ex - L.tGap - w;
-    const okR = xr + w <= L.w - m, okL = xl >= m;
-    const sR = okR ? this._lblScore(xr, top, xr + w, top + hgt, f, touch) : 1e9;
-    const sL = okL ? this._lblScore(xl, top, xl + w, top + hgt, f, touch) : 1e9;
-    const left = sL < sR;                                // the right side wins ties
-    if (left !== this._tAlignR && (Math.abs(this.time - this._tSideT) > 0.4 || !okR || !okL)) { this._tAlignR = left; this._tSideT = this.time; }
-    const lx = clamp(this._tAlignR ? xl : xr, m, L.w - m - w);   // (clamped only when neither side fits)
-    this._tLx = lx; this._tLy = top;
-    const cue = L.tLh2 + 3 * s;                          // TGT above the marker, LOCK under it
-    this._kx0 = Math.min(x - ex, lx) - m; this._kx1 = Math.max(x + ex, lx + w) + m;
-    this._ky0 = Math.min(y - ey - cue, top) - m; this._ky1 = Math.max(y + ey + cue, top + hgt) + m;
-  }
-
-  /** What a label rect would cover, scored: a touch button 100, the gun cross (boresight) or the aim circle 30 each (the
-   *  aiming references outrank everything else in view), the gun lead ring 12, a tape 4, each other on-screen marker 2. */
-  _lblScore(x0, y0, x1, y1, f, touch) {
-    const L = this.L, s = L.s, ld = f.target.lead, g = f.gunCross, a = f.mouseAim, cs = f.contacts;
-    let sc = this._onTouch(x0, y0, x1, y1, touch) ? 100 : 0;
-    if (ld && near(x0, y0, x1, y1, ld.x, ld.y, 17 * s)) sc += 12;
-    if (g ? g.visible !== false && near(x0, y0, x1, y1, g.x, g.y, 18 * s) : near(x0, y0, x1, y1, L.cx, L.cy, 18 * s)) sc += 30;
-    if (a && a.aimVisible !== false && near(x0, y0, x1, y1, a.aimX, a.aimY, 17 * s)) sc += 30;
-    if (y1 > L.koTape0 && y0 < L.koTape1 && ((x1 > L.koSpd0 && x0 < L.koSpd1) || (x1 > L.koAlt0 && x0 < L.koAlt1))) sc += 4;
-    if (cs) for (let i = 0, n = Math.min(cs.length, MAX_CONTACTS); i < n; i++) {
-      const c = cs[i];
-      if (c && c.onScreen && !c.isTarget && near(x0, y0, x1, y1, c.x, c.y, L.mkMin)) sc += 2;
-    }
-    return sc;
+    if (!(t.onScreen && !t.behind && isFinite(t.x) && isFinite(t.y))) { this._tAbove = false; return; }
+    const x = t.x, y = t.y, half = this._tHalf = this._mkHalf(t.r, 22 * s), ch = L.chSmall;
+    // info block (_drawTargetBox), centred on tx: name, health bar as wide as the box, distance | closure
+    const hw = Math.max(t.name ? t.name.length * ch * 0.5 : 0, half, 4 * s + Math.max(this._distStr.length, this._clStr.length) * ch);
+    const bh = (t.name ? 13 * ts : 0) + 7 * s + 12 * ts, cue = 14 * ts + 9 * s;   // cue: the LOCK line over the box
+    const tx = this._tX = clamp(x, 70 * s, L.w - 70 * s), yb = y + half + 6 * s, ya = y - half - (t.locked ? cue : 6 * s) - bh;
+    const gr = 18 * s, gv = gc ? gc.visible !== false : true, gx = gc ? gc.x : L.cx, gy = gc ? gc.y : L.cy;
+    const onB = gv && near(tx - hw, yb, tx + hw, yb + bh, gx, gy, gr), onA = gv && near(tx - hw, ya, tx + hw, ya + bh, gx, gy, gr);
+    if (onB && !onA) { this._tAbove = true; this._tClearT = this.time; }
+    else if (this._tAbove && (onA || this.time - this._tClearT > 0.4)) this._tAbove = false;
+    const top = this._tY = this._tAbove ? ya : yb;
+    this._kx0 = Math.min(x - half, tx - hw) - 4 * s; this._kx1 = Math.max(x + half, tx + hw) + 4 * s;
+    this._ky0 = Math.min(y - half - cue, top) - 4 * s; this._ky1 = Math.max(y + half, top + bh) + 4 * s;
   }
 
   _drawTarget(t) {
     if (!t) return;
-    if (this._tOn) this._drawTargetBox(t);
+    if (t.onScreen && !t.behind && isFinite(t.x) && isFinite(t.y)) this._drawTargetBox(t);
     else this._drawOffscreenPointer(t);
   }
 
-  /**
-   * Target label: name (pale) over distance (cyan) and closure, then a thin health bar. `align` places the block of
-   * width this._tLw: 0 starts at ax, 1 ends at ax, 0.5 centres on it. Text widths come from the monospace advance.
-   */
-  _label(t, ax, top, align) {
-    const ctx = this.ctx, L = this.L, name = t.name || 'TARGET', w = this._tLw, x0 = ax - align * w;
-    ctx.font = L.fMed;
-    this._text(name, x0 + (w - name.length * L.chMed) * align, top + L.tLh1 * 0.5, COL.pale, 'left', 'middle');
-    ctx.font = L.fSmall;
-    const ds = this._distStr, cs = this._clStr, ch = L.chSmall;
-    const lx = x0 + (w - (ds.length + 1 + cs.length) * ch) * align, ly = top + L.tLh1 + L.tLh2 * 0.5;
-    this._text(ds, lx, ly, COL.green, 'left', 'middle');
-    this._text(cs, lx + (ds.length + 1) * ch, ly, (t.closure || 0) >= 0 ? COL.greenSoft : COL.amber, 'left', 'middle');
-    const hp = clamp(t.health == null ? 1 : t.health, 0, 1), bw = L.tBarW, bh = L.tBarH;
-    const bx = x0 + (w - bw) * align, by = top + L.tLh1 + L.tLh2 + L.tBarGap;
-    ctx.fillStyle = COL.halo; ctx.fillRect(bx - 1, by - 1, bw + 2, bh + 2);
-    ctx.fillStyle = hp > 0.5 ? COL.green : hp > 0.25 ? COL.amber : COL.red; ctx.fillRect(bx, by, bw * hp, bh);
-  }
-
-  /**
-   * Selected target on screen: its type marker, thicker, red with a hot inner line. In the seeker cone the brackets
-   * close in from 1.5x as the lock builds; once locked the shape closes, solid red, pulsing gently (LOCK_HZ), with LOCK
-   * under it. TGT above it for bosses and mission-priority units, the label beside it, the gun lead ring.
-   */
   _drawTargetBox(t) {
-    const ctx = this.ctx, L = this.L, s = L.s, x = t.x, y = t.y;
-    const kind = t.kind, h = this._tH, ex = this._tEx, ey = this._tEy;
-    const locked = !!t.locked, lock = clamp(t.lock || 0, 0, 1);
-    const pulse = locked ? 0.5 + 0.5 * Math.sin(this.time * TAU * LOCK_HZ) : 0;
-    ctx.lineCap = 'square'; ctx.lineJoin = 'miter';
-    ctx.beginPath();
-    if (locked) this._mkPath(kind, x, y, h * (1 + 0.05 * pulse), true);
-    else {
-      const e = t.inSeekerCone ? 1 - (1 - lock) * (1 - lock) : 1;
-      this._mkPath(kind, x, y, h * (1 + 0.5 * (1 - e)), false);
+    const ctx = this.ctx, L = this.L, s = L.s;
+    const x = t.x, y = t.y, half = this._tHalf, lock = clamp(t.lock || 0, 0, 1), locked = !!t.locked;
+    const pulse = locked ? 1 + 0.07 * Math.sin(this.time * 12) : 1;
+    if (t.inSeekerCone && !locked) {                     // seeker circle shrinks onto the box as lock builds
+      const r = lerp(Math.max(90 * s, half * 2.5), half * 1.45, lock);
+      ctx.beginPath(); ctx.arc(x, y, r, 0, TAU); this._line(COL.greenSoft, L.lwThin);
+      if (lock > 0) { ctx.beginPath(); ctx.arc(x, y, r, -Math.PI / 2, -Math.PI / 2 + lock * TAU); this._line(COL.green, L.lw); }
     }
-    if (!(t.r >= PIP_R)) this._pipPath(x, y);
-    this._mkStroke(COL.red, L.mkSel);
-    ctx.globalAlpha = this.alpha * (locked ? 0.2 + 0.8 * pulse : 0.9);
-    ctx.lineWidth = L.mkCore; ctx.strokeStyle = COL.core; ctx.stroke();
-    ctx.globalAlpha = this.alpha;
-    ctx.lineCap = 'butt'; ctx.lineJoin = 'round';
-    if (t.tag) { ctx.font = L.fTag; this._text('TGT', x, y - ey - 3 * s, COL.amber, 'center', 'bottom'); }
-    if (locked) {
-      ctx.font = L.fPill; ctx.globalAlpha = this.alpha * (0.8 + 0.2 * pulse);
-      this._text('LOCK', x, y + ey + 3 * s, COL.red, 'center', 'top');
-      ctx.globalAlpha = this.alpha;
-    }
-    this._label(t, this._tAlignR ? this._tLx + this._tLw : this._tLx, this._tLy, this._tAlignR ? 1 : 0);
+    const hb = half * pulse;
+    ctx.beginPath(); ctx.rect(x - hb, y - hb, 2 * hb, 2 * hb);
+    if (locked) this._line(COL.green, L.lw);
+    else { ctx.setLineDash(L.dashBox); this._line(COL.green, L.lwThin); ctx.setLineDash(NO_DASH); }
+    if (locked) { ctx.font = L.fLock; this._text('LOCK', x, y - half - 7 * s, COL.white, 'center', 'bottom'); }
+    // info block under the box, or over it while under it would cover the gun cross (kept on screen horizontally)
+    const tx = this._tX;
+    let ty = this._tY;
+    ctx.font = L.fSmall;
+    if (t.name) { this._text(t.name, tx, ty, COL.pale, 'center', 'top'); ty += 13 * L.ts; }
+    const hp = clamp(t.health == null ? 1 : t.health, 0, 1), hh = 3 * s;
+    ctx.fillStyle = COL.seg; ctx.fillRect(tx - half, ty, 2 * half, hh);
+    ctx.fillStyle = hp > 0.5 ? COL.green : hp > 0.25 ? COL.amber : COL.red; ctx.fillRect(tx - half, ty, 2 * half * hp, hh);
+    ty += hh + 4 * s;
+    const cl = t.closure || 0;
+    this._text(this._distStr, tx - 4 * s, ty, COL.green, 'right', 'top');
+    this._text(this._clStr, tx + 4 * s, ty, cl >= 0 ? COL.green : COL.amber, 'left', 'top');
     const ld = t.lead;                                   // gun lead: put the gun cross on this ring to hit
     if (ld && isFinite(ld.x) && isFinite(ld.y)) {
-      const hot = !!t.leadHot, c = hot ? COL.red : COL.white, r = 10 * s, tk = 5 * s, e0 = Math.max(ex, ey);
-      // tether from the marker edge to the ring so it's obvious which target it leads
+      const hot = !!t.leadHot, c = hot ? COL.red : COL.white, r = 10 * s, tk = 5 * s;
+      // tether from the target box edge to the ring so it's obvious which target it leads
       const dx = ld.x - x, dy = ld.y - y, dl = Math.hypot(dx, dy);
-      if (dl > e0 * 1.3 + r) {
-        const ux = dx / dl, uy = dy / dl, e = e0 * 1.1;
+      if (dl > half * 1.6 + r) {
+        const ux = dx / dl, uy = dy / dl, e = half * 1.25;
         ctx.setLineDash(L.dashBox); ctx.beginPath(); ctx.moveTo(x + ux * e, y + uy * e); ctx.lineTo(ld.x - ux * r, ld.y - uy * r);
         this._stroke(hot ? COL.red : 'rgba(255,255,255,0.55)', 1); ctx.setLineDash(NO_DASH);
       }
@@ -1081,39 +936,46 @@ export class HUD {
     }
   }
 
-  /**
-   * Off-screen target: a notched arrowhead on an ellipse just inside the screen edge, pointing at it (two, in amber, when
-   * it is behind), and inward of it the same label as on screen, with REAR / LOCK / TGT cues above the name.
-   */
+  /** Off-screen target: arrow on an ellipse near the screen edge; "behind" uses a double chevron + REAR. */
   _drawOffscreenPointer(t) {
     const ctx = this.ctx, L = this.L, s = L.s, cx = L.cx, cy = L.cy;
     let dx = t.x - cx, dy = t.y - cy;
     if (!isFinite(dx) || !isFinite(dy) || (dx === 0 && dy === 0)) { dx = 0; dy = 1; }
     const phi = Math.atan2(dy, dx), c = Math.cos(phi), sn = Math.sin(phi);
-    const a = Math.max(40 * s, L.w / 2 - 56 * s), b = Math.max(40 * s, L.h / 2 - 84 * s);
+    const a = Math.max(40 * s, L.w / 2 - 64 * s), b = Math.max(40 * s, L.h / 2 - 90 * s);
     const rr = 1 / Math.sqrt((c * c) / (a * a) + (sn * sn) / (b * b));
     const px = cx + rr * c, py = cy + rr * sn;
-    const locked = !!t.locked, behind = !!t.behind, col = behind ? COL.amber : COL.red;
-    const len = 19 * s, half = 10 * s, notch = 6 * s, step = len - notch + 4 * s, nA = behind ? 2 : 1;
-    ctx.lineJoin = 'miter'; ctx.beginPath();
-    for (let k = 0; k < nA; k++) {
-      const tx = px - k * step * c, ty = py - k * step * sn, bx = tx - len * c, by = ty - len * sn;
-      ctx.moveTo(tx, ty); ctx.lineTo(bx - half * sn, by + half * c);
-      ctx.lineTo(tx - (len - notch) * c, ty - (len - notch) * sn); ctx.lineTo(bx + half * sn, by - half * c); ctx.closePath();
+    const locked = !!t.locked;
+    const col = t.behind ? COL.amber : locked ? COL.white : COL.green;
+    if (!t.behind) {
+      const len = 21 * s, half = 10 * s, bx = px - len * c, by = py - len * sn;
+      ctx.beginPath(); ctx.moveTo(px, py); ctx.lineTo(bx - half * sn, by + half * c); ctx.lineTo(bx + half * sn, by - half * c);
+      ctx.closePath(); this._fillOutlined(col);
+    } else {
+      ctx.lineCap = 'round'; ctx.beginPath();
+      for (let k = 0; k < 2; k++) {
+        const tx = px - k * 10 * s * c, ty = py - k * 10 * s * sn, bx = tx - 11 * s * c, by = ty - 11 * s * sn;
+        ctx.moveTo(bx - 11 * s * sn, by + 11 * s * c); ctx.lineTo(tx, ty); ctx.lineTo(bx + 11 * s * sn, by - 11 * s * c);
+      }
+      this._stroke(col, L.lw * 1.25); ctx.lineCap = 'butt';
     }
-    if (locked) ctx.globalAlpha = this.alpha * (0.7 + 0.3 * (0.5 + 0.5 * Math.sin(this.time * TAU * LOCK_HZ)));
-    this._mkFill(col); ctx.lineJoin = 'round'; ctx.globalAlpha = this.alpha;
-    // label inward of the arrow, on the side facing the screen centre
-    const back = len + (nA - 1) * step + 8 * s, ax = px - back * c, ay = py - back * sn;
-    const align = c > 0.38 ? 1 : c < -0.38 ? 0 : 0.5, ta = align === 1 ? 'right' : align === 0 ? 'left' : 'center';
-    const cue = L.tLh2, hgt = ((behind ? 1 : 0) + (locked ? 1 : 0) + (t.tag ? 1 : 0)) * cue + L.tLabelH, m = 4 * s, w = this._tLw;
-    let top = clamp(sn > 0.38 ? ay - hgt : sn < -0.38 ? ay : ay - hgt * 0.5, m, L.h - m - hgt);
-    const x0 = clamp(ax - align * w, m, L.w - m - w), tx = x0 + align * w;
-    ctx.font = L.fPill;
-    if (behind) { this._text('REAR', tx, top + cue * 0.5, COL.amber, ta, 'middle'); top += cue; }
-    if (locked) { this._text('LOCK', tx, top + cue * 0.5, COL.red, ta, 'middle'); top += cue; }
-    if (t.tag) { this._text('TGT', tx, top + cue * 0.5, COL.amber, ta, 'middle'); top += cue; }
-    this._label(t, tx, top, align);
+    // what the arrow points at: (REAR) · LOCK · name · distance · health
+    const off = 54 * s, lx = px - off * c, ly = py - off * sn, lh = 12 * L.ts;
+    const lines = (t.behind ? 1 : 0) + (locked ? 1 : 0) + 2;
+    let yy = ly - (lines - 1) * lh * 0.5 - 3 * s;
+    ctx.font = L.fSmall;
+    if (t.behind) { this._text('REAR', lx, yy, COL.amber, 'center', 'middle'); yy += lh; }
+    if (locked) {
+      const d = 4 * s, tw = ctx.measureText('LOCK').width;
+      ctx.beginPath(); ctx.moveTo(lx - tw / 2 - 9 * s, yy - d); ctx.lineTo(lx - tw / 2 - 9 * s + d, yy); ctx.lineTo(lx - tw / 2 - 9 * s, yy + d); ctx.lineTo(lx - tw / 2 - 9 * s - d, yy); ctx.closePath();
+      this._fillOutlined(COL.white);
+      this._text('LOCK', lx, yy, COL.white, 'center', 'middle'); yy += lh;
+    }
+    this._text(t.name || 'TARGET', lx, yy, locked ? COL.white : COL.pale, 'center', 'middle'); yy += lh;
+    this._text(this._distStr, lx, yy, col, 'center', 'middle'); yy += 8 * s;
+    const hp = clamp(t.health == null ? 1 : t.health, 0, 1), bw = 34 * s, bh = 3 * s;
+    ctx.fillStyle = COL.seg; ctx.fillRect(lx - bw / 2, yy, bw, bh);
+    ctx.fillStyle = hp > 0.5 ? COL.green : hp > 0.25 ? COL.amber : COL.red; ctx.fillRect(lx - bw / 2, yy, bw * hp, bh);
   }
 
   // ---- warnings, messages, mode pills -------------------------------------------------------------------------

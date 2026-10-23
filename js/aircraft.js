@@ -25,7 +25,8 @@ const RAD_PER_DEG = Math.PI / 180;
 export const FLIGHT = {
   ROLL_RATE: 170 * RAD_PER_DEG,  // rad/s
   PITCH_RATE: 90 * RAD_PER_DEG,  // rad/s pulling (nose up)
-  PUSH_FACTOR: 0.6,      // pushing (nose down) is weaker than pulling
+  PUSH_FACTOR: 0.5,      // pushing (nose down) tops out at half the pull rate (fighters pull ~+9 g, push ~-3 g; PW pushes
+                         // noticeably slower than it pulls). Scales only stick-forward, so it stays continuous at center
   YAW_RATE: 14 * RAD_PER_DEG,    // rad/s
   RESPONSE: 0.15,        // s, time constant to reach the commanded rate (PW "Response")
   BRAKE_TURN: 0.25,      // extra pitch authority at full airbrake (tighter turns while braking)
@@ -43,7 +44,7 @@ export const FLIGHT = {
   AB_THRESHOLD: 0.5,     // thrust axis above which the afterburner lights
   CONTRAIL_G: 4.5,       // display-g above which wingtip vortices condense
   CONTRAIL_ALT_MIN: 2000, CONTRAIL_ALT_MAX: 3500,   // "humidity band" altitudes (m)
-  MAX_MISSILES: 120,
+  MAX_MISSILES: 240,   // four rails: doubled load, as heavy STDM loadouts carry
   AMMO: 2400,
   MAX_DT: 0.05,          // s, per-step clamp (numerical safety)
 };

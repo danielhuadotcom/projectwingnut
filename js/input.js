@@ -3,7 +3,9 @@
 //
 // Contract (see SPEC.md "js/input.js"): axes pitch/roll/yaw/throttleDelta in -1..1, held booleans, one-frame edge
 // flags that are true for exactly one update() call, and status fields for the HUD. All edge flags are computed
-// INSIDE update() from state accumulated by the event handlers, never set directly by the handlers.
+// INSIDE update() from state accumulated by the event handlers, never set directly by the handlers. The one exception
+// is the fullscreen key (U): browsers only grant fullscreen inside the key handler itself, so it calls
+// onFullscreenKey(event) synchronously instead of raising an edge.
 
 const DEADZONE = 0.12;          // per-axis deadzone before rescaling
 const ATTACK_TIME = 0.15;       // s for a keyboard axis to reach full deflection
@@ -38,10 +40,11 @@ const KEYMAP = {
   KeyX: 'flares',
   KeyC: 'freeLook',
   Backquote: 'overlay', F9: 'overlay',
+  KeyU: 'fullscreen',                          // onFullscreenKey, called inside the keydown handler (see the header)
 };
 // Fallback for browsers / layouts where `code` is missing: KeyboardEvent.key -> code.
 const KEY_TO_CODE = {
-  w: 'KeyW', s: 'KeyS', a: 'KeyA', d: 'KeyD', q: 'KeyQ', e: 'KeyE', f: 'KeyF', v: 'KeyV', p: 'KeyP', i: 'KeyI', r: 'KeyR', g: 'KeyG', '`': 'Backquote', x: 'KeyX', c: 'KeyC',
+  w: 'KeyW', s: 'KeyS', a: 'KeyA', d: 'KeyD', q: 'KeyQ', e: 'KeyE', f: 'KeyF', v: 'KeyV', p: 'KeyP', i: 'KeyI', r: 'KeyR', g: 'KeyG', '`': 'Backquote', x: 'KeyX', c: 'KeyC', u: 'KeyU',
   '=': 'Equal', '+': 'NumpadAdd', '-': 'Minus', ' ': 'Space', Shift: 'ShiftLeft', h: 'KeyH',
   Enter: 'Enter', Tab: 'Tab', Escape: 'Escape', ArrowUp: 'ArrowUp', ArrowDown: 'ArrowDown', ArrowLeft: 'ArrowLeft', ArrowRight: 'ArrowRight',
 };
@@ -130,6 +133,7 @@ export class Input {
     this.touch = null;
     // Menu edges: D-pad right / G = next graphics preset, D-pad left = previous, D-pad up / ` / F9 = perf overlay
     this.graphicsNextPressed = false; this.graphicsPrevPressed = false; this.overlayToggled = false;
+    this.onFullscreenKey = null;        // fn(KeyboardEvent): U went down (no repeat, no Ctrl/Alt/Meta), inside the keydown handler
     this._pollGamepads = this.gamepadSupported;
     this._gpConnectHint = false;        // a gamepadconnected event arrived; poll even if we had given up
     this._disposed = false;
@@ -218,10 +222,13 @@ export class Input {
       else if (code === 'Enter' || code === 'NumpadEnter' || code === 'Space') M.a++; else if (code === 'Escape' || code === 'Backspace') M.b++;
     }
     if (!action) return;
+    // fullscreen: plain U (Shift allowed: it is held for boost); Ctrl / Alt / Meta combos are left to the browser and OS
+    if (action === 'fullscreen' && (e.ctrlKey || e.altKey || e.metaKey)) return;
     // Swallow browser defaults for the keys we use (Tab focus change, Space/arrows scrolling, Ctrl/Shift combos
     // like Ctrl+S / Ctrl+P / Ctrl+F while flying). Browsers refuse to block a few (Ctrl+W, Ctrl+T) — nothing to do.
     if (e.preventDefault) e.preventDefault();
     if (e.repeat) return;
+    if (action === 'fullscreen') { if (typeof this.onFullscreenKey === 'function') this.onFullscreenKey(e); return; }
     if (!this._keys.has(code)) {
       this._keys.add(code);
       if (this._press[action] !== undefined) this._press[action]++;

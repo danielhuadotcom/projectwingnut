@@ -20,9 +20,16 @@
 // correctly without per-layout tables. On a settings row left/right changes the value (sliders step 5 %, toggles
 // flip, choices cycle); the change applies live through onSetting(key, value, settings) and is saved.
 // The Menu hides itself before calling onStart / onResume / onRestart / onNext, and shows the title before onQuit.
+// FULLSCREEN (js/fullscreen.js): Settings › Graphics has a Fullscreen row showing the browser's state, kept in sync by the
+// fullscreenchange event (so leaving with Esc updates it too). It is not a saved setting, and it is hidden where the
+// browser has no fullscreen (iPhone Safari, an iframe without allow="fullscreen"). Browsers grant fullscreen only inside a
+// click, key or touch handler, so clicks and Enter / Space / ←→ on the row ask from the DOM event itself; a gamepad press
+// is no user activation, and when the browser refuses it the row shows a short note. The game's shortcut key calls
+// toggleFullscreen() from its keydown handler.
 
 import { countUnits } from './missions.js';
 import { loadBest } from './infinity.js';
+import { fullscreenSupported, isFullscreen, setFullscreen, onFullscreenChange } from './fullscreen.js';
 
 // =================================================================================================================
 // Settings
@@ -47,6 +54,9 @@ export const SETTING_DEFS = [
     desc: 'Auto starts from your GPU and steps the level down or up to hold the frame rate.' },
   { key: 'perfOverlay', tab: 'graphics', type: 'toggle', label: 'Performance overlay',
     desc: 'Frame rate, GPU time and render resolution in the top corner.' },
+  // Not saved: the row shows and changes the browser's fullscreen state (FULLSCREEN in the header)
+  { key: 'fullscreen', tab: 'graphics', type: 'toggle', label: 'Fullscreen',
+    desc: 'Fill the whole screen, without the browser bars. Key\u00a0U switches it; Esc also exits.' },
   { key: 'invertPitch', tab: 'controls', type: 'toggle', label: 'Invert pitch',
     desc: 'Push forward to climb, on the stick and the pitch keys.' },
   { key: 'mouseSens', tab: 'controls', type: 'slider', label: 'Mouse sensitivity', min: 0.25, max: 3, step: 0.05, dragStep: 0.05, format: times,
@@ -79,6 +89,8 @@ export const SETTING_DEFS = [
     } },
 ];
 const DEF = Object.fromEntries(SETTING_DEFS.map((d) => [d.key, d]));
+const FULLSCREEN = 'fullscreen';
+const ROW_KEYS = new Set(['Enter', 'NumpadEnter', 'Space', ' ', 'ArrowLeft', 'ArrowRight']);   // js/input.js confirm / ←→ keys
 
 /** Valid value for `key`, or undefined. Numbers are clamped and rounded to 0.01. */
 function sanitize(key, v) {
@@ -219,6 +231,7 @@ function kbCard(simple) {
       [[k('C')], 'Free look <em>(hold)</em>'],
       [[k('V')], 'Look back'],
       [[k('P'), k('Esc')], 'Pause'],
+      ...(fullscreenSupported() ? [[[k('U')], 'Fullscreen']] : []),
     ]) + '<p class="m-cfoot">Key preset: Settings › Controls › Mouse keys.</p>';
 }
 
@@ -314,6 +327,7 @@ export class Menu {
 
   /** Feed the frame's input edges (js/input.js). No-op while closed. */
   update(dt, input) {
+    this._fsSkip = this._fsKeyDone; this._fsKeyDone = false;   // _fsKey already acted on this frame's key edge
     if (!this.open || !input) return;
     if (performance.now() < (this._lockUntil || 0)) return;
     const edge = input.menuBack ? 'back' : input.menuConfirm ? 'ok' : input.menuUp ? 'up' : input.menuDown ? 'down'
@@ -356,8 +370,13 @@ export class Menu {
    *  ends while the title is already showing). */
   refreshBest() { this._refreshInfinity(); }
 
+  /** The fullscreen shortcut: call it inside the key handler (browsers refuse fullscreen elsewhere). Does nothing where
+   *  fullscreen is unavailable. Resolves true when the page ends up in the new state, false otherwise; never rejects. */
+  toggleFullscreen() { return this._fullscreen(!isFullscreen(), true); }
+
   dispose() {
     this._flushSave();
+    clearTimeout(this._fsNoteT);
     const el = this.el, h = this._h;
     if (h) {
       el.removeEventListener('pointerdown', h.down);
@@ -370,6 +389,7 @@ export class Menu {
       window.removeEventListener('keydown', h.key);
       window.removeEventListener('keyup', h.key);
       window.removeEventListener('pagehide', h.flush);
+      h.fsOff();
     }
     this._h = null;
     if (el && el.parentNode) el.parentNode.removeChild(el);
@@ -740,7 +760,8 @@ export class Menu {
   _syncRow(key) {
     const d = DEF[key], row = this.el.querySelector(`.m-row[data-key="${key}"]`);
     if (!d || !row) return;
-    const v = this.settings[key];
+    const fs = key === FULLSCREEN, v = fs ? isFullscreen() : this.settings[key];
+    if (fs) row.hidden = !fullscreenSupported();
     if (d.type === 'slider') {
       const txt = d.format ? d.format(v) : String(v);
       row.style.setProperty('--p', `${((v - d.min) / (d.max - d.min)) * 100}%`);
@@ -755,13 +776,16 @@ export class Menu {
       }
       if (d.type === 'toggle') row.setAttribute('aria-checked', String(!!v));
     }
-    const desc = (d.descs && d.descs[v]) || d.desc || '', de = row.querySelector('.m-desc');
+    const note = fs && this._fsNoteText;              // a refused fullscreen request, in place of the help line
+    const desc = note || (d.descs && d.descs[v]) || d.desc || '', de = row.querySelector('.m-desc');
     if (de.textContent !== desc) de.textContent = desc;
     de.hidden = !desc;
+    if (fs) de.classList.toggle('m-desc--warn', !!note);
   }
 
   /** Validate, store, refresh the row, queue a save, notify. Returns true when the value changed. */
   _set(key, value, notify = true) {
+    if (key === FULLSCREEN) return false;               // follows the browser (_fullscreen), never stored
     const v = sanitize(key, value);
     if (v === undefined || this.settings[key] === v) return false;
     this.settings[key] = v;
@@ -777,6 +801,7 @@ export class Menu {
   _change(key, v) { if (this._set(key, v)) this._sound('adjust'); }
 
   _step(key, dir) {
+    if (key === FULLSCREEN) { this._fsFromEdge(); return; }
     const d = DEF[key], v = this.settings[key];
     if (!d) return;
     if (d.type === 'toggle') this._change(key, !v);
@@ -796,6 +821,43 @@ export class Menu {
     clearTimeout(this._saveT); this._saveT = 0;
     if (this._dirty) { this._dirty = false; saveSettings(this.settings); }
   }
+
+  // ---- Fullscreen row (js/fullscreen.js) ------------------------------------------------------------------------
+  /** Ask the browser to enter or leave fullscreen; the row follows the fullscreenchange event, not the request.
+   *  Entering needs a user activation: the pointer and key paths call this inside their DOM event (gesture), while
+   *  gamepad edges (no gesture) are normally refused. A refusal shows a note on the row. Never rejects. */
+  _fullscreen(on, gesture) {
+    if (!fullscreenSupported()) return Promise.resolve(false);
+    if (on === isFullscreen()) return Promise.resolve(true);
+    const req = setFullscreen(on);                     // first: nothing may run between the DOM event and the request
+    this._sound('adjust');
+    return req.then((ok) => {
+      if (!ok && on) this._fsNote(gesture ? 'The browser refused fullscreen.' : 'Fullscreen needs a click or key press.');
+      return ok;
+    });
+  }
+  /** Confirm / ←→ edge on the row from update(): a key press was already handled by _fsKey; a gamepad press asks now. */
+  _fsFromEdge() { if (!this._fsSkip) this._fullscreen(!isFullscreen(), false); this._fsSkip = false; }
+
+  /** Enter / Space / ←→ on the Fullscreen row ask right here, inside the keydown handler, because update() runs in the
+   *  next animation frame, after the event. update() then skips that frame's edge for the key (_fsSkip). */
+  _fsKey(e) {
+    const f = this._focusEl, t = e.target;
+    if (!this.open || e.repeat || !f || f.dataset.key !== FULLSCREEN || !this._cur || !this._cur.contains(f)) return;
+    if (performance.now() < (this._lockUntil || 0) || (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName)))) return;
+    if (!ROW_KEYS.has(ROW_KEYS.has(e.code) ? e.code : e.key)) return;
+    this._fsKeyDone = true;
+    this._fullscreen(!isFullscreen(), true);
+  }
+
+  /** Show `text` in place of the Fullscreen row's help line for a few seconds. */
+  _fsNote(text) {
+    this._fsNoteText = text;
+    clearTimeout(this._fsNoteT);
+    this._fsNoteT = setTimeout(() => { this._fsNoteText = ''; this._syncRow(FULLSCREEN); }, 4000);
+    this._syncRow(FULLSCREEN);
+  }
+  _fsChanged() { this._fsNoteText = ''; clearTimeout(this._fsNoteT); this._syncRow(FULLSCREEN); }
 
   // ---------------------------------------------------------------------------------------------------------------
   // Navigation
@@ -899,6 +961,7 @@ export class Menu {
     if (!el || !this._cur || !this._cur.contains(el)) return;
     const d = el.dataset;
     if (d.key) {                                           // settings row: confirm flips a toggle / cycles a choice
+      if (d.key === FULLSCREEN) { if (pointer) this._fullscreen(!isFullscreen(), true); else this._fsFromEdge(); return; }
       const def = DEF[d.key];
       if (def.type === 'toggle') this._change(d.key, !this.settings[d.key]);
       else if (def.type === 'choice' && !pointer) this._step(d.key, 1);
@@ -992,11 +1055,13 @@ export class Menu {
     window.addEventListener('keydown', this._h.key);
     window.addEventListener('keyup', this._h.key);
     window.addEventListener('pagehide', this._h.flush);
+    this._h.fsOff = onFullscreenChange(() => this._fsChanged());
   }
 
   /** Enter / Space on a focused menu element must not also trigger the browser's native button activation:
-   *  activation goes through update() (input.menuConfirm) only, so it happens exactly once. */
+   *  activation goes through update() (input.menuConfirm) only, so it happens exactly once (Fullscreen row: _fsKey). */
   _onKey(e) {
+    if (e.type === 'keydown') this._fsKey(e);
     if (!this.open || !(e.target instanceof Node) || !this.el.contains(e.target)) return;
     if (e.key === 'Enter' || e.key === ' ' || e.key === 'Spacebar') e.preventDefault();
   }
@@ -1052,7 +1117,8 @@ export class Menu {
     if (seg) {
       const row = seg.closest('.m-row'), d = DEF[row.dataset.key];
       this._focus(row, { pointer: true, silent: true });
-      this._change(row.dataset.key, d.type === 'toggle' ? seg.dataset.val === 'true' : seg.dataset.val);
+      if (d.key === FULLSCREEN) this._fullscreen(seg.dataset.val === 'true', true);
+      else this._change(row.dataset.key, d.type === 'toggle' ? seg.dataset.val === 'true' : seg.dataset.val);
       return;
     }
     if (t.closest('.m-slider')) return;                    // handled by the drag
