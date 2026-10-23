@@ -3,7 +3,8 @@ import { FLIGHT } from './aircraft.js';
 
 // Pilot brains.
 // EnemyBrain: bank-to-turn steering + a small state machine (pursue / evade / extend / avoid terrain). It chases any
-//   target aircraft: the player, or one of the player's squadmates.
+//   target aircraft: the player, or one of the player's squadmates. While its flight holds (js/flights.js) it flies
+//   the holding pattern instead: orbit, escort or climb-out as the flight lead, formation on the lead otherwise.
 // WingmanBrain (the player's immortal squadmates): loose formation on a lead, engages the bandit the game assigns with
 //   EnemyBrain's pursuit, defeats incoming missiles with flares, keeps 1-6 km from the lead while fighting.
 const _local = new THREE.Vector3(), _toP = new THREE.Vector3(), _fwd = new THREE.Vector3(), _pFwd = new THREE.Vector3();
@@ -11,6 +12,7 @@ const _q = new THREE.Quaternion(), _pt = new THREE.Vector3(), _up = new THREE.Ve
 const _rel = new THREE.Vector3(), _vr = new THREE.Vector3(), _hf = new THREE.Vector3(), _slot = new THREE.Vector3(), _away = new THREE.Vector3();
 const WORLD_UP = new THREE.Vector3(0, 1, 0);
 const controls = { pitch: 0, roll: 0, yaw: 0, throttleDelta: 0 };
+const LAUNCH_GAP = 1.5;   // s: the AI never launches at one target within this of its previous launch at it
 
 export class EnemyBrain {
   constructor(aircraft, { skill = 0.5, worldHalf = 20000 } = {}) {
@@ -40,6 +42,8 @@ export class EnemyBrain {
     this.role = null;               // bandit director: 'player' | 'squad' (hunts the player / a squadmate), null = unassigned
     this.roleSince = 0;             // game time of the last role change
     this.threat = null;             // aircraft whose guns-on aspect makes us break, checked every frame; null = the target
+    this.flight = null;             // bandit flight (js/flights.js); while it holds (flight.loiter) this brain flies _hold
+    this.slotOff = new THREE.Vector3();   // formation slot on the flight lead: right, up, back (m) in its heading frame
     this.terrainMargin = 1;         // scales the terrain-avoidance floors (squadmates fly more cautiously)
     this.burstGap = 0;              // s added between gun bursts
     this.shotAngle = 0.15; this.shotMin = 700; this.shotMax = 2500;   // missile envelope: rad off the nose, range (m)
@@ -86,13 +90,14 @@ export class EnemyBrain {
     return _pFwd.dot(_tmp) > 0.9 && _rel.dot(_fwd) > 0;
   }
 
-  /** Missile rationing (O(1)): a target with `missileCap` (an immortal squadmate) has at most that many enemy missiles
-   *  after it, counting ones its flares already decoyed (`_inboundCount`, kept by its own missile scan every frame), and
-   *  takes one launch per `missileGap` s. Others are always fair game. */
+  /** Missile rationing (O(1)): no launch at a target within max(its `missileGap`, LAUNCH_GAP) s of the last enemy launch
+   *  at it (`_missileAt`), and a target with `missileCap` (the player per difficulty, squadmates 1) has at most that many
+   *  enemy missiles after it (`_inboundCount`: the game counts the player's every frame; a squadmate's own scan counts
+   *  its decoyed ones too). A refused shot keeps the missile and the cooldown for the next chance. */
   canLaunchAt(T, weapons) {
-    if (!T || T.missileCap === undefined) return true;
-    if (T._missileAt !== undefined && weapons.time - T._missileAt < (T.missileGap || 0)) return false;
-    return (T._inboundCount || 0) < T.missileCap;
+    if (!T) return true;
+    if (T._missileAt !== undefined && weapons.time - T._missileAt < Math.max(T.missileGap || 0, LAUNCH_GAP)) return false;
+    return T.missileCap === undefined || (T._inboundCount || 0) < T.missileCap;
   }
 
   /** One pass over the live missiles: those guiding on us (_inbound, the soonest time to impact _minTti and its missile
@@ -137,9 +142,80 @@ export class EnemyBrain {
     return this._agl < (200 + this._sink * 2.5) * m || aheadAgl < 180 * m;
   }
 
+  /** Holding pattern of an uncommitted flight (js/flights.js): the lead orbits the station at cruise speed, keeps its
+   *  escort station beside the aircraft it escorts, or climbs out after a scramble; the others fly their formation slots
+   *  on the lead. No target, no weapons, missile cooldown paused; terrain, ceiling and map-edge avoidance come first. */
+  _hold(dt, world) {
+    const ac = this.ac, F = this.flight, L = F.lead;
+    this.stateTime += dt;
+    ac.getForward(_fwd);
+    let C = null;
+    if (F.mode === 'escort' && F.charges !== null) for (let i = 0; i < F.charges.length; i++) if (F.charges[i].alive) { C = F.charges[i]; break; }
+    if (this._senseTerrain(world)) {
+      _pt.copy(ac.position).addScaledVector(_fwd, 300).addScaledVector(WORLD_UP, 900);
+      this.steerToward(_pt, 1); this.throttleTarget = 0.2;
+    } else if (ac.position.y > 7500) {
+      _pt.copy(ac.position).addScaledVector(_fwd, 800).addScaledVector(WORLD_UP, -600);
+      this.steerToward(_pt, 0.7); this.throttleTarget = 0;
+    } else if (Math.abs(ac.position.x) > this.worldHalf * 0.9 || Math.abs(ac.position.z) > this.worldHalf * 0.9) {
+      _pt.set(0, Math.max(800, ac.position.y), 0);
+      this.steerToward(_pt, 0.8); this.throttleTarget = 0.2;
+    } else if (L !== ac && L !== null && L.alive) {
+      this._slotOn(L, this.slotOff);
+      _slot.y = Math.max(_slot.y, ac.position.y - this._agl + 200);   // floor from this frame's terrain sense
+      this._flySlot(_slot, L.velocity);
+    } else if (F.mode === 'climb') {
+      _pt.copy(ac.position).addScaledVector(_fwd, 1500); _pt.y += 420;   // ~15 deg climb-out on the takeoff heading
+      this.steerToward(_pt, 0.6); this.throttleTarget = 1;
+    } else if (C !== null) {
+      this._slotOn(C, F.offset);
+      _slot.y = Math.max(_slot.y, ac.position.y - this._agl + 300);
+      this._flySlot(_slot, C.velocity);
+    } else {
+      // orbit the station: aim along the tangent, pulled onto the circle, at the holding altitude
+      const S = F.station, look = Math.max(600, F.radius);
+      _tmp.set(ac.position.x - S.x, 0, ac.position.z - S.z);
+      const dh = _tmp.length() || 1; _tmp.multiplyScalar(1 / dh);
+      const pull = THREE.MathUtils.clamp((F.radius - dh) / look, -3, 1), d = F.dir;
+      _pt.set(ac.position.x + (_tmp.x * pull - _tmp.z * d) * look, S.y, ac.position.z + (_tmp.z * pull + _tmp.x * d) * look);
+      this.steerToward(_pt, 0.5); this.throttleTarget = 0;
+    }
+    controls.throttleDelta = THREE.MathUtils.clamp(this.throttleTarget, -1, 1);
+    ac.setControls(controls);
+  }
+
+  /** World position (into _slot) of the offset o (right, up, back in m) in aircraft L's heading frame: from its
+   *  horizontal velocity, so a banking or rolling L doesn't swing the slot about. */
+  _slotOn(L, o) {
+    _hf.set(L.velocity.x, 0, L.velocity.z);
+    if (_hf.lengthSq() < 1) { L.getForward(_hf); _hf.y = 0; }
+    if (_hf.lengthSq() < 1e-6) _hf.set(0, 0, -1);
+    _hf.normalize();
+    return _slot.set(L.position.x - _hf.z * o.x - _hf.x * o.z, L.position.y + o.y, L.position.z + _hf.x * o.x - _hf.z * o.z);
+  }
+
+  /** Fly toward a moving slot by velocity matching: wanted velocity = the lead's + a pull toward the slot (firm near it,
+   *  a steady ~150 m/s closure from afar); the nose follows it and the thrust axis is fed the wanted speed. */
+  _flySlot(slot, leadVel) {
+    const ac = this.ac;
+    _rel.subVectors(slot, ac.position);
+    const d = _rel.length();
+    const k = d < 300 ? 0.5 : 150 / d;             // 1/s: firm near the slot, a steady ~150 m/s closure from afar
+    _vr.copy(leadVel).addScaledVector(_rel, k);
+    const v = _vr.length(), vWant = THREE.MathUtils.clamp(v, FLIGHT.BRAKE_SPEED + 20, FLIGHT.AB_SPEED);
+    _pt.copy(ac.position).addScaledVector(_vr, 1000 / Math.max(v, 1));
+    this.steerToward(_pt, 1);
+    // thrust axis: the setting whose target speed is vWant (feed-forward, on the type's speed scale), plus a correction
+    // on the speed error
+    const C = FLIGHT.CRUISE_SPEED, vs = vWant / (ac.speedScale || 1);
+    const ff = vs >= C ? (vs - C) / (FLIGHT.AB_SPEED - C) : (vs - C) / (C - FLIGHT.BRAKE_SPEED);
+    this.throttleTarget = THREE.MathUtils.clamp(ff + (vWant - ac.speed) / 30, -1, 1);
+  }
+
   update(dt, target, world, weapons, time) {
     const ac = this.ac;
     if (!ac.alive) return;
+    if (this.flight !== null && this.flight.loiter) { this._hold(dt, world); return; }
     this.stateTime += dt;
     this.missileCooldown -= dt;
     this.noiseTimer -= dt;
@@ -259,7 +335,8 @@ export class EnemyBrain {
         if (angleOff < this.shotAngle && dist > this.shotMin && dist < this.shotMax && this.missileCooldown <= 0 && ac.missiles > 0 && this.canLaunchAt(target, weapons)) {
           if (weapons.fireMissile(ac, target)) {
             this.missileCooldown = this.missileReload || (14 + (1 - this.skill) * 10);
-            if (target.missileCap !== undefined) { target._missileAt = weapons.time; target._inboundCount = (target._inboundCount || 0) + 1; }
+            target._missileAt = weapons.time;
+            if (target.missileCap !== undefined) target._inboundCount = (target._inboundCount || 0) + 1;
           }
         }
       }
@@ -427,15 +504,6 @@ export class WingmanBrain extends EnemyBrain {
       return;
     }
     this.slotPosition(_slot, ac.position.y - this._agl);   // slot floor from this frame's terrain sense (no extra query)
-    _rel.subVectors(_slot, ac.position);
-    const d = _rel.length();
-    const k = d < 300 ? 0.5 : 150 / d;             // 1/s: firm near the slot, a steady ~150 m/s closure from afar
-    _vr.copy(L.velocity).addScaledVector(_rel, k);
-    const v = _vr.length(), vWant = THREE.MathUtils.clamp(v, FLIGHT.BRAKE_SPEED + 20, FLIGHT.AB_SPEED);
-    _pt.copy(ac.position).addScaledVector(_vr, 1000 / Math.max(v, 1));
-    this.steerToward(_pt, 1);
-    // thrust axis: the setting whose target speed is vWant (feed-forward), plus a correction on the speed error
-    const C = FLIGHT.CRUISE_SPEED, ff = vWant >= C ? (vWant - C) / (FLIGHT.AB_SPEED - C) : (vWant - C) / (C - FLIGHT.BRAKE_SPEED);
-    this.throttleTarget = THREE.MathUtils.clamp(ff + (vWant - ac.speed) / 30, -1, 1);
+    this._flySlot(_slot, L.velocity);
   }
 }

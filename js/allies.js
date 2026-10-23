@@ -38,12 +38,12 @@ const _seed = new Uint32Array([0x2545f491]), _rnd = new Float64Array(4);
 function fillRnd() { for (let k = 0; k < 4; k++) { _seed[0] = Math.imul(_seed[0], 1664525) + 1013904223; _rnd[k] = _seed[0] / 4294967296; } }
 const CLEAR2 = FLAK_PLAYER_CLEAR * FLAK_PLAYER_CLEAR, CAM2 = FLAK_CAM_RANGE * FLAK_CAM_RANGE;
 
-/** An allied ship: its hull line for the leak test and the point leakers home on. */
+/** An allied ship: its hull line for the leak test and the point leakers home on (drawn hull, GroundTarget.size). */
 class Ship {
   constructor(t, escort) {
     this.t = t; this.escort = escort;
-    this.fx = -Math.sin(t.heading); this.fz = -Math.cos(t.heading); this.hl = t.def.size[2] / 2;
-    this.aim = new THREE.Vector3(t.position.x, t.position.y + t.def.size[1] * 0.25, t.position.z);
+    this.fx = -Math.sin(t.heading); this.fz = -Math.cos(t.heading); this.hl = t.size[2] / 2;
+    this.aim = new THREE.Vector3(t.position.x, t.position.y + t.size[1] * 0.25, t.position.z);
   }
   /** Distance along the hull line (clamped to the hull) of the point nearest to p. */
   along(p) {
@@ -115,7 +115,7 @@ export class AlliedForces {
     cx /= n; cz /= n;
     let r = 0;
     for (let i = this._g0; i < U.length; i++) {
-      const t = U[i], s = t.def.size, d = Math.hypot(t.position.x - cx, t.position.z - cz) + 0.5 * Math.max(s[0], s[2]);
+      const t = U[i], s = t.size, d = Math.hypot(t.position.x - cx, t.position.z - cz) + 0.5 * Math.max(s[0], s[2]);
       if (d > r) r = d;
     }
     const Z = this.zones[this.nZones++]; Z.x = cx; Z.z = cz; Z.r = r;
@@ -232,7 +232,7 @@ export class AlliedForces {
     const W = this.weapons, esc = this._nearestEscort(ac.position);
     if (esc !== null) {
       const t = esc.t, s = esc.along(ac.position) * 0.8;
-      W.explode(_p.set(t.position.x + esc.fx * s, t.position.y + t.def.size[1] * 0.3, t.position.z + esc.fz * s), 2.6);
+      W.explode(_p.set(t.position.x + esc.fx * s, t.position.y + t.size[1] * 0.3, t.position.z + esc.fz * s), 2.6);
       W.delayEffect('death', t.position, 1, 1, 0, t.velocity);     // next frame: secondary blasts, debris, smoke column
       W.delayEffect('impact', _p.set(t.position.x, 0.3, t.position.z), 1.6, 2);   // the frame after: water thrown up
       this.ground.sink(t);
@@ -242,7 +242,7 @@ export class AlliedForces {
       for (let i = 0; i < L.length; i++) if (G[i] === esc) { const g = G[i] = this._goalFor(L[i].position); L[i].brain.transitGoal = g.aim; }
     } else {
       const f = this.ships[0], t = f.t, s = f.along(ac.position) * 0.8;
-      W.explode(_p.set(t.position.x + f.fx * s, t.position.y + t.def.size[1] * 0.3, t.position.z + f.fz * s), 1.4);
+      W.explode(_p.set(t.position.x + f.fx * s, t.position.y + t.size[1] * 0.3, t.position.z + f.fz * s), 1.4);
       this.stats.flagHits++;
     }
     this.stats.leaks++;

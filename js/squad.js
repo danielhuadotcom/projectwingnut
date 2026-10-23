@@ -1,6 +1,7 @@
 import * as THREE from 'https://cdnjs.cloudflare.com/ajax/libs/three.js/0.170.0/three.module.min.js';
 import { Aircraft } from './aircraft.js';
 import { WingmanBrain } from './ai.js';
+import { isHolding } from './flights.js';
 
 // The player's squadmates: two immortal AI wingmen of the Loose Screws, COTTER (number 2) and RIVET (number 3). They fly
 // loose formation, peel off to engage bandits hunting the player (drawing their fire), defeat the one missile at a time
@@ -8,8 +9,10 @@ import { WingmanBrain } from './ai.js';
 // which hunt a squadmate is decided by the game's bandit director, js/main.js directBandits.)
 //
 // Squadmate targets: each squadmate picks a bandit on its own 3 s timer, or on its next tick after its target dies (at
-// most once per frame): within 6 km of the player and never a boss, bandits hunting the player first, nearest to the
-// player first; number 2 takes the nearest, number 3 the second nearest. Nothing else changes a squadmate's target.
+// most once per frame): within 6 km of the player, never a boss and never one whose flight still holds (js/flights.js:
+// squadmates don't drag holding flights in; with none committed they escort the player), bandits hunting the player
+// first, nearest to the player first; number 2 takes the nearest, number 3 the second nearest. Nothing else changes a
+// squadmate's target.
 //
 // Team API (HUD, allied ground forces): a squadmate is an Aircraft with isAlly = true, immortal = true, team = 'player'
 // and callsign 'COTTER' | 'RIVET'. `allies` lists the ones flying the current mission (Game.allies is this array; parked
@@ -113,8 +116,8 @@ export class Squadron {
     }
   }
 
-  /** Target pick for the squadmate at index k (0 = number 2, 1 = number 3 when both fly): within 6 km of the player and
-   *  never a boss, bandits hunting the player first, then the others, nearest to the player first; entry k of that
+  /** Target pick for the squadmate at index k (0 = number 2, 1 = number 3 when both fly): within 6 km of the player,
+   *  never a boss or a holding flight, bandits hunting the player first, then the others, nearest to the player first; entry k of that
    *  ranking (or the last one when there are fewer). No bandit to take: formation (a wide cover position while bandits
    *  remain, e.g. a boss duel). One O(bandits) pass, no allocation. */
   _pick(a, k, p, enemies) {
@@ -124,7 +127,7 @@ export class Squadron {
     if (p.alive) {
       for (let i = 0; i < enemies.length; i++) {
         const e = enemies[i];
-        if (!e.alive) continue;
+        if (!e.alive || isHolding(e)) continue;
         any = true;
         if (e.bossBars > 0) continue;
         const d = e.position.distanceToSquared(p.position);

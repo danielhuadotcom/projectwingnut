@@ -12,13 +12,14 @@ import { Squadron } from './squad.js';
 import { AlliedForces } from './allies.js';
 import { Profiler } from './profiler.js';
 import { PRESETS, TIERS, CHOICES, DynamicResolution, loadChoice, saveChoice, guessTier } from './quality.js';
-import { GroundForces, DEFAULT_GROUND_TYPES } from './targets.js';
+import { GroundForces, DEFAULT_GROUND_TYPES, unitScale } from './targets.js';
 import { MISSIONS, AIRCRAFT_TYPES, GROUND_TYPES } from './missions.js';
 import { Awacs } from './awacs.js';
 import { Tunnel } from './tunnel.js';
 import { Menu, loadSettings } from './menu.js';
 import { TouchControls } from './touch.js';
 import { Music } from './music.js';
+import { Flights, SLOTS as FLIGHT_SLOTS, mulberry32, isHolding, orbitRadius } from './flights.js';
 
 // Fallback campaign (replaced by js/missions.js data once it exists): PW-style missions made of phases of groups.
 const FALLBACK_AIR_TYPES = {
@@ -42,6 +43,9 @@ const FALLBACK_MISSIONS = [
 // Arcade weapons: the bandit nearest the crosshair is targeted automatically, locks come quickly inside
 // a wide cone, standard missiles are short-ranged and fire from two alternating hardpoints that reload separately.
 const LOCK_COS = Math.cos(THREE.MathUtils.degToRad(22.5));   // 45 deg full cone
+const CYCLE_BORE = 40;      // deg: while any hostile is on screen within this of the reticle, the target button cycles among those
+const CYCLE_INSET = 0.05;   // NDC: "on screen" means projected at least this far inside the viewport edges
+const LOS_PERIOD = 0.1;     // s: line of sight to a lockable target is re-checked at ~10 Hz (and at once for a new target)
 const LOCK_RANGE = 2800;
 const HOLD_COS = Math.cos(THREE.MathUtils.degToRad(70)), HOLD_RANGE = 4500;   // once locked, the lock holds this far
 const LOCK_TIME = 0.5;
@@ -56,12 +60,15 @@ const MAX_ENEMIES = 6;
 // Difficulty: player damage taken, enemy hit points and skill, how many bandits may attack at once (the rest hold
 // off; the same cap applies to the bandits hunting each squadmate, whose extras keep pursuing with weapons held), enemy
 // missile agility, which difficulty-specific mission groups spawn, and the player's share of the armed bandits while
-// squadmates fly (the rest go after the squadmates; js/squad.js).
+// squadmates fly (the rest go after the squadmates; js/squad.js). Bandit flights (js/flights.js): flightCap = most
+// flights the commit timer lets be committed at once, stagger = s between its releases (a phase's own stagger, in
+// Normal seconds, scales by the same ratio), playerMissiles = most enemy missiles after the player at once (a bandit
+// holds its shot beyond that, or within 1.5 s of the last launch at the same target: EnemyBrain.canLaunchAt).
 const DIFFICULTY = {
-  easy:      { armor: 0.35, enemyHp: 0.8,  skill: -0.15, aggressors: 1,        missileTurn: 0.5, groups: [],                      playerShare: 0.3 },
-  normal:    { armor: 0.5,  enemyHp: 1.0,  skill: 0,     aggressors: 2,        missileTurn: 0.6, groups: [],                      playerShare: 0.4 },
-  hard:      { armor: 0.7,  enemyHp: 1.15, skill: 0.1,   aggressors: 4,        missileTurn: 0.7, groups: ['hard'],                playerShare: 0.5 },
-  mercenary: { armor: 1.0,  enemyHp: 1.3,  skill: 0.2,   aggressors: Infinity, missileTurn: 0.8, groups: ['hard', 'mercenary'], playerShare: 0.6 },
+  easy:      { armor: 0.35, enemyHp: 0.8,  skill: -0.15, aggressors: 1,        missileTurn: 0.5, groups: [],                      playerShare: 0.3, flightCap: 1, stagger: 30, playerMissiles: 1 },
+  normal:    { armor: 0.5,  enemyHp: 1.0,  skill: 0,     aggressors: 2,        missileTurn: 0.6, groups: [],                      playerShare: 0.4, flightCap: 2, stagger: 20, playerMissiles: 2 },
+  hard:      { armor: 0.7,  enemyHp: 1.15, skill: 0.1,   aggressors: 4,        missileTurn: 0.7, groups: ['hard'],                playerShare: 0.5, flightCap: 2, stagger: 15, playerMissiles: 3 },
+  mercenary: { armor: 1.0,  enemyHp: 1.3,  skill: 0.2,   aggressors: Infinity, missileTurn: 0.8, groups: ['hard', 'mercenary'], playerShare: 0.6, flightCap: 3, stagger: 10, playerMissiles: 4 },
 };
 const ENEMY_MISSILE_TURN = 0.6;  // enemy shots turn at 60% of the player's rate (difficulty adjusts it)
 // Player-team missiles (the player's and the squadmates'): a lock means the target is reachable. Faster and longer-legged
@@ -88,9 +95,27 @@ const FLEET_SLOTS = [[430, 260], [-430, 260], [430, -320], [-430, -320], [0, -64
 const _v = new THREE.Vector3(), _v2 = new THREE.Vector3(), _v3 = new THREE.Vector3(), _fwd = new THREE.Vector3(), _up = new THREE.Vector3(), _right = new THREE.Vector3();
 const _fit = new THREE.Vector3();   // ringFit result
 const _ret = new THREE.Vector3(), _rv = new THREE.Vector3();   // reticle direction scratch
+const _ndc = new THREE.Vector3();                                // on-screen test scratch
+// An aircraft as a GroundForces.hasLineOfSight unit: its sight line starts at the centre (y + height / 2 + 2 = y). The
+// height is read from the unit's drawn size (GroundTarget.size; def.size, the life size, before units were scaled up)
+const _losAir = { position: new THREE.Vector3(), size: [0, -4, 0], def: { size: [0, -4, 0] } };
 const _q = new THREE.Quaternion();
 const yawToward = (from, to) => Math.atan2(-(to.x - from.x), -(to.z - from.z)); // rotation about +Y so that -Z nose points from->to
 const byDistance = (a, b) => a._d2 - b._d2;   // sort by squared distance to the player / squadmate (set beforehand)
+// AI cruise speed of an aircraft type relative to a SLEET-2's 1100 km/h (helicopters slow, cruise missiles fast)
+const cruiseScale = (type) => {
+  const kmh = (type.ai && type.ai.kmh && type.ai.kmh[1]) || ((type.speedKmh || 2500) <= 1200 ? type.speedKmh : (type.speedKmh || 2500) * 0.44);
+  return THREE.MathUtils.clamp(kmh / 1100, 0.3, 1.2);
+};
+const _site = new THREE.Vector3(), _st = new THREE.Vector3();   // air group placement scratch (spawnGroup, spawnAirGroup)
+// hud.js target markers: a hostile's marker class, and its rough model radius (m) at its drawn size, for the marker size:
+// ground units and ships by their drawn footprint (GroundTarget.size), aircraft by the ~15 m airframe times this frame's
+// drawn scale (Aircraft.visualScale, updated before buildFrame)
+const hudKind = (e) => (e.isGround ? (e.naval ? 'naval' : 'ground') : 'air');
+const hudRadius = (e) => { if (!e.isGround) return 7.5 * (e.visualScale || 1); const S = e.size || e.def.size; return 0.5 * Math.max(S[0], S[2]); };
+// HUD contact slots (screen markers and radar blips): the largest phase (66 hostiles, M6 phase 1 on Mercenary) plus
+// missiles in flight; buildFrame fills them in priority order should a phase ever outgrow them
+const HUD_CONTACTS = 96;
 
 class Game {
   constructor(root) {
@@ -429,6 +454,7 @@ class Game {
     p.velocity.set(0, 0, -p.speed);
     p.ammo = FLIGHT.AMMO; p.maxMissiles = FLIGHT.MAX_MISSILES; p.missiles = FLIGHT.MAX_MISSILES;
     p.immortal = false;                    // (missionComplete sets it)
+    p.missileCap = (this.diff || DIFFICULTY.normal).playerMissiles; p._missileAt = undefined; p._inboundCount = 0;   // (EnemyBrain.canLaunchAt)
     this.inTunnel = false;                 // respawned in the open: no stale tunnel state (radio calls, camera clamp)
     this.hardpoints = new Array(HARDPOINTS).fill(0); this.flareT = 0;
     this.syncAim();
@@ -455,6 +481,9 @@ class Game {
     this.missionIndex = i;
     const M = this.mission = list[((i % n) + n) % n];
     this.resetPlayer();
+    this.setSortieFrame();                 // the frame every phase of the mission is placed in (spawnGroup)
+    if (this.flights) this.flights.clear();
+    (this._pending || (this._pending = [])).length = 0; this._sites = {};
     this.chase.snap(this.player);
     if (this.squad) this.squad.spawn(M, this.player);   // squadmates in mission.wingmen form up on the player
     this._slotT = 0;                                       // hand out attack slots on the first frame
@@ -481,14 +510,30 @@ class Game {
     const P = M.phases[this.phaseIndex];
     let air = 0, ground = 0, naval = 0;
     const allowed = (this.diff || DIFFICULTY.normal).groups;
-    this.spawnAllies(false);               // this phase's allied units first: the enemy groups keep clear of them
-    for (const g of P.groups) {
-      if (g.difficulty && !allowed.includes(g.difficulty)) continue;
-      const k = this.spawnGroup(g);
+    const spawns = (g) => !g.difficulty || allowed.includes(g.difficulty);
+    // every air group of a phase with a boss flies with the boss: committed at once (spawnAirGroup)
+    this._bossPhase = P.groups.some((g) => g.kind === 'air' && spawns(g) && (this.airTypes[g.type] || {}).bars > 0);
+    const Q = this._pending || (this._pending = []); Q.length = 0;
+    this.seeded(this.placementSeed(-1), () => this.spawnAllies(false));   // allied units first: enemy groups keep clear
+    const place = (pass) => P.groups.forEach((g, gi) => {   // pass 1: groups placed from others (near)
+      if (!spawns(g) || !!g.near !== (pass === 1)) return;
+      if (g.after > 0) { Q.push({ g, gi, at: this.time + g.after, site: null }); return; }   // enters later (spawnPending)
+      const k = this.spawnGroup(g, gi);
       if (g.kind === 'air') air += k; else if (g.kind === 'naval') naval += k; else ground += k;
-    }
-    this.spawnAllies(true);                // allied units placed beside this phase's enemies (allies[].after)
+    });
+    place(0);
+    // where this phase's surface units stand, by type: the sites of air groups `near` them, now or in a later phase
+    const S = this._sites || (this._sites = {});
+    for (const g of P.groups) if (g.kind !== 'air' && spawns(g) && !(g.after > 0)) { const c = this.enemyCentroid(g.type, _v3); if (c) S[g.type] = { x: c.x, z: c.z }; }
+    place(1);
+    for (const q of Q) if (q.g.near && S[q.g.near]) q.site = S[q.g.near];   // a delayed group's site is fixed now
+    this.seeded(this.placementSeed(-2), () => this.spawnAllies(true));    // allied units placed beside this phase's enemies
+    if (this.flights) this.flights.restart(this.time);
     this.rebuildCombatList();
+    // HUD "TGT" tags: when most of a phase's hostiles are optional, its required ones are the priority (buildFrame)
+    let req = 0, opt = 0;
+    for (const e of this.combatList) if (e !== this.player) { if (e.optional) opt++; else req++; }
+    this.priorityPhase = opt > 0 && req <= opt;
     this.directBandits();                  // the new bandits take whichever hunting role is short
     this._slotT = 0;                       // and attack slots (who may fire) are handed out on the next frame
     if (this.squad) this.squad.newWave();  // squadmates pick a bandit within a second
@@ -534,7 +579,8 @@ class Game {
    * first. Otherwise at most one role change per tick, only while the player-hunter count H is outside D +- 1 (exactly D
    * when N <= 3), and never for a bandit that changed role in the last 10 s: the squadmate-hunter nearest the player
    * breaks off to come for the player, or the player-hunter farthest away leaves for the squadmate with fewer hunters.
-   * Bosses always hunt the player. Nothing else changes a bandit's target.
+   * Bosses always hunt the player. Nothing else changes a bandit's target. Bandits of holding flights (js/flights.js)
+   * don't count: they get a role when their flight commits.
    */
   directBandits() {
     const p = this.player, A = this.allies, now = this.time;
@@ -544,7 +590,7 @@ class Game {
     for (let i = 0; i < A.length; i++) A[i]._hunters = 0;
     for (const e of this.enemies) {
       const b = e.brain;
-      if (!e.alive || !b || b.passive) continue;
+      if (!e.alive || !b || b.passive || isHolding(e)) continue;   // holding flights stay out until they commit
       N++;
       const d2 = e._d2 = e.position.distanceToSquared(p.position);
       if (!b.role || (b.role === 'squad' && !(b.target && b.target.alive))) { pend.push(e); continue; }
@@ -575,38 +621,82 @@ class Game {
       b.role = 'squad'; b.target = a; b.threat = this.player; b.aggressor = true;   // the player's guns still scare it
     }
   }
-  /** Place one mission group relative to the player: air groups in formation, surface groups on suitable terrain. */
-  spawnGroup(g) {
-    const p = this.player; p.getForward(_fwd);
-    const base = Math.atan2(_fwd.x, -_fwd.z);
-    const rel = { ahead: 0, high: 0, low: 0, left: -Math.PI / 2, right: Math.PI / 2, behind: Math.PI }[g.position];
-    const bearing = base + (rel !== undefined ? rel : (Math.random() - 0.5) * 1.6) + (Math.random() - 0.5) * 0.35;
-    const dist = g.distance || (g.kind === 'air' ? 5000 : 7000);
-    let cx = THREE.MathUtils.clamp(p.position.x + Math.sin(bearing) * dist, -WORLD_HALF * 0.85, WORLD_HALF * 0.85);
-    let cz = THREE.MathUtils.clamp(p.position.z - Math.cos(bearing) * dist, -WORLD_HALF * 0.85, WORLD_HALF * 0.85);
-    // target 'fleet': past the player from the allied fleet, flying at it (js/allies.js leakers)
+  /**
+   * Place one mission group: air groups by their task (spawnAirGroup), surface groups on suitable terrain. Campaign
+   * placement is fixed per mission: positions are taken in the sortie frame (this.sortieFrame: where and which way the
+   * sortie started), not from wherever the player has flown since, and every random draw comes from a stream seeded by
+   * mission, phase and the group's index gi in its phase (placementSeed), so each attempt and retry lays the mission out
+   * the same way. `position` is a side ('ahead' = the frame's heading, i.e. north) or a bearing in degrees. An air group
+   * with a surface type as `near` is placed from where that type's units stand (this phase's, else the latest earlier
+   * phase's: this._sites; `site` for a delayed group), `distance` m (default 0) toward its `position`.
+   */
+  spawnGroup(g, gi = 0, site = null) {
+    const rand = mulberry32(this.placementSeed(gi)), F = this.sortieFrame || this.setSortieFrame();
+    const rel = typeof g.position === 'number' ? g.position * Math.PI / 180   // a bearing (deg) in the sortie frame
+      : { ahead: 0, high: 0, low: 0, left: -Math.PI / 2, right: Math.PI / 2, behind: Math.PI }[g.position];
+    const bearing = F.bearing + (rel !== undefined ? rel : (rand() - 0.5) * 1.6) + (rand() - 0.5) * 0.35;
+    const anchor = g.kind === 'air' && g.near && !this.airTypes[g.near] ? site || (this._sites && this._sites[g.near]) || this.enemyCentroid(g.near, _site) : null;
+    const ox = anchor ? anchor.x : F.x, oz = anchor ? anchor.z : F.z;
+    const dist = anchor ? g.distance || 0 : g.distance || (g.kind === 'air' ? 5000 : 7000);
+    let cx = THREE.MathUtils.clamp(ox + Math.sin(bearing) * dist, -WORLD_HALF * 0.85, WORLD_HALF * 0.85);
+    let cz = THREE.MathUtils.clamp(oz - Math.cos(bearing) * dist, -WORLD_HALF * 0.85, WORLD_HALF * 0.85);
+    // target 'fleet': past the frame origin from the allied fleet, flying at it (js/allies.js leakers)
     const atFleet = g.target === 'fleet' && g.kind === 'air' && this.allied && this.allied.ships.length > 0;
-    if (atFleet) { this.fleetApproach(g, dist, _v2); cx = _v2.x; cz = _v2.z; }
+    if (atFleet) { this.fleetApproach(g, dist, _v2, rand); cx = _v2.x; cz = _v2.z; }
     this._spawnOptional = !!g.optional; this._spawnAtFleet = atFleet;
-    const n = g.kind === 'air' ? this.spawnAirGroup(g, cx, cz) : this.spawnSurfaceGroup(g, cx, cz);
+    const n = g.kind === 'air' ? this.spawnAirGroup(g, cx, cz, rand) : this.seeded(rand() * 4294967296, () => this.spawnSurfaceGroup(g, cx, cz));
     this._spawnAtFleet = false;
     return n;
   }
+  /** Sortie frame: where and which way the sortie starts (the player's pose at mission load). Campaign groups are
+   *  placed in it (spawnGroup), so their layout never depends on where the player has flown since. */
+  setSortieFrame() {
+    const p = this.player; p.getForward(_fwd);
+    return (this.sortieFrame = { x: p.position.x, y: p.position.y, z: p.position.z, bearing: Math.atan2(_fwd.x, -_fwd.z) });
+  }
+  /** Seed of a campaign placement stream: fixed per mission, phase and group index gi (allies use negative ones). */
+  placementSeed(gi) {
+    const n = this.missions.length, mi = ((this.missionIndex % n) + n) % n;
+    return Math.imul(mi + 1, 73856093) ^ Math.imul(this.phaseIndex + 1, 19349663) ^ Math.imul(gi + 101, 83492791);
+  }
+  /** fn() with Math.random drawing from a stream seeded with `seed`, for placement code that calls Math.random itself
+   *  (surface sites and unit offsets, allied groups); the real generator is back afterwards for everything else. */
+  seeded(seed, fn) {
+    const real = Math.random;
+    Math.random = mulberry32(seed);
+    try { return fn(); } finally { Math.random = real; }
+  }
+  /** Delayed groups (groups[].after): spawn the ones that are due, or all of them once the field is otherwise clear. */
+  spawnPending(all) {
+    const Q = this._pending;
+    let n = 0, air = 0;
+    for (let i = 0; i < Q.length; i++) {
+      const q = Q[i];
+      if (!all && this.time < q.at) continue;
+      Q.splice(i--, 1);
+      const k = this.spawnGroup(q.g, q.gi, q.site);
+      n += k; if (q.g.kind === 'air') air += k;
+    }
+    if (!n) return;
+    this.rebuildCombatList(); this.directBandits(); this._slotT = 0;
+    if (this.squad) this.squad.newWave();
+    if (air) { this.message('NEW CONTACTS', false, 3); this.say('newContacts', 2); }
+  }
   /**
-   * Spawn point for an air group with target 'fleet': `dist` m from the player on the far side from the allied fleet
-   * (swung ~23 deg to the group's 'left' / 'right'), so it flies past the player to reach the fleet. Takes the least
-   * swung of 16 bearings that stays on the map and is no nearer the fleet than max(dist, the player's own distance);
-   * failing that (the player near a map edge with the fleet inland of them), the least swung on the map at least dist
-   * from the fleet (at least dist / cruise speed of flight: 7 km at a Bodkin's 182 m/s = 38 s), else the bearing on the
-   * map farthest from the fleet. Writes out (x, z).
+   * Spawn point for an air group with target 'fleet': `dist` m from the sortie frame's origin (where the sortie began)
+   * on the far side from the allied fleet (swung ~23 deg to the group's 'left' / 'right'), so it flies past there to
+   * reach the fleet. Takes the least swung of 16 bearings that stays on the map and is no nearer the fleet than
+   * max(dist, the origin's own distance); failing that (the origin near a map edge with the fleet inland of it), the
+   * least swung on the map at least dist from the fleet (at least dist / cruise speed of flight: 7 km at a Bodkin's
+   * 182 m/s = 38 s), else the bearing on the map farthest from the fleet. Writes out (x, z).
    */
-  fleetApproach(g, dist, out) {
-    const p = this.player.position, F = this.allied.fleetCenter, lim = WORLD_HALF * 0.85;
+  fleetApproach(g, dist, out, rand = Math.random) {
+    const O = this.sortieFrame || this.setSortieFrame(), p = _v.set(O.x, 0, O.z), F = this.allied.fleetCenter, lim = WORLD_HALF * 0.85;
     let ux = p.x - F.x, uz = p.z - F.z;
     const d = Math.hypot(ux, uz);
-    if (d < 300) { this.player.getForward(_fwd); ux = -_fwd.z; uz = _fwd.x; }   // over the fleet: from the player's right
-    const pref = Math.atan2(uz, ux) + (g.position === 'right' ? 0.4 : g.position === 'left' ? -0.4 : 0) + (Math.random() - 0.5) * 0.3;
-    let tier = 4, far = -1;   // 1: past the player, 2: >= dist from the fleet, 3: on the map, farthest from it, 4: clamped
+    if (d < 300) { ux = Math.cos(O.bearing); uz = Math.sin(O.bearing); }   // over the fleet: from the frame's right
+    const pref = Math.atan2(uz, ux) + (g.position === 'right' ? 0.4 : g.position === 'left' ? -0.4 : 0) + (rand() - 0.5) * 0.3;
+    let tier = 4, far = -1;   // 1: past the origin, 2: >= dist from the fleet, 3: on the map, farthest from it, 4: clamped
     for (let k = 0; k < 16 && tier > 1; k++) {
       const a = pref + (k & 1 ? 1 : -1) * ((k + 1) >> 1) * (Math.PI / 8);   // 0, +22.5, -22.5, +45 ... 180 deg
       let x = p.x + Math.cos(a) * dist, z = p.z + Math.sin(a) * dist;
@@ -618,30 +708,149 @@ class Game {
     }
     return out;
   }
-  spawnAirGroup(g, cx, cz) {
+  /**
+   * Air group of g.count (at most 8) around (cx, cz), flown by its task:
+   *   bosses (types with bars): as before, in formation; every other group in a boss's phase engages with it;
+   *   unarmed types: transit straight (a target 'fleet' group runs at the allied fleet), or with task 'patrol' hold an
+   *     orbit for good (an AWACS on station), or with 'scramble' climb out as below, then transit;
+   *   armed types split into flights (pairs; flight: 4 for named aces; a leftover single flies alone):
+   *     'engage'   flights spread across the approach ~1.8 km apart, committed at once;
+   *     'patrol'   (default) each flight orbits its own station: the first over (cx, cz), the rest ~2.6 km around it;
+   *     'escort'   flights hold station beside the group of type `near` that entered with them, and commit with it;
+   *     'scramble' flights appear low over (cx, cz) in a line on a takeoff heading and climb out, then commit.
+   * Headings and formations are taken in the sortie frame and every random draw comes from rand (the group's seeded
+   * placement stream), so the layout is the same on every attempt. Stations keep their orbits on the map, clear of the
+   * tunnel ridge and above the terrain under them; spawn points stay on the map, over the terrain and out of the ridge.
+   */
+  spawnAirGroup(g, cx, cz, rand = Math.random) {
     const typeName = g.type || 'SLEET-2';
     const type = this.airTypes[typeName] || FALLBACK_AIR_TYPES['SLEET-2'];
     const n = Math.max(1, Math.min(g.count || 1, 8));
-    const p = this.player;
+    const O = this.sortieFrame || this.setSortieFrame();
     const groundH = Math.max(this.world.getHeight(cx, cz), 0);
-    const altOff = g.position === 'high' ? 900 : g.position === 'low' ? -350 : (Math.random() - 0.4) * 600;
-    const alt = THREE.MathUtils.clamp(p.position.y + altOff, groundH + 450, 4500);
+    const altOff = g.position === 'high' ? 900 : g.position === 'low' ? -350 : (rand() - 0.4) * 600;
+    const alt = THREE.MathUtils.clamp(O.y + altOff, groundH + 450, 4500);
     _v2.set(cx, alt, cz);
-    const heading = yawToward(_v2, p.position);
-    const fx = -Math.sin(heading), fz = -Math.cos(heading), rx = Math.cos(heading), rz = -Math.sin(heading);
-    for (let i = 0; i < n; i++) {
-      let lat = 0, back = 0;
-      const f = g.formation || 'vee', k = (i + 1) >> 1, side = i % 2 ? -1 : 1;
-      if (f === 'line') lat = (i - (n - 1) / 2) * 160;
-      else if (f === 'pair') { lat = (i % 2 ? 1 : -1) * 80; back = (i >> 1) * 320; }
-      else if (f === 'loose') { lat = (Math.random() - 0.5) * 1200; back = Math.random() * 700; }
-      else { lat = k * side * 140; back = k * 120; }
-      const x = cx + rx * lat - fx * back, z = cz + rz * lat - fz * back;
-      const y = Math.max(alt + (Math.random() - 0.5) * 60, Math.max(this.world.getHeight(x, z), 0) + 350);
-      this.spawnAircraft(typeName, type, new THREE.Vector3(x, y, z), heading, i);
+    const heading = Math.abs(cx - O.x) + Math.abs(cz - O.z) > 1 ? yawToward(_v2, _v.set(O.x, alt, O.z)) : O.bearing;
+    let task = type.bars > 0 ? 'boss' : this._bossPhase ? 'engage' : g.task || 'patrol';
+    if (type.armed === false) task = (g.task === 'patrol' || g.task === 'scramble') && !this._spawnAtFleet ? g.task : 'transit';
+    if (task === 'boss' || task === 'transit') {
+      const fx = -Math.sin(heading), fz = -Math.cos(heading), rx = Math.cos(heading), rz = -Math.sin(heading);
+      for (let i = 0; i < n; i++) {
+        let lat = 0, back = 0;
+        const f = g.formation || 'vee', k = (i + 1) >> 1, side = i % 2 ? -1 : 1;
+        if (f === 'line') lat = (i - (n - 1) / 2) * 160;
+        else if (f === 'pair') { lat = (i % 2 ? 1 : -1) * 80; back = (i >> 1) * 320; }
+        else if (f === 'loose') { lat = (rand() - 0.5) * 1200; back = rand() * 700; }
+        else { lat = k * side * 140; back = k * 120; }
+        const x = cx + rx * lat - fx * back, z = cz + rz * lat - fz * back;
+        const y = this.clearSpawnY(x, Math.max(alt + (rand() - 0.5) * 60, Math.max(this.world.getHeight(x, z), 0) + 350), z);
+        this.spawnAircraft(typeName, type, new THREE.Vector3(x, y, z), heading, i);
+      }
+      for (const e of this.enemies) e._pending = false;
+      return n;
     }
+    const FL = this.flights || (this.flights = new Flights(this.world, this.tunnel, WORLD_HALF));
+    const size = Math.max(1, Math.min(g.flight || 2, 4)), k = Math.ceil(n / size);
+    const R = orbitRadius(FLIGHT.CRUISE_SPEED * cruiseScale(type));
+    const charges = task === 'escort' ? this.escortCharges(g.near) : null;
+    if (task === 'escort' && !charges) task = 'patrol';   // nothing to escort (its group didn't spawn): hold an orbit
+    const fx = -Math.sin(heading), fz = -Math.cos(heading), rx = Math.cos(heading), rz = -Math.sin(heading);
+    const a0 = rand() * Math.PI * 2, runway = rand() * Math.PI * 2, escorts = charges ? [] : null;
+    for (let j = 0, i0 = 0; j < k; j++, i0 += size) {
+      const m = Math.min(size, n - i0), side = rand() < 0.5 ? 1 : -1;
+      let x = cx, z = cz, y = alt, h = heading, Fl;
+      if (task === 'engage') {
+        const lat = (j - (k - 1) / 2) * 1800 + (rand() - 0.5) * 400, back = (j & 1) * 700 + rand() * 300;
+        x += rx * lat - fx * back; z += rz * lat - fz * back; y += (rand() - 0.5) * 200;
+        Fl = this.spawnFlight(typeName, type, m, x, y, z, h, side, 'engage');
+      } else if (task === 'escort') {
+        const C = charges[0], o = _v3.set(side * (800 + 350 * (j >> 1)), 250 + 120 * j, 300 + 350 * j);
+        h = Math.atan2(-C.velocity.x, -C.velocity.z);
+        const hx = -Math.sin(h), hz = -Math.cos(h);
+        x = C.position.x - hz * o.x - hx * o.z; z = C.position.z + hx * o.x - hz * o.z; y = C.position.y + o.y;
+        Fl = this.spawnFlight(typeName, type, m, x, y, z, h, side, 'escort');
+        Fl.offset.copy(o); Fl.charges = charges; escorts.push(Fl);
+      } else if (task === 'scramble') {
+        const along = j * 500, lat = (j & 1 ? 1 : -1) * 150;
+        FL.fitStation(_st, x + Math.sin(runway) * along + Math.cos(runway) * lat, z - Math.cos(runway) * along + Math.sin(runway) * lat, 600);
+        Fl = this.spawnFlight(typeName, type, m, _st.x, Math.max(this.world.getHeight(_st.x, _st.z), 0) + 130, _st.z, runway, side, 'climb');
+        for (const ac of Fl.members) { ac.speed *= 0.65; ac.velocity.multiplyScalar(0.65); ac.brain.transitAlt = alt; }   // just off the ground (unarmed: then transit at alt)
+      } else {
+        if (j > 0) { const a = a0 + (j - 1) * 2 * Math.PI / Math.max(1, k - 1), r = 2600 + (rand() - 0.5) * 600; x += Math.cos(a) * r; z += Math.sin(a) * r; }
+        FL.fitStation(_st, x, z, R);
+        const sy = FL.orbitAlt(_st.x, _st.z, R, alt + (rand() - 0.5) * 300), th = rand() * Math.PI * 2, dir = rand() < 0.5 ? 1 : -1;
+        // the lead starts on its orbit, heading along it (EnemyBrain._hold: tangent (-u.z, u.x) * dir)
+        const ux = Math.cos(th), uz = Math.sin(th);
+        Fl = this.spawnFlight(typeName, type, m, _st.x + ux * R, sy, _st.z + uz * R, Math.atan2(uz * dir, -ux * dir), side, 'orbit');
+        Fl.station.set(_st.x, sy, _st.z); Fl.radius = R; Fl.dir = dir;
+      }
+    }
+    if (escorts) for (const c of charges) c.escorts = escorts;
     for (const e of this.enemies) e._pending = false;
     return n;
+  }
+  /** Spawn members 0..m of a flight (spawnAircraft each): the lead at (x, y, z) on `heading`, the others on their
+   *  formation slots (js/flights.js SLOTS, mirrored by side); every spawn point on the map, 350 m over the terrain
+   *  (100 m for a scramble) and out of the tunnel ridge. Registers the flight (Flights.add) and returns it. */
+  spawnFlight(typeName, type, m, x, y, z, heading, side, mode) {
+    const M = this._fm || (this._fm = []), lim = WORLD_HALF * 0.88, floor = mode === 'climb' ? 100 : 350;
+    const fx = -Math.sin(heading), fz = -Math.cos(heading), rx = Math.cos(heading), rz = -Math.sin(heading);
+    M.length = 0;
+    for (let i = 0; i < m; i++) {
+      const s = FLIGHT_SLOTS[i], lat = s[0] * side, back = s[2];
+      const sx = THREE.MathUtils.clamp(x + rx * lat - fx * back, -lim, lim), sz = THREE.MathUtils.clamp(z + rz * lat - fz * back, -lim, lim);
+      const sy = this.clearSpawnY(sx, Math.max(y + s[1], Math.max(this.world.getHeight(sx, sz), 0) + floor), sz);
+      M.push(this.spawnAircraft(typeName, type, new THREE.Vector3(sx, sy, sz), heading, i));
+    }
+    return this.flights.add(M, m, mode, this.time, side);
+  }
+  /** Spawn altitude y at (x, z), raised until a jet there is clear of the tunnel ridge's rock. */
+  clearSpawnY(x, y, z) {
+    if (this.tunnel) for (let t = 0; t < 40 && this.tunnel.collide(_v.set(x, y, z), 60) === 'wall'; t++) y += 40;
+    return y;
+  }
+  /** The aircraft an escort group guards: the live ones of type `near` that entered this same frame (their group is
+   *  in the same phase, placed before it). Null when there are none. */
+  escortCharges(near) {
+    let out = null;
+    for (const e of this.enemies) if (e.alive && e.name === near && e.bornAt === this.time) (out || (out = [])).push(e);
+    return out;
+  }
+  /**
+   * Generated air groups (Infinity mode): the generic placement, kept apart from the campaign's authored layout. Each
+   * group { type, count, flight? } splits into flights that hold at stations 4-9 km from the player
+   * (Flights.genericStations: spread in bearing, preferably 2.5 km apart, orbits on the map, clear of the tunnel ridge and
+   * above the terrain) and commit by the campaign's rules (contact, attack, the commit timer under the difficulty's cap
+   * and stagger). When nothing else is out there, the first flight sits nearer and goes first. Every random draw comes
+   * from `seed`, so a seed and player pose give one layout. Returns the number of aircraft placed.
+   */
+  spawnGenerated(groups, seed) {
+    const rand = mulberry32(seed), p = this.player;
+    const FL = this.flights || (this.flights = new Flights(this.world, this.tunnel, WORLD_HALF));
+    const taken = [], st = [];
+    for (const F of FL.list) if (F.live && F.loiter && F.mode === 'orbit') taken.push(F.station);
+    let first = FL.committedCount() === 0 && taken.length === 0, placed = 0;
+    this._spawnOptional = false; this._spawnAtFleet = false;
+    for (const g of groups) {
+      const typeName = g.type, type = this.airTypes[typeName];
+      if (!type) continue;
+      const n = Math.max(1, Math.min(g.count || 1, 8)), size = Math.max(1, Math.min(g.flight || 2, 4)), k = Math.ceil(n / size);
+      const R = orbitRadius(FLIGHT.CRUISE_SPEED * cruiseScale(type));
+      while (st.length < k) st.push(new THREE.Vector3());
+      FL.genericStations(st, k, p.position.x, p.position.z, p.position.y, NaN, R, rand, taken, first);
+      first = false;
+      for (let j = 0, i0 = 0; j < k; j++, i0 += size) {
+        const S = st[j], m = Math.min(size, n - i0), th = rand() * Math.PI * 2, dir = rand() < 0.5 ? 1 : -1, side = rand() < 0.5 ? 1 : -1;
+        const ux = Math.cos(th), uz = Math.sin(th);
+        const Fl = this.spawnFlight(typeName, type, m, S.x + ux * R, S.y, S.z + uz * R, Math.atan2(uz * dir, -ux * dir), side, type.bars > 0 ? 'engage' : 'orbit');
+        Fl.station.copy(S); Fl.radius = R; Fl.dir = dir;
+        taken.push(Fl.station); placed += m;
+      }
+    }
+    for (const e of this.enemies) e._pending = false;
+    if (placed) { this.rebuildCombatList(); this.directBandits(); this._slotT = 0; if (this.squad) this.squad.newWave(); FL.restart(this.time); }
+    return placed;
   }
   spawnAircraft(typeName, type, pos, heading, idx) {
     const colorKey = (type.color ?? 0x4a4f58) + ':' + (type.accent ?? 0xd8232a);
@@ -660,10 +869,8 @@ class Game {
     ac.bossBars = type.bars || 0;
     ac.reset({ position: pos, heading, health: hp });
     ac.optional = !!this._spawnOptional;
-    // per-type speed: AI cruise speed relative to a SLEET-2's 1100 km/h (helicopters slow, cruise missiles fast)
-    const cruiseKmh = (type.ai && type.ai.kmh && type.ai.kmh[1]) || ((type.speedKmh || 2500) <= 1200 ? type.speedKmh : (type.speedKmh || 2500) * 0.44);
-    ac.speedScale = THREE.MathUtils.clamp(cruiseKmh / 1100, 0.3, 1.2);
-    ac.mesh.scale.setScalar(/missile/i.test(type.role || '') ? 0.45 : 1);
+    ac.speedScale = cruiseScale(type);   // per-type speed (helicopters slow, cruise missiles fast)
+    ac.setSize(/missile/i.test(type.role || '') ? 0.45 : 1, true);   // cruise missiles are small; drawn larger than life (loop)
     ac.health = hp; ac.maxHealth = hp;
     ac.quaternion.setFromAxisAngle(WORLD_UP, heading);
     ac.handling.pitch = THREE.MathUtils.clamp((type.pitch || 85) / 90 * 0.85, 0.55, 1);
@@ -675,6 +882,7 @@ class Game {
     const skill = THREE.MathUtils.clamp(0.38 + this.missionIndex * 0.06 + (type.role === 'fighter' ? 0.05 : 0) + (this.skillOffset || 0), 0.2, 0.95);
     ac.brain.skill = skill; ac.brain.state = 'pursue'; ac.brain.stateTime = 0; ac.brain.missileCooldown = 10 + Math.random() * 8;
     ac.brain.target = null; ac.brain.role = null; ac.brain.threat = null;   // pooled: the bandit director assigns a role
+    ac.brain.flight = null; ac.escorts = null; ac.bornAt = this.time;      // pooled: spawnFlight / escorts set these
     ac.brain.missileReload = type.missileReload || 0;   // per-type override (Mainspring: a third of the player's hardpoint reload)
     if (type.missileReload) ac.missiles = 999;
     ac.brain.passive = type.armed === false;
@@ -724,26 +932,30 @@ class Game {
   }
   /**
    * Land placement test against the tunnel ridge (a separate mesh over the heightfield, so the terrain tests miss it):
-   * false if ridge rock touches def's footprint at (x, z) or within `margin` m of it (the rock test in collide() is
-   * vertical, so the clearance ring is sampled explicitly), or if rock / the bore covers the unit (a point over its roof).
+   * false if ridge rock touches def's (drawn) footprint at (x, z) or within `margin` m of it, or if rock / the bore covers
+   * the unit (a point over its roof). The rock test in collide() is vertical (below the rock surface = wall), so the
+   * clearance ring is sampled explicitly, just above the terrain where the ridge's foot surfaces, and the body sphere
+   * sits low enough to wrap a tall unit's base (a comm tower is 80 m tall drawn).
    */
   ridgeClear(def, x, z, margin = RIDGE_MARGIN) {
     const tn = this.tunnel;
     if (!tn) return true;
-    const s = (def && def.size) || DEFAULT_GROUND_TYPES.tank.size;
-    const g = Math.max(this.world.getHeight(x, z), 0.5), half = 0.5 * Math.hypot(s[0], s[2]), yc = g + s[1] * 0.5;
+    const d = def && def.size ? def : DEFAULT_GROUND_TYPES.tank, k = unitScale(d);   // the drawn size (js/targets.js)
+    const sx = d.size[0] * k, sy = d.size[1] * k, sz = d.size[2] * k;
+    const g = Math.max(this.world.getHeight(x, z), 0.5), half = 0.5 * Math.hypot(sx, sz), yc = g + Math.min(sy, 2 * half) * 0.5;
     if (tn.collide(_v.set(x, yc, z), half + 2) === 'wall') return false;           // body in the rock or a bore wall
     if (tn.isInside(_v.set(x, g + 2, z))) return false;                              // in the bore
-    if (tn.collide(_v.set(x, g + s[1] + 25, z), 2) === 'wall') return false;       // roof covered by ridge rock
-    const R = half + margin;
-    for (let k = 0; k < 8; k++) {                                                    // clearance ring off the outer faces
-      const a = k * Math.PI / 4, px = x + Math.cos(a) * R, pz = z + Math.sin(a) * R;
-      if (tn.collide(_v.set(px, Math.max(this.world.getHeight(px, pz), 0.5) + s[1] * 0.5, pz), 2) === 'wall') return false;
+    if (tn.collide(_v.set(x, g + sy + 25, z), 2) === 'wall') return false;         // roof covered by ridge rock
+    const R = half + margin, n = Math.max(8, Math.ceil(2 * Math.PI * R / 25));
+    for (let i = 0; i < n; i++) {                                                    // clearance ring off the outer faces,
+      const a = i * 2 * Math.PI / n, px = x + Math.cos(a) * R, pz = z + Math.sin(a) * R;   // samples <= 25 m apart
+      if (tn.collide(_v.set(px, Math.max(this.world.getHeight(px, pz), 0.5) + 1, pz), 2) === 'wall') return false;
     }
     return true;
   }
-  /** Land unit placement test: dry ground below 1200 m, clear of the tunnel ridge. */
-  landFits(def, x, z) { const h = this.world.getHeight(x, z); return h > 3 && h < 1200 && this.ridgeClear(def, x, z); }
+  /** Land unit placement test: dry ground below 1200 m under def's whole drawn footprint (facing hdg), clear of the other
+   *  land units (GroundForces.landClear) and of the tunnel ridge. */
+  landFits(def, x, z, hdg = 0) { const h = this.world.getHeight(x, z); return h > 3 && h < 1200 && this.ground.landClear(def, x, z, hdg) && this.ridgeClear(def, x, z); }
   /** Bounded ring search around (cx, cz) for a spot where fits(x, z, hdg) holds: rings 80 m apart out to 2.4 km, points
    *  ~100 m apart along each, from a random bearing. Writes it to out and returns true; false if nothing fits. */
   ringFit(cx, cz, hdg, fits, out) {
@@ -768,9 +980,10 @@ class Game {
     const n = Math.max(1, Math.min(g.count || 1, 24));
     const area = g.area || (naval ? 'fleet' : 'base');
     const dirA = Math.random() * Math.PI * 2;
-    // ships need the whole hull afloat in open water, clear of other ships; vehicles need dry land
+    // ships need the whole hull afloat in open water, clear of other ships; vehicles need dry land under the whole
+    // footprint, clear of other vehicles (all at their drawn size)
     const fits = naval ? (x, z, hdg) => this.ground.hullClear(def, x, z, hdg) && (AZ === null || AZ.clearOf(x, z, ZONE_UNIT_MARGIN))
-                       : (x, z) => this.landFits(def, x, z) && (AZ === null || AZ.clearOf(x, z, ZONE_UNIT_MARGIN));
+                       : (x, z, hdg) => this.landFits(def, x, z, hdg) && (AZ === null || AZ.clearOf(x, z, ZONE_UNIT_MARGIN));
     let placed = 0;
     for (let i = 0; i < n; i++) {
       let x = site.x, z = site.z, ok = false;
@@ -816,14 +1029,14 @@ class Game {
     const units = Array.isArray(a.units) ? a.units : [], AL = this.allied;
     const lead = units.length ? this.groundTypes[units[0].type] : null;
     if (!lead) return 0;
-    const naval = a.kind === 'naval', p = this.player.position, lim = WORLD_HALF * 0.85;
+    const naval = a.kind === 'naval', p = this.sortieFrame || this.setSortieFrame(), lim = WORLD_HALF * 0.85;   // the sortie frame (spawnGroup)
     const dist = a.distance || (a.near ? 1000 : 3500);
     const clearOfEnemy = (x, z) => this.enemyClear(x, z, ALLY_SITE_GAP);
     let cx, cz, site = null;
     const anchor = a.near ? this.enemyCentroid(a.near, _v2) : null;
     if (anchor) {
       // next to the live enemy units of type `near` (the unit they have pinned down): rings from `dist` to dist + 1.8 km
-      // around them, each swept from the far side (seen from the player) toward the near side
+      // around them, each swept from the far side (seen from the start point) toward the near side
       const d = Math.hypot(anchor.x - p.x, anchor.z - p.z) || 1, ux = (anchor.x - p.x) / d, uz = (anchor.z - p.z) / d, a0 = Math.atan2(uz, ux);
       cx = anchor.x + ux * dist; cz = anchor.z + uz * dist;
       for (let r = dist; !site && r <= dist + 1800; r += 300) {
@@ -835,8 +1048,7 @@ class Game {
         }
       }
     } else {
-      this.player.getForward(_fwd);
-      const b = Math.atan2(_fwd.x, -_fwd.z) + ({ left: -Math.PI / 2, right: Math.PI / 2, behind: Math.PI }[a.position] || 0);
+      const b = p.bearing + ({ left: -Math.PI / 2, right: Math.PI / 2, behind: Math.PI }[a.position] || 0);
       cx = p.x + Math.sin(b) * dist; cz = p.z - Math.cos(b) * dist;
     }
     cx = THREE.MathUtils.clamp(cx, -lim, lim); cz = THREE.MathUtils.clamp(cz, -lim, lim);
@@ -851,7 +1063,7 @@ class Game {
       if (!def || !!def.naval !== naval) continue;
       const gap = naval ? ALLY_SEA_GAP : ALLY_UNIT_GAP;
       const fits = naval ? (x, z, h) => this.ground.hullClear(def, x, z, h) && this.enemyClear(x, z, gap)
-                         : (x, z) => this.landFits(def, x, z) && this.enemyClear(x, z, gap) && AL.spacingOk(x, z, ALLY_SPACING);
+                         : (x, z, h) => this.landFits(def, x, z, h) && this.enemyClear(x, z, gap) && AL.spacingOk(x, z, ALLY_SPACING);
       const n = Math.max(1, Math.min(u.count || 1, ALLY_UNIT_MAX));
       for (let i = 0; i < n; i++, k++) {
         // station: the flagship on the site, escorts on FLEET_SLOTS around her (all on the fleet's heading); vehicles
@@ -920,6 +1132,7 @@ class Game {
 
   // ---------- weapon callbacks ----------
   onHit(target, dmg, shooter, kind) {
+    if (this.flights && target.brain) this.flights.attacked(target, this.time);   // a holding flight hit: it commits
     if (target === this.player) {
       this.damageFlash = 1; this.post.damage(kind === 'missile' ? 1 : 0.45);
       this.chase.addShake(kind === 'missile' ? 0.9 : 0.25); this.audio.hit();
@@ -970,6 +1183,7 @@ class Game {
       const P = PLAYER_MISSILE;
       m.maxSpeed = P.maxSpeed; m.boostTime = P.boostTime; m.drag = P.drag; m.life = P.life; m.turnScale = P.turnScale; m.fuse = P.fuse;
     }
+    if (this.flights && m.target && m.target.brain && m.owner && m.owner.team === 'player') this.flights.attacked(m.target, this.time);
     if (this.squad && this.squad.onMissileLaunch(m, this.weapons)) return;   // a squadmate's shot: lethal or a dud
     if (m.owner !== this.player) m.turnScale = this.enemyMissileTurn || ENEMY_MISSILE_TURN;
     if (m.owner !== this.player && m.target === this.player) { this.message('MISSILE LAUNCH', false, 2); this.say('missileIncoming', 3); }
@@ -1018,6 +1232,8 @@ class Game {
     this.chase.update(dt, this.player, this.target, camMode, this.time);
     if (this.tunnel && this.inTunnel && this.tunnel.constrain) this.tunnel.constrain(this.camera.position, 4);
     this.camMode = camMode;
+    // enemies are drawn larger than life, more so far from the camera (Aircraft.updateDrawScale: a few flops each)
+    for (let i = 0; i < this.enemies.length; i++) { const e = this.enemies[i]; if (e.alive) e.updateDrawScale(this.camera.position); }
 
     prof.cpuEnd('logic'); prof.cpuBegin('world');
     this.world.update(dt, this.camera, this.time);
@@ -1101,6 +1317,14 @@ class Game {
         if (!this.boundaryWarned || this.time - this.boundaryWarned > 4) { this.message('RETURN TO THE COMBAT AREA', false, 3); this.boundaryWarned = this.time; this.say('outOfBounds', 2, 15); }
       }
     }
+    // Bandit flights (3 Hz, js/flights.js): holding flights commit on contact, when attacked, or when the commit timer
+    // releases one (the difficulty's cap and stagger; a phase may set its own stagger); delayed groups enter when due
+    if (this.flights) {
+      const d = this.diff || DIFFICULTY.normal, P = this.mission.phases[this.phaseIndex];
+      this.flights.update(dt, this.time, p, this.allies, d.flightCap, ((P && P.stagger) || 20) * d.stagger / 20);
+      if (this.flights.dirty) { this.flights.dirty = false; this._dirT = 0; this._slotT = 0; }   // roles and slots next
+    }
+    if (this._pending && this._pending.length) this.spawnPending(false);
     // Bandit director (~1 s): how many bandits hunt the player and how many a squadmate (directBandits)
     this._dirT = (this._dirT || 0) - dt;
     if (this._dirT <= 0) { this._dirT = 1; this.profiler.cpuBegin('allies'); this.directBandits(); this.profiler.cpuEnd('allies'); }
@@ -1113,7 +1337,7 @@ class Game {
       const maxA = (this.diff || DIFFICULTY.normal).aggressors;
       const armed = this._armed || (this._armed = []), sq = this._sqArmed || (this._sqArmed = []); armed.length = 0; sq.length = 0;
       for (const e of this.enemies) {
-        if (!e.alive || !e.brain || e.brain.passive) continue;
+        if (!e.alive || !e.brain || e.brain.passive || isHolding(e)) continue;   // holding flights take no slot
         const t = e.brain.target;
         if (t && t !== p) { e._d2 = e.position.distanceToSquared(t.position); sq.push(e); }   // hunting a squadmate
         else { e._d2 = e.position.distanceToSquared(p.position); armed.push(e); }
@@ -1133,7 +1357,7 @@ class Game {
       e.brain.update(dt, e.brain.target || p, world, weapons, this.time);
       e.update(dt);
       const h = Math.max(world.getHeight(e.position.x, e.position.z), 0);
-      if (e.position.y < h + 3 * (e.mesh.scale.x || 1) || (this.tunnel && this.tunnel.collide(e.position, 6) === 'wall')) {
+      if (e.position.y < h + 3 * e.sizeScale || (this.tunnel && this.tunnel.collide(e.position, 6) === 'wall')) {   // (life size)
         if (this.allied.leakers.length > 0 && this.allied.crashLeak(e)) continue;   // a leaker that hit the sea at the fleet: a leak
         weapons.aircraftDeath(e); e.kill(); this.combatDirty = true; this.score += 300; this.message('BANDIT CRASHED', false, 2);
         if (this.target === e) { this.target = null; this.lockTimer = 0; this.locked = false; }
@@ -1198,6 +1422,8 @@ class Game {
     if (this.missionDoneT > 0) {
       this.missionDoneT += dt;
       if (this.missionDoneT > 4.5) { this.missionDoneT = 0; this.setState('complete'); this.showDebrief(true); }
+    } else if (aliveEnemies + surfaceAlive === 0 && p.alive && this._pending && this._pending.length) {
+      this.spawnPending(true);             // the field is clear before a delayed group was due: it enters now
     } else if (aliveEnemies + surfaceAlive === 0 && p.alive) {
       this.waveTimer += dt;
       const last = this.phaseIndex >= this.mission.phases.length - 1;
@@ -1205,10 +1431,11 @@ class Game {
       if (this.waveTimer > (last ? 1.2 : 3.5)) { this.waveTimer = 0; this.nextPhase(); }
     } else this.waveTimer = 0;
     // Warnings & audio
-    let missileIncoming = false;
+    let inbound = 0;
     const ms = weapons.missiles;
-    for (let i = 0; i < ms.length; i++) { const m = ms[i]; if (m.alive && m.target === p) { missileIncoming = true; break; } }
-    this.missileIncoming = missileIncoming && p.alive;
+    for (let i = 0; i < ms.length; i++) { const m = ms[i]; if (m.alive && m.target === p) inbound++; }
+    p._inboundCount = inbound;             // enemy missiles after the player: bandits hold launches at the cap (canLaunchAt)
+    this.missileIncoming = inbound > 0 && p.alive;
     let pullUp = false;
     if (p.alive) {
       _v.copy(p.position).addScaledVector(p.velocity, 2.2);
@@ -1260,12 +1487,37 @@ class Game {
       _v.subVectors(this.target.position, p.position);
       const d = _v.length();
       const cos = _v.dot(_fwd) / Math.max(d, 1e-3);
-      this.inCone = cos > LOCK_COS && d < LOCK_RANGE;
-      const holding = this.locked && cos > HOLD_COS && d < HOLD_RANGE;   // hysteresis: an acquired lock is sticky
-      this.lockTimer = (this.inCone || holding) ? Math.min(LOCK_TIME, this.lockTimer + dt) : Math.max(0, this.lockTimer - dt * 2.5);
+      let inCone = cos > LOCK_COS && d < LOCK_RANGE;
+      let holding = this.locked && cos > HOLD_COS && d < HOLD_RANGE;   // hysteresis: an acquired lock is sticky
+      // Terrain or the tunnel ridge in the way counts as leaving the cone: the lock neither builds nor holds
+      if ((inCone || holding) && !this.targetInSight()) inCone = holding = false;
+      this.inCone = inCone;
+      this.lockTimer = (inCone || holding) ? Math.min(LOCK_TIME, this.lockTimer + dt) : Math.max(0, this.lockTimer - dt * 2.5);
       const was = this.locked; this.locked = this.lockTimer >= LOCK_TIME - 1e-6;
       if (this.locked && !was) { this.audio.ui('select'); this.target._lockedOnce = true; }
     } else { this.lockTimer = 0; this.locked = false; }
+  }
+  /** Line of sight to the current target, cached: re-checked every LOS_PERIOD and at once when the target changes.
+   *  updateTargeting asks only while the target is otherwise lockable. */
+  targetInSight() {
+    const t = this.target, now = this.time;
+    if (t !== this._losTarget || now >= this._losDue) { this._losTarget = t; this._losDue = now + LOS_PERIOD; this._losClear = this.lineOfSight(t); }
+    return this._losClear;
+  }
+  /** Line of sight from the player to `e` past terrain and the tunnel ridge: GroundForces.hasLineOfSight with its tunnel
+   *  obstacle callback. Free when both ends are above the highest terrain (World's height range) and the ridge's
+   *  bounding sphere, where nothing can be in the way. */
+  lineOfSight(e) {
+    const p = this.player;
+    let top = this._losTop;
+    if (top === undefined) {
+      const U = this.world.uniforms, tn = this.tunnel;
+      top = this._losTop = Math.max(U && U.uCullCfg ? U.uCullCfg.value.z : Infinity, tn ? tn.center.y + tn.radius + 1 : -Infinity);
+    }
+    if (e.position.y > top && p.position.y > top) return true;
+    if (e.isGround) return this.ground.hasLineOfSight(e, p.position);
+    _losAir.position.copy(e.position);
+    return this.ground.hasLineOfSight(_losAir, p.position);
   }
   /** Unit direction from the camera to the reticle you steer with: the aim circle in mouse aim, the gun cross
    *  otherwise, and the view center while looking back, padlocked or free-looking. */
@@ -1296,18 +1548,28 @@ class Game {
   }
   /** Auto-target score: closeness to the reticle plus a distance penalty (2 km ~ 10 deg). Lower is better. */
   targetScore(e, dir) { return this.reticleAngle(e, dir) + e.position.distanceTo(this.player.position) / 200; }
+  /** Best-scoring hostile, taken from the cycle-eligible ones (on screen, near the reticle) whenever there are any. */
   bestTarget() {
     const dir = this.reticleDir(_ret);
-    let best = null, bs = Infinity;
+    let best = null, bs = Infinity, bestE = null, bsE = Infinity;
     // friendlies (the player's team: squadmates, allied units) are never targets
-    for (const e of this.combatList) { if (!e.alive || e === this.player || e.team === this.player.team) continue; const sc = this.targetScore(e, dir); if (sc < bs) { bs = sc; best = e; } }
-    return best;
+    for (const e of this.combatList) {
+      if (!e.alive || e === this.player || e.team === this.player.team) continue;
+      const sc = this.targetScore(e, dir);
+      if (sc < bs) { bs = sc; best = e; }
+      if (sc < bsE && this.cycleEligible(e, dir)) { bsE = sc; bestE = e; }
+    }
+    return bestE || best;
   }
   nearestEnemy() { return this.bestTarget(); }
   /**
    * Target button: pick the hostile that appears closest to the reticle on screen, other than the current target.
    * Quick repeated taps (each within 2.5 s of the last) walk outward: each takes the closest one not yet picked in
    * that run. After a pause the next tap starts over from the reticle, so pointing at something and tapping takes it.
+   * While any hostile is eligible (cycleEligible: on screen within CYCLE_BORE of the reticle) the walk stays among the
+   * eligible ones and wraps there, so it never jumps to a target behind you, off screen or far off the reticle; when the
+   * current target is the only eligible one it stays. With none eligible it walks every hostile, so off-screen targets
+   * can still be found. Eligibility is a projection per hostile, run only on a press.
    */
   cycleTarget() {
     const now = this.time, dir = this.reticleDir(_ret);
@@ -1317,15 +1579,27 @@ class Game {
     let best = null;
     for (let pass = 0; pass < 2 && !best; pass++) {
       if (pass === 1) { walk.clear(); if (this.target) walk.add(this.target); }   // all visited: wrap to the closest again
-      let bd = Infinity;
+      let bd = Infinity, bdE = Infinity, bestE = null, anyE = false;
       for (const e of this.combatList) {
-        if (!e.alive || e === this.player || e.team === this.player.team || walk.has(e)) continue;
-        const a = this.reticleAngle(e, dir);
+        if (!e.alive || e === this.player || e.team === this.player.team) continue;
+        const a = this.reticleAngle(e, dir), ok = a <= CYCLE_BORE && this.onScreen(e);
+        if (ok) anyE = true;
+        if (walk.has(e)) continue;
         if (a < bd) { bd = a; best = e; }
+        if (ok && a < bdE) { bdE = a; bestE = e; }
       }
+      if (anyE) best = bestE;   // eligible hostiles exist (the current target may be one): pick only among them
     }
     this._walkT = now;
     if (best) { walk.add(best); this.target = best; this.lockTimer = 0; this.locked = false; this.audio.ui('select'); }
+  }
+  /** Cycle eligibility: on screen and within CYCLE_BORE degrees of the reticle direction `dir` (a reticleDir result). */
+  cycleEligible(e, dir) { return this.reticleAngle(e, dir) <= CYCLE_BORE && this.onScreen(e); }
+  /** True when `e` projects in front of the current camera and inside the viewport, CYCLE_INSET in from the edges.
+   *  (No range limit: hud.js brackets every on-screen contact, at any distance.) */
+  onScreen(e) {
+    _ndc.copy(e.position).project(this.camera);
+    return _ndc.z < 1 && Math.abs(_ndc.x) < 1 - CYCLE_INSET && Math.abs(_ndc.y) < 1 - CYCLE_INSET;
   }
   showDead() {
     if (this.ui.deadTitle) this.ui.deadTitle.textContent = this.deadReason || 'SHOT DOWN';
@@ -1373,6 +1647,7 @@ class Game {
       case 'invertPitch': this.input.setInvertPitch(!!v); if (this.touch && this.touch.setPitchInverted) this.touch.setPitchInverted(!!v); break;
       case 'touch': if (this.touch) this.touch.setMode(v || 'auto'); break;
       case 'cameraShake': this.chase.shakeScale = v === false ? 0 : 1; break;
+      case 'screenFlash': this.post.flashEnabled = v === true; break;   // white PostFX flash (explosions, flak, shot down)
       case 'master': this.audio.setMaster(Number(v)); break;
       case 'music': if (this.music && this.music.setVolume) this.music.setVolume(Number(v)); break;
       case 'sfx': if (this.audio.setSfxVolume) this.audio.setSfxVolume(Number(v)); break;
@@ -1380,6 +1655,7 @@ class Game {
       case 'difficulty': {
         const d = this.diff = DIFFICULTY[v] || DIFFICULTY.normal;
         this.armor = d.armor; this.skillOffset = d.skill; this.enemyMissileTurn = d.missileTurn;
+        if (this.player) this.player.missileCap = d.playerMissiles;   // enemy missiles after the player at once
         break;
       }
       default: break;   // mouseSens, mouseKeys, subtitles are read live
@@ -1550,7 +1826,7 @@ class Game {
     for (const e of this.enemies) e.kill();
     this.ground.clear(); this.allied.clear();
     const p = this.player; p.getForward(_fwd);
-    this.spawnAirGroup({ type: 'NV-48', count: 6, formation: 'loose' }, p.position.x + _fwd.x * 3500, p.position.z + _fwd.z * 3500);   // constant workload
+    this.spawnAirGroup({ type: 'NV-48', count: 6, formation: 'loose', task: 'engage' }, p.position.x + _fwd.x * 3500, p.position.z + _fwd.z * 3500);   // constant workload
     this.rebuildCombatList();
     const immortal = () => false;
     for (const ac of this.allAircraft) ac.applyDamage = immortal;
@@ -1601,15 +1877,15 @@ class Game {
 
   // ---------- HUD frame ----------
   makeFrame() {
-    const mk = () => ({ x: 0, y: 0, onScreen: false, behind: false, type: 'enemy', hostile: true, distance: 0, isTarget: false });
+    const mk = () => ({ x: 0, y: 0, onScreen: false, behind: false, type: 'enemy', hostile: true, distance: 0, isTarget: false, kind: 'air', r: 0, tag: false });
     return {
       w: 1, h: 1, dt: 0, time: 0, state: 'title',
       player: { speed: 0, altitude: 0, radarAlt: 0, heading: 0, pitch: 0, roll: 0, gLoad: 1, throttle: 0, afterburner: false, health: 100, ammo: 0, missiles: 0, maxMissiles: 8, stall: false },
       velocityVector: { x: 0, y: 0, visible: false },
       target: null,
-      _target: { x: 0, y: 0, onScreen: false, behind: false, distance: 0, name: '', health: 1, lock: 0, locked: false, inSeekerCone: false, closure: 0, lead: null, _lead: { x: 0, y: 0 } },
-      contacts: [], _contactPool: Array.from({ length: 48 }, mk),
-      radar: { range: RADAR_RANGE, blips: [], _pool: Array.from({ length: 48 }, () => ({ dx: 0, dz: 0, type: 'enemy', isTarget: false, relAlt: 0 })) },
+      _target: { x: 0, y: 0, onScreen: false, behind: false, distance: 0, name: '', health: 1, lock: 0, locked: false, inSeekerCone: false, closure: 0, lead: null, _lead: { x: 0, y: 0 }, kind: 'air', r: 0, tag: false },
+      contacts: [], _contactPool: Array.from({ length: HUD_CONTACTS }, mk),
+      radar: { range: RADAR_RANGE, blips: [], _pool: Array.from({ length: HUD_CONTACTS }, () => ({ dx: 0, dz: 0, type: 'enemy', isTarget: false, relAlt: 0 })) },
       warnings: { missileIncoming: false, pullUp: false, stall: false, overG: false },
       messages: this.messages, score: 0, wave: 0, enemiesRemaining: 0, kills: 0,
       padlock: false, lookBack: false,
@@ -1626,6 +1902,15 @@ class Game {
     out.x = sx; out.y = sy;
     out.onScreen = !out.behind && _v.x > -1 && _v.x < 1 && _v.y > -1 && _v.y < 1;
     return out;
+  }
+  /** HUD contact slot i and its radar blip for hostile e: screen position from the probe S (projected already) or
+   *  projected here, marker class, projected model radius r (pxm: px per metre at 1 m) and TGT tag (pri: priorityPhase). */
+  hudContact(i, e, S, pxm, pri) {
+    const f = this.frame, p = this.player, c = f._contactPool[i], b = f.radar._pool[i];
+    if (S) { c.x = S.x; c.y = S.y; c.onScreen = S.onScreen; c.behind = S.behind; } else this.project(e.position, c);
+    c.type = 'enemy'; c.hostile = true; c.distance = e.position.distanceTo(p.position); c.isTarget = e === this.target;
+    c.kind = hudKind(e); c.r = hudRadius(e) * pxm / Math.max(1, e.position.distanceTo(this.camera.position)); c.tag = e.bossBars > 0 || (pri && !e.optional);
+    b.dx = e.position.x - p.position.x; b.dz = e.position.z - p.position.z; b.type = 'enemy'; b.isTarget = c.isTarget; b.relAlt = e.position.y - p.position.y;
   }
   buildFrame(dt) {
     const f = this.frame, p = this.player, cam = this.camera;
@@ -1654,14 +1939,18 @@ class Game {
       G.visible = G.onScreen && this.camMode !== 'rear' && p.alive;
       f.gunCross = G;
     }
-    // Target
-    const t = this.target;
+    // Target. Every hostile marker also gets its class, projected model radius r (px, from px per metre at 1 m: pxm) and
+    // TGT tag (bosses, and the required units of a mostly optional phase)
+    const t = this.target, pri = !!this.priorityPhase;
+    const pxm = f.h * 0.5 * (cam.zoom || 1) / Math.tan(THREE.MathUtils.degToRad(cam.fov) * 0.5);
     if (t && t.alive && this.state !== 'title') {
       const T = f._target; this.project(t.position, T);
       _v2.subVectors(t.position, p.position);
       T.distance = _v2.length(); T.name = t.name || 'BANDIT'; T.health = THREE.MathUtils.clamp(t.health / (t.maxHealth || ENEMY_HEALTH), 0, 1);
-      T.lock = this.lockTimer / LOCK_TIME; T.locked = this.locked; T.inSeekerCone = this.inCone;
+      // lock progress only while it can build (in the cone and in sight) or holds: a blocked target shows none
+      T.lock = this.inCone || this.locked ? this.lockTimer / LOCK_TIME : 0; T.locked = this.locked; T.inSeekerCone = this.inCone;
       _v.subVectors(p.velocity, t.velocity); T.closure = _v.dot(_v2) / Math.max(T.distance, 1e-3);
+      T.kind = hudKind(t); T.r = hudRadius(t) * pxm / Math.max(1, t.position.distanceTo(cam.position)); T.tag = t.bossBars > 0 || (pri && !t.optional);
       // Gun lead (within 1.2 km, target ahead): solve from the gun muzzle. Rounds inherit our velocity and drop
       // slightly, so the launch direction is toward T + (vT - vP)*tof, lifted by the drop; refine twice.
       p.getForward(_fwd);
@@ -1688,25 +1977,33 @@ class Game {
       } else { T.lead = null; T.leadHot = false; }
       f.target = T;
     } else f.target = null;
-    // Contacts & radar
+    // Contacts & radar: a slot (HUD_CONTACTS) per hostile and hostile missile. Should they ever run out, the selected
+    // target goes first, then hostiles on screen (the nearest kept), then the rest, then missiles.
     f.contacts.length = 0; f.radar.blips.length = 0;
-    let n = 0, remaining = 0;
+    const CP = f._contactPool, cap = CP.length, OL = f._offList || (f._offList = []);
+    const S = f._probe || (f._probe = { x: 0, y: 0, onScreen: false, behind: false });
+    const tFirst = !!t && t.alive && t !== p && t.team !== 'player';
+    let n = 0, no = 0, remaining = 0;
+    if (tFirst) this.hudContact(n++, t, null, pxm, pri);
     for (const e of this.combatList) {
       if (!e.alive || e === p || e.team === 'player') continue; remaining++;   // friendlies are listed below
-      if (n < f._contactPool.length) {
-        const c = f._contactPool[n]; this.project(e.position, c); c.type = 'enemy'; c.hostile = true; c.distance = e.position.distanceTo(p.position); c.isTarget = e === t;
-        f.contacts.push(c);
-        const b = f.radar._pool[n]; b.dx = e.position.x - p.position.x; b.dz = e.position.z - p.position.z; b.type = 'enemy'; b.isTarget = e === t; b.relAlt = e.position.y - p.position.y;
-        f.radar.blips.push(b); n++;
-      }
+      if (e === t && tFirst) continue;
+      this.project(e.position, S);
+      if (!S.onScreen) { OL[no++] = e; continue; }
+      if (n < cap) { this.hudContact(n++, e, S, pxm, pri); continue; }
+      let far = -1, fd = e.position.distanceTo(p.position);   // full of on-screen hostiles: replace the farthest
+      for (let i = tFirst ? 1 : 0; i < cap; i++) if (CP[i].distance > fd) { fd = CP[i].distance; far = i; }
+      if (far >= 0) this.hudContact(far, e, S, pxm, pri);
     }
+    for (let i = 0; i < no; i++) { if (n < cap) this.hudContact(n++, OL[i], null, pxm, pri); OL[i] = null; }
     for (const m of this.weapons.missiles) {
-      if (!m.alive || m.owner === p || (m.owner && m.owner.team === 'player') || n >= f._contactPool.length) continue;
-      const c = f._contactPool[n]; this.project(m.position, c); c.type = 'missile'; c.hostile = m.target === p; c.distance = m.position.distanceTo(p.position); c.isTarget = false;
-      f.contacts.push(c);
+      if (!m.alive || m.owner === p || (m.owner && m.owner.team === 'player') || n >= cap) continue;
+      const c = CP[n]; this.project(m.position, c); c.type = 'missile'; c.hostile = m.target === p; c.distance = m.position.distanceTo(p.position); c.isTarget = false;
+      c.r = 0; c.tag = false;
       const b = f.radar._pool[n]; b.dx = m.position.x - p.position.x; b.dz = m.position.z - p.position.z; b.type = 'missile'; b.isTarget = false; b.relAlt = m.position.y - p.position.y;
-      f.radar.blips.push(b); n++;
+      n++;
     }
+    for (let i = 0; i < n; i++) { f.contacts.push(CP[i]); f.radar.blips.push(f.radar._pool[i]); }
     f.enemiesRemaining = remaining;
     // Friendlies: screen markers for live squadmates (this.allies) and friendly radar contacts for squadmates and allied
     // ground/naval units (AlliedForces.radar, built when they spawn). Pools are made once; nothing here allocates per frame.

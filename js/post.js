@@ -344,8 +344,8 @@ void main() {
     float edge = smoothstep(0.25, 1.3, rad);
     ldr = mix(ldr, vec3(0.72, 0.015, 0.0), clamp(uDamage * (edge * 0.9 + 0.08), 0.0, 1.0));
   }
-  // flash: toward white
-  ldr = mix(ldr, vec3(1.0), uFlash);
+  // flash: toward white (skipped while none is live, e.g. with flashEnabled off)
+  if (uFlash > 0.0) ldr = mix(ldr, vec3(1.0), uFlash);
 
   // encode + very subtle animated grain (also dithers the 8-bit output)
   vec3 srgb = linearToSRGB(ldr);
@@ -400,6 +400,7 @@ export class PostFX {
     this.flareStrength = 1.0;       // lens flare / glare / anamorphic streak scale, 0 = off
     this.grain = 1.0;               // film grain scale, 0 = off (1 = +-3/255 max)
     this.flashTime = 0.3;           // seconds for a flash to decay to ~4 %
+    this.flashEnabled = true;       // false: flash() is ignored, so no flash starts (the game's "Screen flash" setting)
     this.damageTime = 0.6;          // seconds for a damage pulse to decay to ~5 %
     this.sharpness = null;          // RCAS strength 0..1 when upscaling; null = automatic (stronger at lower scales)
     this.fxaa = true;               // edge AA folded into the composite whenever MSAA is off (activeSamples === 0)
@@ -553,8 +554,9 @@ export class PostFX {
     return this._quality;
   }
 
-  /** Additive white flash (clamped to 1) decaying over ~flashTime seconds. */
+  /** Additive white flash (clamped to 1) decaying over ~flashTime seconds. No-op while flashEnabled is false. */
   flash(intensity) {
+    if (!this.flashEnabled) return;
     const v = Number(intensity);
     if (v > 0) this._flash = Math.min(1, this._flash + v);
   }

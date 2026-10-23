@@ -1419,9 +1419,9 @@ export class Weapons {
         const cx = sx + dx * u, cy = sy + dy * u, cz = sz + dz * u;
         const c2 = cx * cx + cy * cy + cz * cz;
         if (c2 < RR * RR && u < bestU) {
-          // sparks on the airframe (<= 5 m from its centre, or ~its hull for big targets), not in mid-air where a
-          // generous sphere was merely grazed
-          const surf = big && tr > 6 ? tr * 0.85 : 5;
+          // sparks on the airframe (<= 5 m from its centre at life size, x its drawn scale; or ~its hull for big
+          // targets), not in mid-air where a generous sphere was merely grazed
+          const vs = T.visualScale > 1 ? T.visualScale : 1, surf = big && tr > 6 ? tr * 0.85 : 5 * vs;
           const k = Math.min(0.85, surf / Math.max(Math.sqrt(c2), 1e-3));
           hit = T; bestU = u; hx = tp.x + cx * k; hy = tp.y + cy * k; hz = tp.z + cz * k;
         }
@@ -1479,6 +1479,7 @@ export class Weapons {
 
   _gunHit(target, shooter, x, y, z, dx, dy, dz) {
     const immortal = target.immortal === true;     // (squadmates, in the enemy team's list) a visible hit, never damage
+    const vs = target.visualScale > 1 ? target.visualScale : 1;   // flash and smoke sized to the airframe as drawn
     const dmg = immortal ? 0 : this.damageFilter ? this.damageFilter(target, this.bulletDamage, shooter, 'gun', null) : this.bulletDamage;
     if (!immortal && this.onHit) this.onHit(target, dmg, shooter, 'gun');
     if (!this._far(x, y, z)) {
@@ -1497,12 +1498,12 @@ export class Weapons {
       }
       const g = this._recG;
       g[0] = x; g[1] = y; g[2] = z; g[3] = t; g[4] = tv.x; g[5] = tv.y; g[6] = tv.z; g[7] = 0.08;
-      g[8] = 20; g[9] = 14; g[10] = 7; g[11] = 1; g[12] = 3.5; g[13] = 1.5; g[14] = 0.1; g[15] = 0;
+      g[8] = 20; g[9] = 14; g[10] = 7; g[11] = 1; g[12] = 3.5 * vs; g[13] = 1.5 * vs; g[14] = 0.1; g[15] = 0;
       g[16] = 0.3; g[17] = 0; g[18] = 0.3; g[19] = rnd();
       this._fireRing.push(g);
       const p = this._recS;                      // a wisp of smoke that streams off behind the target
       p[0] = x; p[1] = y; p[2] = z; p[3] = t; p[4] = tv.x * 0.92; p[5] = tv.y * 0.92; p[6] = tv.z * 0.92; p[7] = 1.0;
-      p[8] = 0.22; p[9] = 0.21; p[10] = 0.2; p[11] = 0.5; p[12] = 1.2; p[13] = 5; p[14] = 0.8; p[15] = 0.5;
+      p[8] = 0.22; p[9] = 0.21; p[10] = 0.2; p[11] = 0.5; p[12] = 1.2 * vs; p[13] = 5 * vs; p[14] = 0.8; p[15] = 0.5;
       p[16] = 0; p[17] = 0; p[18] = 1; p[19] = rnd(); p[20] = 0; p[21] = 0; p[22] = 0; p[23] = 0.04;
       this._smokeRing.push(p);
     }
@@ -1651,8 +1652,9 @@ export class Weapons {
     if (m.ignited) this._missileTrail(m);
 
     // ---- proximity fuse vs any live aircraft / ground target in the owner team's list except the owner (segment test in
-    //      the target's frame); radius = max(missileFuse, 0.8 * target.hitRadius) so big ground targets (ships) fuse at
-    //      their hull. A dud only airbursts, harmlessly, and only if something comes within dudBurstRadius (it aims wide).
+    //      the target's frame); radius = max(missileFuse, 0.8 * target.fuseRadius (else hitRadius)) so big ground targets
+    //      (ships) fuse at their hull: GroundTarget.fuseRadius keeps the life-size sphere, hitRadius covers the drawn unit
+    //      for rounds. A dud only airbursts, harmlessly, and only if something comes within dudBurstRadius (it aims wide).
     if (m.age > this.missileArmTime) {
       const F = m.dud ? this.dudBurstRadius : m.fuse;
       const ax = m.prev.x, ay = m.prev.y, az = m.prev.z, bx = m.position.x, by = m.position.y, bz = m.position.z;
@@ -1661,7 +1663,7 @@ export class Weapons {
       for (let j = 0; j < tl.length; j++) {
         const T = tl[j];
         if (T === own || Weapons._isDead(T)) continue;
-        const tr = T.hitRadius, fr = typeof tr === 'number' && tr * 0.8 > F ? tr * 0.8 : F, R2 = fr * fr;
+        const tr = T.fuseRadius !== undefined ? T.fuseRadius : T.hitRadius, fr = typeof tr === 'number' && tr * 0.8 > F ? tr * 0.8 : F, R2 = fr * fr;
         const tp = T.position, tv = T.velocity || _zero;
         const sx = ax - (tp.x - tv.x * od), sy = ay - (tp.y - tv.y * od), sz = az - (tp.z - tv.z * od);
         const ex = bx - (tp.x - tv.x * o), ey = by - (tp.y - tv.y * o), ez = bz - (tp.z - tv.z * o);
@@ -2222,21 +2224,22 @@ export class Weapons {
     if (this.onExplosion) { this._cbPos.set(px, py, pz); this.onExplosion(this._cbPos, size); }
   }
 
-  /** Big explosion + chained secondary blasts + 12 burning debris chunks + a lingering black smoke column. */
+  /** Big explosion + chained secondary blasts + 12 burning debris chunks + a lingering black smoke column, sized to the
+   *  airframe as drawn (its visualScale: enemies are drawn larger than life; never below life size). */
   aircraftDeath(aircraft) {
     if (!aircraft || !aircraft.position) return;
-    const p = aircraft.position, v = aircraft.velocity || _zero;
-    this._death(p.x, p.y, p.z, v.x, v.y, v.z);
+    const p = aircraft.position, v = aircraft.velocity || _zero, k = aircraft.visualScale > 1 ? aircraft.visualScale : 1;
+    this._death(p.x, p.y, p.z, v.x, v.y, v.z, k);
   }
 
-  _death(px, py, pz, vx, vy, vz) {
+  _death(px, py, pz, vx, vy, vz, k = 1) {
     this._tmpPos.set(px, py, pz);
     this._tmpVel.set(vx * 0.45, vy * 0.45, vz * 0.45);
-    this.explode(this._tmpPos, 2.2, this._tmpVel);
-    this._delay(0.16, px + vx * 0.08 + rand(-6, 6), py + rand(-3, 5), pz + vz * 0.08 + rand(-6, 6), 1.2, vx * 0.5, vy * 0.5, vz * 0.5);
-    this._delay(0.4, px + vx * 0.2 + rand(-9, 9), py + rand(-5, 4), pz + vz * 0.2 + rand(-9, 9), 0.9, vx * 0.4, vy * 0.4, vz * 0.4);
-    for (let i = 0; i < 12; i++) this._spawnChunk(px, py, pz, vx, vy, vz, i < 2);
-    this._emit(KIND_COLUMN, px, py, pz, vx * 0.08, vy * 0.08, vz * 0.08, 4.5, 16, 1);
+    this.explode(this._tmpPos, 2.2 * k, this._tmpVel);
+    this._delay(0.16, px + vx * 0.08 + rand(-6, 6) * k, py + rand(-3, 5) * k, pz + vz * 0.08 + rand(-6, 6) * k, 1.2 * k, vx * 0.5, vy * 0.5, vz * 0.5);
+    this._delay(0.4, px + vx * 0.2 + rand(-9, 9) * k, py + rand(-5, 4) * k, pz + vz * 0.2 + rand(-9, 9) * k, 0.9 * k, vx * 0.4, vy * 0.4, vz * 0.4);
+    for (let i = 0; i < 12; i++) this._spawnChunk(px, py, pz, vx, vy, vz, i < 2, k);
+    this._emit(KIND_COLUMN, px, py, pz, vx * 0.08, vy * 0.08, vz * 0.08, 4.5, 16, k);
     this._commit();
   }
 
@@ -2285,12 +2288,12 @@ export class Weapons {
     this._commit();
   }
 
-  _spawnChunk(px, py, pz, vx, vy, vz, big) {
+  _spawnChunk(px, py, pz, vx, vy, vz, big, k = 1) {
     if (this._nChunks >= DEBRIS_CAPACITY) return;
     const c = this._chunks[this._nChunks++];
     randDir(_v0);
     const sp = big ? rand(8, 22) : rand(15, 45);
-    c.p.set(px + _v0.x * 2, py + _v0.y * 2, pz + _v0.z * 2);
+    c.p.set(px + _v0.x * 2 * k, py + _v0.y * 2 * k, pz + _v0.z * 2 * k);
     c.prev.copy(c.p);
     c.v.set(vx * 0.75 + _v0.x * sp, vy * 0.75 + _v0.y * sp + rand(0, 10), vz * 0.75 + _v0.z * sp);
     randDir(c.axis);
@@ -2304,6 +2307,7 @@ export class Weapons {
       else if (k < 0.75) c.s.set(rand(0.4, 0.9), rand(0.4, 0.8), rand(0.6, 1.6));   // chunk
       else c.s.set(rand(0.2, 0.5), rand(0.2, 0.5), rand(0.2, 0.5));                 // bits
     }
+    if (k !== 1) c.s.multiplyScalar(k);                                             // pieces of a jet drawn larger than life
     c.tint = big ? rand(0.16, 0.26) : rand(0.06, 0.32);
     c.age = 0; c.life = rand(3.6, 4.4);
     c.burn = big ? c.life : rand(1.0, 3.0);

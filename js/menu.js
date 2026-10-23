@@ -4,9 +4,13 @@
 // Usage (main.js):
 //   const settings = loadSettings();                       // merged over DEFAULT_SETTINGS, persisted in 'wingnut.settings'
 //   const menu = new Menu(document.querySelector('#ui'), { settings, missions: MISSIONS, onStart, onResume, onRestart,
-//                                                         onQuit, onNext, onSetting, onSound });
+//                                                         onQuit, onNext, onSetting, onSound, onInfinity });
 //   menu.show('title');
 //   every frame: input.update(dt); if (menu.open) menu.update(dt, input);
+// INFINITY (js/infinity.js), the endless mode: the title lists it under Start Campaign when onInfinity is given (it
+// starts a new run), with the local best on its second line. In a run, show('pause', { mode: 'infinity', round })
+// offers New Run in place of Restart Mission (onInfinity after a confirm), and the end screen is
+// show('debrief', { mode: 'infinity', title, round, roundsCleared, kills, score, best, newBest }) with New Run and Quit.
 //
 // Navigation works three ways and they can be mixed freely:
 //   pointer  hovering highlights an item, click/tap activates it, sliders drag, segments click;
@@ -18,12 +22,13 @@
 // The Menu hides itself before calling onStart / onResume / onRestart / onNext, and shows the title before onQuit.
 
 import { countUnits } from './missions.js';
+import { loadBest } from './infinity.js';
 
 // =================================================================================================================
 // Settings
 // =================================================================================================================
 export const DEFAULT_SETTINGS = Object.freeze({
-  quality: 'auto', perfOverlay: false, invertPitch: false, mouseSens: 1, mouseKeys: 'simple', touch: 'auto', cameraShake: true,
+  quality: 'auto', perfOverlay: false, invertPitch: false, mouseSens: 1, mouseKeys: 'simple', touch: 'auto', cameraShake: true, screenFlash: false,
   master: 0.8, music: 0.7, sfx: 0.9, voice: 1.0, subtitles: true, difficulty: 'normal',
 });
 const STORE_KEY = 'wingnut.settings';
@@ -54,6 +59,8 @@ export const SETTING_DEFS = [
     desc: 'On-screen sticks and buttons. Auto shows them on touch screens.' },
   { key: 'cameraShake', tab: 'controls', type: 'toggle', label: 'Camera shake',
     desc: 'Shake from hits, flak and nearby explosions.' },
+  { key: 'screenFlash', tab: 'controls', type: 'toggle', label: 'Screen flash',
+    desc: 'White flash from missile hits, flak and nearby explosions.' },
   { key: 'master', tab: 'audio', type: 'slider', label: 'Master volume', min: 0, max: 1, step: 0.05, dragStep: 0.01, format: pct },
   { key: 'music', tab: 'audio', type: 'slider', label: 'Music', min: 0, max: 1, step: 0.05, dragStep: 0.01, format: pct },
   { key: 'sfx', tab: 'audio', type: 'slider', label: 'Effects', min: 0, max: 1, step: 0.05, dragStep: 0.01, format: pct,
@@ -160,6 +167,8 @@ const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
 const gap = (a0, a1, b0, b1) => Math.max(0, b0 - a1, a0 - b1);   // distance between two intervals (0 = overlapping)
 function media(q) { try { return typeof matchMedia === 'function' && matchMedia(q).matches; } catch { return false; } }
 const missionNo = (m, i) => pad2(m && m.id != null ? m.id : i + 1);
+const fmtNum = (v) => (Number.isFinite(Number(v)) ? Number(v).toLocaleString() : '–');
+const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
 
 const item = (act, num, label, sub) => `<button type="button" class="m-item" data-nav data-act="${act}">` +
   `<span class="m-num" aria-hidden="true">${num}</span><span class="m-lbl">${esc(label)}${sub ? `<small>${esc(sub)}</small>` : ''}</span>` +
@@ -230,7 +239,8 @@ export class Menu {
   /**
    * @param {HTMLElement} rootEl  #ui; the menu container is inserted as its first child (so #loading/#perf/#err stay on top)
    * @param {object} opts { settings, missions, onStart(i), onResume(), onRestart(), onQuit(), onNext(),
-   *                        onSetting(key, value, settings), onSound(kind) }   kind: 'move' | 'adjust' | 'select' | 'back'
+   *                        onSetting(key, value, settings), onSound(kind), onInfinity() }
+   *                        kind: 'move' | 'adjust' | 'select' | 'back'; without onInfinity the title has no INFINITY entry
    */
   constructor(rootEl, opts = {}) {
     this.root = rootEl || document.body;
@@ -249,7 +259,7 @@ export class Menu {
     this._lock = 0;             // s during which update() ignores input (opening, debrief)
     this._tab = 'graphics';
     this._missionSel = 0; this._detailFor = -1; this._missionIndex = -1;
-    this._deb = { canNext: false }; this._pending = null;
+    this._deb = { canNext: false, infinity: false }; this._pending = null; this._pauseInf = false;
     this._dirty = false; this._saveT = 0; this._drag = null; this._px = -1; this._py = -1;
     this._device = '';
     this._reduced = media('(prefers-reduced-motion: reduce)');
@@ -269,7 +279,9 @@ export class Menu {
   /**
    * Show a screen. title / pause / debrief start a fresh stack; the others stack on top of whatever is open
    * (Back returns there), or stand alone when the menu was closed (Back then closes the menu and calls onResume).
-   * data: pause { missionIndex?, subtitle? } · debrief { title, stats, canNext, success?, eyebrow?, subtitle?, missionIndex? }
+   * data: pause { missionIndex?, subtitle? } or { mode: 'infinity', round } ·
+   *       debrief { title, stats, canNext, success?, eyebrow?, subtitle?, missionIndex? } or
+   *               { mode: 'infinity', title, round, roundsCleared, kills, score, best, newBest, stats? } ·
    *       missions { selected? } · settings { tab? }
    */
   show(screen, data) {
@@ -384,8 +396,10 @@ export class Menu {
     };
     const D = this._screens.debrief;
     this._debEls = { eye: q('.m-deb-eye', D), title: q('.m-deb-title', D), sub: q('.m-deb-sub', D), stats: q('.m-deb-stats', D),
-      next: q('[data-act="next"]', D), retry: q('[data-act="retry"]', D) };
+      next: q('[data-act="next"]', D), retry: q('[data-act="retry"]', D), missions: q('[data-act="missions"]', D), run: q('[data-act="infinity"]', D) };
     this._pauseSub = q('.m-pause-sub', this._screens.pause);
+    this._pauseRestart = q('[data-act="restart"] .m-lbl', this._screens.pause);
+    this._infSub = q('[data-act="infinity"] .m-lbl small', this._screens.title);
     this._kbCard = q('.m-card--kb'); this._creditsEl = q('.m-credits');
     const C = this._screens.confirm;
     this._cf = { title: q('.m-h2', C), text: q('.m-lede', C), yes: q('[data-act="confirm-yes"]', C) };
@@ -397,6 +411,9 @@ export class Menu {
 
   _htmlTitle() {
     const m0 = this.missions[0];
+    const entries = [['start', 'Start Campaign', m0 ? `Mission ${missionNo(m0, 0)} · ${m0.name || ''}` : '']];
+    if (typeof this.opts.onInfinity === 'function') entries.push(['infinity', 'Infinity', this._infinityLine()]);
+    entries.push(['missions', 'Mission Select'], ['settings', 'Settings'], ['controls', 'Controls'], ['credits', 'Credits']);
     return `<section class="m-screen m-title" data-screen="title" data-wrap aria-labelledby="m-title-h" hidden>
       <div class="m-panel m-panel--title">
         <p class="m-eyebrow">Arcade jet combat</p>
@@ -404,11 +421,7 @@ export class Menu {
         <p class="m-tagline">The Galebreak Isles. Twenty-one sorties. Own the sky.</p>
         <div class="m-rule" aria-hidden="true"></div>
         <nav class="m-list" aria-label="Main menu">
-          ${item('start', '01', 'Start Campaign', m0 ? `Mission ${missionNo(m0, 0)} · ${m0.name || ''}` : '')}
-          ${item('missions', '02', 'Mission Select')}
-          ${item('settings', '03', 'Settings')}
-          ${item('controls', '04', 'Controls')}
-          ${item('credits', '05', 'Credits')}
+          ${entries.map(([act, label, sub], i) => item(act, pad2(i + 1), label, sub)).join('')}
         </nav>
         <footer class="m-foot">${STATUS}<p class="m-tip" hidden></p>${hints([['ud', 'Select'], ['ok', 'Confirm']])}</footer>
       </div></section>`;
@@ -464,6 +477,7 @@ export class Menu {
         <div class="m-deb-stats"></div>
         <div class="m-actions">
           <button type="button" class="m-btn" data-nav data-act="retry">Retry</button>
+          <button type="button" class="m-btn" data-nav data-act="infinity" hidden>New Run</button>
           <button type="button" class="m-btn" data-nav data-act="next">Next Mission <span aria-hidden="true">›</span></button>
           <button type="button" class="m-btn" data-nav data-act="missions">Mission Select</button>
           <button type="button" class="m-btn" data-nav data-act="quit">Quit to Title</button>
@@ -561,7 +575,8 @@ export class Menu {
       if (screen === 'missions') {
         const sel = data && Number.isInteger(data.selected) ? data.selected : (this._missionIndex >= 0 ? this._missionIndex : this._missionSel);
         this._selectMission(sel);
-      } else if (screen === 'pause') this._setPause(data);
+      } else if (screen === 'title') this._refreshInfinity();
+      else if (screen === 'pause') this._setPause(data);
       else if (screen === 'debrief') this._setDebrief(data);
       else if (screen === 'settings') { if (data && data.tab) this._setTab(data.tab); this._syncAllRows(); }
       else if (screen === 'controls') this._renderKb();
@@ -600,42 +615,68 @@ export class Menu {
       case 'title': return q('[data-act="start"]');
       case 'missions': return q(`[data-mission="${this._missionSel}"]`) || q('[data-act="launch"]');
       case 'pause': return q('[data-act="resume"]');
-      case 'debrief': return q(this._deb.canNext ? '[data-act="next"]' : '[data-act="retry"]');
+      case 'debrief': return q(this._deb.infinity ? '[data-act="infinity"]' : this._deb.canNext ? '[data-act="next"]' : '[data-act="retry"]');
       case 'settings': return q(`[data-tab="${this._tab}"]`);
       default: return q('[data-act="back"]');      // controls, credits, confirm (Cancel)
     }
   }
 
   _setPause(d) {
+    const inf = this._pauseInf = !!(d && d.mode === 'infinity');
     const i = d && Number.isInteger(d.missionIndex) ? d.missionIndex : this._missionIndex;
     const m = this.missions[i];
-    const txt = (d && d.subtitle) || (m ? `Mission ${missionNo(m, i)} · ${m.name || ''}` : '');
+    const txt = (d && d.subtitle) || (inf ? `Infinity${Number(d.round) > 0 ? ` · Round ${Number(d.round)}` : ''}`
+      : m ? `Mission ${missionNo(m, i)} · ${m.name || ''}` : '');
     this._pauseSub.textContent = txt; this._pauseSub.hidden = !txt;
+    this._pauseRestart.textContent = inf ? 'New Run' : 'Restart Mission';
   }
 
+  /** Second line of the title's INFINITY entry: the local best (js/infinity.js loadBest never throws). */
+  _infinityLine() {
+    let b = null;
+    try { b = loadBest(); } catch { b = null; }
+    return b ? `Best ${fmtNum(b.score)} · ${plural(b.rounds, 'round', 'rounds')}` : 'Endless rounds · one life';
+  }
+  _refreshInfinity() { if (this._infSub) this._infSub.textContent = this._infinityLine(); }
+
   _setDebrief(d = {}) {
-    const E = this._debEls, canNext = !!d.canNext, win = d.success != null ? !!d.success : canNext;
-    this._deb = { canNext };
+    const E = this._debEls, inf = d.mode === 'infinity', canNext = !inf && !!d.canNext;
+    const win = d.success != null ? !!d.success : canNext;
+    this._deb = { canNext, infinity: inf };
     this._screens.debrief.classList.toggle('is-win', win);
     this._screens.debrief.classList.toggle('is-fail', !win);
-    E.eye.textContent = d.eyebrow || (win ? 'Mission complete' : 'Mission failed');
     E.title.textContent = d.title || (win ? 'Mission accomplished' : 'Shot down');
-    const i = Number.isInteger(d.missionIndex) ? d.missionIndex : this._missionIndex, m = this.missions[i];
-    const sub = d.subtitle || (m ? `Mission ${missionNo(m, i)} · ${m.name || ''}` : '');
+    let sub, items;
+    if (inf) {
+      // INFINITY run over: rounds cleared, kills, score and the local best; New Run or Quit (no retry: one life)
+      E.eye.textContent = d.eyebrow || 'Infinity · run over';
+      const round = Number(d.round);
+      sub = d.subtitle || [round > 0 ? `Round ${round}` : '', d.newBest ? 'New local best' : ''].filter(Boolean).join(' · ');
+      const best = d.best && typeof d.best === 'object' ? d.best.score : d.best;
+      items = d.stats ? statItems(d.stats) : [['Rounds cleared', fmtNum(d.roundsCleared ?? 0)], ['Kills', fmtNum(d.kills ?? 0)],
+        ['Score', fmtNum(d.score ?? 0)], ['Best', Number(best) > 0 ? fmtNum(best) : '–']];
+    } else {
+      E.eye.textContent = d.eyebrow || (win ? 'Mission complete' : 'Mission failed');
+      const i = Number.isInteger(d.missionIndex) ? d.missionIndex : this._missionIndex, m = this.missions[i];
+      sub = d.subtitle || (m ? `Mission ${missionNo(m, i)} · ${m.name || ''}` : '');
+      items = statItems(d.stats);
+    }
     E.sub.textContent = sub; E.sub.hidden = !sub;
-    const items = statItems(d.stats);
     E.stats.innerHTML = items.map(([label, value]) => `<div class="m-stat">${label ? `<span>${esc(label)}</span>` : ''}<b>${esc(value)}</b></div>`).join('');
     E.stats.hidden = !items.length;
     E.next.hidden = !canNext;
     E.next.classList.toggle('primary', canNext);
-    E.retry.classList.toggle('primary', !canNext);
+    E.retry.hidden = inf; E.missions.hidden = inf; E.run.hidden = !inf;
+    E.retry.classList.toggle('primary', !canNext && !inf);
+    E.run.classList.toggle('primary', inf);
   }
 
   _setConfirm(d) {
-    const kind = (d && d.kind) || this._pending || 'quit';
+    const kind = (d && d.kind) || this._pending || 'quit', inf = this._pauseInf;
     const T = kind === 'restart'
-      ? ['Restart mission?', 'The mission starts over from the beginning.', 'Restart']
-      : ['Quit to title?', 'Progress in this mission will be lost.', 'Quit'];
+      ? (inf ? ['Start a new run?', 'This run ends here and a new one starts at round 1.', 'New Run']
+        : ['Restart mission?', 'The mission starts over from the beginning.', 'Restart'])
+      : (inf ? ['Quit to title?', 'This run ends here.', 'Quit'] : ['Quit to title?', 'Progress in this mission will be lost.', 'Quit']);
     this._cf.title.textContent = T[0]; this._cf.text.textContent = T[1]; this._cf.yes.textContent = T[2];
   }
 
@@ -863,6 +904,7 @@ export class Menu {
     if (d.mission !== undefined) { if (!pointer) this._run('onStart', +d.mission); return; }
     switch (d.act) {
       case 'start': this._run('onStart', 0); break;
+      case 'infinity': this._run('onInfinity'); break;
       case 'launch': if (this.missions.length) this._run('onStart', this._missionSel); break;
       case 'missions': this._push('missions', { selected: this._missionIndex >= 0 ? this._missionIndex : this._missionSel }); break;
       case 'settings': case 'controls': case 'credits': this._push(d.act); break;
@@ -873,7 +915,9 @@ export class Menu {
       case 'quit':
         if (this.screen === 'pause') { this._pending = 'quit'; this._push('confirm', { kind: 'quit' }); } else this._quit();
         break;
-      case 'confirm-yes': if (this._pending === 'restart') this._run('onRestart'); else this._quit(); break;
+      case 'confirm-yes':
+        if (this._pending === 'restart') this._run(this._pauseInf ? 'onInfinity' : 'onRestart'); else this._quit();
+        break;
       case 'back': this._back(); break;
       case 'reset-tab': this._resetTab(); break;
       default: break;

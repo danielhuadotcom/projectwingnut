@@ -13,6 +13,10 @@ import { AfterburnerFX } from './engine_fx.js';
 // Everything renders in LINEAR HDR (custom shaders output linear radiance; bright emitters > 1 for bloom).
 
 export const AIRCRAFT_RADIUS = 7;            // collision sphere radius (m)
+// Enemies are drawn larger than life so they read at range (the player and squadmates stay life size): ENEMY_SCALE up
+// close, growing to ENEMY_SCALE_FAR between ENEMY_SCALE_NEAR_M and ENEMY_SCALE_FAR_M from the camera (smoothstep).
+// Aircraft.updateDrawScale applies it to the root mesh every frame; see Aircraft.setSize for what follows it.
+export const ENEMY_SCALE = 1.35, ENEMY_SCALE_FAR = 1.8, ENEMY_SCALE_NEAR_M = 600, ENEMY_SCALE_FAR_M = 2500;
 
 // Project Wingman-style arcade handling. PW lists rotation rates per aircraft (roll ~170-210, pitch ~85-100,
 // yaw ~10-15, "degrees per second"): rates are near-constant across the speed range, weak only near stall, and there
@@ -572,6 +576,8 @@ function getTopology() {
   const tmp = new THREE.BufferGeometry(); tmp.setAttribute('position', positionAttr);
   tmp.computeBoundingSphere(); tmp.computeBoundingBox();
   const sphere = tmp.boundingSphere.clone(); sphere.radius += 0.4;     // margin for deflected surfaces
+  let r2 = 0;                                                           // farthest vertex from the origin (the nose tip)
+  for (let i = 0; i < position.length; i += 3) r2 = Math.max(r2, position[i] * position[i] + position[i + 1] * position[i + 1] + position[i + 2] * position[i + 2]);
 
   // nav lights: red left tip, green right tip, white strobes on the fin tips
   const M = finMatrix(), ft = finSec(FIN.span), finTip = new THREE.Vector3(FIN.span, 0, ft.z + ft.c - 0.06).applyMatrix4(M);
@@ -589,7 +595,7 @@ function getTopology() {
   _topo = {
     vertexCount: nv, triangleCount: ni / 3, position, kind,
     positionAttr, normalAttr, surfAttr: new THREE.BufferAttribute(surf, 1), indexAttr: new THREE.BufferAttribute(index, 1),
-    sphere, box: tmp.boundingBox.clone(), surfTemplate,
+    sphere, box: tmp.boundingBox.clone(), surfTemplate, radius: Math.sqrt(r2),
     canopyGeometry: buildCanopyGeometry(), lightGeometry,
     local: {   // named empties (local frame)
       gunL: new THREE.Vector3(1.12, 0.07, -2.35), gunR: new THREE.Vector3(1.22, 0.06, -2.30),   // M61 port, right wing root
@@ -745,7 +751,7 @@ void main() {
   vec4 mv = modelViewMatrix * vec4(position, 1.0);
   float inten = 1.0;
   if (aKind > 0.5) { float ph = fract(uTime * 0.8); inten = 0.08 + step(0.90, ph) + 0.8 * step(0.96, ph); }   // strobe
-  float px = aSize * projectionMatrix[1][1] * uViewportH * 0.5 / max(-mv.z, 1.0);
+  float px = aSize * length(modelViewMatrix[0].xyz) * projectionMatrix[1][1] * uViewportH * 0.5 / max(-mv.z, 1.0);   // m at the drawn scale
   gl_PointSize = clamp(px, 2.0, 160.0);
   vColor = aColor * inten;
   gl_Position = projectionMatrix * mv;
@@ -883,7 +889,7 @@ attribute vec3 aDir;
 attribute float aSide;
 attribute float aBirth;
 attribute float aStrength;
-uniform float uTime, uLife;
+uniform float uTime, uLife, uScale;
 varying float vAlpha;
 varying float vU;
 #include <fog_pars_vertex>
@@ -891,7 +897,7 @@ void main() {
   float age = (uTime - aBirth) / uLife;
   float live = step(age, 0.999) * step(0.001, aStrength);     // dead -> zero width (no rasterization)
   float life = clamp(age, 0.0, 1.0);
-  float width = (0.22 + 1.5 * life) * live;
+  float width = (0.22 + 1.5 * life) * live * uScale;     // uScale: the jet's drawn scale
   vec3 toCam = cameraPosition - position;
   vec3 side = cross(aDir, toCam);
   float l = length(side);
@@ -948,6 +954,7 @@ class ContrailRibbons {
       forceSinglePass: true,   // r170 otherwise draws transparent DoubleSide materials twice per frame
     });
     this.material.uniforms.uTime = new FloatUniform(0.5);
+    this.material.uniforms.uScale = new FloatUniform(1);
     this.mesh = new THREE.Mesh(g, this.material);
     this.mesh.name = 'contrails';
     this.mesh.matrixAutoUpdate = false;          // world-space geometry, identity transform
@@ -1044,8 +1051,11 @@ class ContrailRibbons {
     if (x0 === Infinity) { s.radius = 0; return; }       // nothing alive (all vertices collapse to zero area anyway)
     const ex = x1 - x0, ey = y1 - y0, ez = z1 - z0;
     s.center.set((x0 + x1) * 0.5, (y0 + y1) * 0.5, (z0 + z1) * 0.5);
-    s.radius = 0.5 * Math.sqrt(ex * ex + ey * ey + ez * ez) + 3;
+    s.radius = 0.5 * Math.sqrt(ex * ex + ey * ey + ez * ez) + 3 * this.material.uniforms.uScale.value;
   }
+
+  /** Ribbon width multiplier: the jet's drawn scale (Aircraft.updateDrawScale). */
+  setWidth(s) { this.material.uniforms.uScale.value = s; }
 
   update(time, dt, tipL, tipR, strength) {
     const n = this.n;
@@ -1147,6 +1157,10 @@ export class Aircraft {
     this.handling = isPlayer ? { pitch: 1, roll: 1, yaw: 1 } : { pitch: 0.8, roll: 0.85, yaw: 1 };
     this.thrust = 0;                                     // spring-loaded thrust axis (-1 brake .. 0 cruise .. +1 boost)
     this.speedScale = 1;                                 // per-type speed multiplier (helicopters, cruise missiles...)
+    this.sizeScale = 1;                                  // life-size scale of the type (cruise missiles 0.45; gameplay sizes)
+    this.larger = false;                                 // drawn larger than life (enemies; setSize)
+    this.visualScale = 1;                                // drawn scale = mesh.scale (updateDrawScale)
+    this.hitRadius = 0;                                  // round hit sphere (m) when larger, else 0 = the shooter's gun radius
     this.maxMissiles = FLIGHT.MAX_MISSILES; this.missiles = FLIGHT.MAX_MISSILES; this.ammo = FLIGHT.AMMO;
     this.time = Math.random() * 7;                       // desyncs strobes / exhaust noise between aircraft
     this.controls = { pitch: 0, roll: 0, yaw: 0, throttleDelta: 0 };
@@ -1185,8 +1199,34 @@ export class Aircraft {
   getRight(out) { return out.set(1, 0, 0).applyQuaternion(this.quaternion); }
   /** Compass heading in radians, 0 = -Z, increasing clockwise (toward +X). */
   getHeading() { const f = this.getForward(_v1); let h = Math.atan2(f.x, -f.z); if (h < 0) h += Math.PI * 2; return h; }
-  /** Local point -> world (always current, no matrix update needed; the jet group is a direct child of the scene). */
-  localToWorld(local, out) { return out.copy(local).applyQuaternion(this.quaternion).add(this.position); }
+  /** Local (model-frame) point -> world at the drawn scale (always current, no matrix update needed; the jet group is a
+   *  direct child of the scene), so wingtip emitters, muzzles and rails sit on the airframe as drawn. */
+  localToWorld(local, out) { return out.copy(local).multiplyScalar(this.visualScale).applyQuaternion(this.quaternion).add(this.position); }
+
+  /**
+   * Airframe size: the type's life-size scale and whether it is drawn larger than life (enemies; the player and the
+   * squadmates are not). A larger aircraft's round hit sphere is its drawn airframe at the constant ENEMY_SCALE (Weapons
+   * tests max(that, the shooter's gun radius)), so a round that visibly hits it registers.
+   */
+  setSize(sizeScale = 1, larger = false) {
+    this.sizeScale = sizeScale; this.larger = larger;
+    this.hitRadius = larger ? getTopology().radius * sizeScale * ENEMY_SCALE : 0;
+    this.updateDrawScale(null);
+  }
+  /**
+   * Drawn scale for this frame from the camera position `cam` (null: the near scale): sizeScale, times ENEMY_SCALE ..
+   * ENEMY_SCALE_FAR by camera distance when larger. Sets the root mesh's scale, so the hull, canopy, nav lights (sprite
+   * size too), afterburner and wing vapor follow it, plus the contrail width; localToWorld (wingtips, muzzles, rails) and
+   * Weapons.aircraftDeath / gun-hit effects read visualScale. A few flops and no allocation: call it every frame.
+   */
+  updateDrawScale(cam) {
+    let s = this.sizeScale;
+    if (this.larger) s *= cam ? ENEMY_SCALE + (ENEMY_SCALE_FAR - ENEMY_SCALE) * smoothstep(ENEMY_SCALE_NEAR_M, ENEMY_SCALE_FAR_M, this.position.distanceTo(cam)) : ENEMY_SCALE;
+    if (s === this.visualScale) return;
+    this.visualScale = s;
+    this.mesh.scale.setScalar(s);
+    this.contrails.setWidth(s);
+  }
 
   getGunMuzzles() {
     this.localToWorld(this._local.gunL, this._muzzles[0]);

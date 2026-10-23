@@ -305,6 +305,16 @@ body { margin: 0; background: var(--bg); color: var(--fg); font-family: var(--mo
   .m-dact .m-btn, .m-actions .m-btn.primary { min-height: 44px; }
   .m-deb-stats { margin: 12px 0 14px; }
   .m-lede { margin: 8px 0 14px; }
+  .m-title .m-list { gap: 2px; }          /* six title entries (INFINITY under Start Campaign) */
+  .m-title .m-item { min-height: 36px; }
+}
+/* Small phones on their side: the title drops its eyebrow and tightens up so all six entries fit */
+@media (max-height: 400px) {
+  .m-panel--title { padding-top: 14px; padding-bottom: 10px; }
+  .m-panel--title > .m-eyebrow { display: none; }
+  .m-logo-2 { font-size: 34px; }
+  .m-title .m-rule { margin: 10px 0 4px; }
+  .m-title .m-foot { margin-top: 6px; padding-top: 6px; }
 }
 @media (prefers-reduced-motion: reduce) {
   #loading { animation: none; }

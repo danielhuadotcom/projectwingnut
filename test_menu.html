@@ -24,6 +24,7 @@
 import { Menu, loadSettings, saveSettings, DEFAULT_SETTINGS, CREDITS, SETTING_DEFS } from './js/menu.js';
 import { MISSIONS, countUnits } from './js/missions.js';
 import { Input } from './js/input.js';
+import { loadBest, saveBest, BEST_KEY } from './js/infinity.js';
 
 window.addEventListener('error', (e) => console.log('MENU_ERR ' + (e.message || e)));
 window.addEventListener('unhandledrejection', (e) => console.log('MENU_ERR rejection ' + (e.reason && e.reason.message || e.reason)));
@@ -40,7 +41,10 @@ document.querySelector('#loading').hidden = true;
 const calls = [], sounds = {};
 let selfTest = true, playing = -1;
 const banner = document.querySelector('#banner');
-const fly = (i) => { playing = i; banner.hidden = false; banner.textContent = `FLYING M${String(i + 1).padStart(2, '0')} ${MISSIONS[i] ? MISSIONS[i].name : ''} · P/Esc pause · K crash · L complete`; };
+const fly = (i) => { playing = i; infRound = 0; banner.hidden = false; banner.textContent = `FLYING M${String(i + 1).padStart(2, '0')} ${MISSIONS[i] ? MISSIONS[i].name : ''} · P/Esc pause · K crash · L complete`; };
+// manual mode stand-in for an INFINITY run: L clears a round, K ends the run
+let infRound = 0;
+const flyInfinity = () => { playing = 0; infRound = 1; banner.hidden = false; banner.textContent = 'FLYING INFINITY · round 1 · P/Esc pause · L clear round · K shot down'; };
 const ground = () => { banner.hidden = true; };
 const settings = loadSettings();
 const menu = new Menu(document.querySelector('#ui'), {
@@ -52,6 +56,7 @@ const menu = new Menu(document.querySelector('#ui'), {
   onQuit: () => { calls.push(['quit']); if (!selfTest) ground(); },
   onSetting: (k, v) => { calls.push(['set', k, v]); if (!selfTest) console.log(`onSetting ${k} = ${v}`); },
   onSound: (kind) => { sounds[kind] = (sounds[kind] || 0) + 1; },
+  onInfinity: () => { calls.push(['infinity']); if (!selfTest) flyInfinity(); },
 });
 window.__menu = menu;
 
@@ -75,6 +80,7 @@ const last = () => calls[calls.length - 1] || [];
 const reach = (target, ...dirs) => { for (const d of dirs) for (let i = 0; i < 4 && focused() !== target; i++) press(d); return focused() === target; };
 const scr = (n) => menu.el.querySelector(`[data-screen="${n}"]`);
 const backup = (() => { try { return localStorage.getItem('wingnut.settings'); } catch { return null; } })();
+const bestBackup = (() => { try { return localStorage.getItem(BEST_KEY); } catch { return null; } })();
 const before = { ...settings };
 
 async function runSelfTest() {
@@ -86,6 +92,7 @@ async function runSelfTest() {
   check('title focus starts on Start Campaign', focused() === 'start', focused());
   press('up'); check('title wraps up to Credits', focused() === 'credits', focused());
   press('down'); check('title wraps down to Start', focused() === 'start', focused());
+  press('down'); check('down reaches Infinity, next to the campaign', focused() === 'infinity', focused());
   press('down'); check('down reaches Mission Select', focused() === 'missions', focused());
 
   // Mission select
@@ -104,7 +111,7 @@ async function runSelfTest() {
   press('ok'); check('confirm on a mission launches it', last()[0] === 'start' && last()[1] === 3 && !menu.open, last());
 
   // Settings from the title
-  menu.show('title'); await settle(); press('down'); press('down');
+  menu.show('title'); await settle(); press('down'); press('down'); press('down');
   check('title focus on Settings', focused() === 'settings', focused());
   press('ok'); check('Settings opens', menu.screen === 'settings');
   check('settings focus on the active tab', focused() === 'graphics', focused());
@@ -126,10 +133,31 @@ async function runSelfTest() {
   press('right'); check('Mouse keys cycles', settings.mouseKeys !== mk, settings.mouseKeys);
   const desc = menu.el.querySelector('.m-row[data-key="mouseKeys"] .m-desc').textContent;
   check('Mouse keys help follows the preset', desc.toLowerCase().startsWith(settings.mouseKeys), desc);
+  check('Camera shake is further down', reach('cameraShake', 'down'), focused());
+  press('down'); check('Screen flash row follows Camera shake', focused() === 'screenFlash', focused());
+  const sfRow = menu.el.querySelector('.m-row[data-key="screenFlash"]'), csRow = menu.el.querySelector('.m-row[data-key="cameraShake"]');
+  check('Screen flash is a switch row like Camera shake', sfRow.classList.contains('m-row--toggle') && csRow.classList.contains('m-row--toggle') &&
+    sfRow.getAttribute('role') === 'switch' && sfRow.querySelector('.m-label').textContent === 'Screen flash' && sfRow.querySelectorAll('.m-seg button').length === 2);
+  const sf = settings.screenFlash;
+  press('right'); check('right flips Screen flash', settings.screenFlash === !sf && last()[1] === 'screenFlash' && last()[2] === !sf, last());
+  press('ok'); check('confirm flips Screen flash back', settings.screenFlash === sf, settings.screenFlash);
+  const sfSeg = (v) => sfRow.querySelector(`.m-seg [data-val="${v}"]`);
+  sfSeg(!sf).click(); check('tapping a Screen flash segment sets it', settings.screenFlash === !sf && sfSeg(!sf).classList.contains('is-on'), settings.screenFlash);
+  sfSeg(sf).click(); check('tapping the other segment sets it back', settings.screenFlash === sf && sfRow.getAttribute('aria-checked') === String(sf));
+  press('up'); check('up returns to Camera shake', focused() === 'cameraShake', focused());
   press('back'); check('Back returns to the title', menu.screen === 'title' && focused() === 'settings', [menu.screen, focused()]);
   let saved = null; try { saved = JSON.parse(localStorage.getItem('wingnut.settings')); } catch { /* blocked */ }
   check('settings persisted on Back', saved && saved.mouseKeys === settings.mouseKeys && saved.mouseSens === settings.mouseSens, saved);
   check('loadSettings reads them back', loadSettings().mouseKeys === settings.mouseKeys);
+  // Screen flash is off by default, and a save made before the key existed loads with that default
+  check('Screen flash defaults Off', DEFAULT_SETTINGS.screenFlash === false);
+  try {
+    const keep = localStorage.getItem('wingnut.settings');
+    localStorage.setItem('wingnut.settings', JSON.stringify({ quality: 'high', cameraShake: false, subtitles: false }));
+    const old = loadSettings();
+    if (keep === null) localStorage.removeItem('wingnut.settings'); else localStorage.setItem('wingnut.settings', keep);
+    check('an older save loads Screen flash Off', old.screenFlash === false && old.cameraShake === false && old.quality === 'high', old);
+  } catch { /* storage blocked */ }
 
   // Audio tab via show() (stacks on the title)
   menu.show('settings', { tab: 'audio' }); step(1 / 60);
@@ -198,6 +226,82 @@ async function runSelfTest() {
   menu.show('debrief', { canNext: false }); await settle(); press('ok');
   check('Retry fires onRestart', last()[0] === 'restart' && !menu.open, last());
 
+
+  // INFINITY: the title entry, the local best on it, the end screen, the pause variant
+  try { localStorage.removeItem(BEST_KEY); } catch { /* blocked */ }
+  menu.show('title'); await settle();
+  const T = scr('title'), infItem = T.querySelector('[data-act="infinity"]');
+  check('six title entries with Infinity', T.querySelectorAll('.m-item').length === 6 && !!infItem, T.querySelectorAll('.m-item').length);
+  check('Infinity sits right under Start Campaign', infItem && infItem.previousElementSibling && infItem.previousElementSibling.dataset.act === 'start');
+  check('Infinity is a title item like the others', infItem.classList.contains('m-item') && infItem.hasAttribute('data-nav') &&
+    infItem.querySelector('.m-num').textContent === '02' && infItem.querySelector('.m-lbl').firstChild.textContent === 'Infinity' &&
+    T.querySelector('[data-act="credits"] .m-num').textContent === '06');
+  const infLine = () => infItem.querySelector('.m-lbl small').textContent;
+  check('Infinity line without a best', /one life/i.test(infLine()), infLine());
+  saveBest({ score: 48250, rounds: 7, kills: 31 });
+  menu.show('title'); await settle();
+  check('Infinity line shows the local best', infLine().includes((48250).toLocaleString()) && infLine().includes('7 rounds'), infLine());
+  press('down'); check('down from Start reaches Infinity', focused() === 'infinity', focused());
+  press('ok'); check('confirm on Infinity starts a run', last()[0] === 'infinity' && !menu.open, last());
+  menu.show('title'); await settle();
+  infItem.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerType: 'touch', button: 0 }));
+  infItem.click(); check('tapping Infinity starts a run', last()[0] === 'infinity' && !menu.open, last());
+  // run over (no retry: one life)
+  menu.show('debrief', { mode: 'infinity', title: 'Shot down', round: 12, roundsCleared: 11, kills: 64, score: 152300, best: 152300, newBest: true });
+  press('ok'); check('run-over screen ignores early presses', menu.open && menu.screen === 'debrief');
+  await settle();
+  const D = scr('debrief'), vis = (a) => !D.querySelector(`[data-act="${a}"]`).hidden;
+  check('run over: focus on New Run', focused() === 'infinity', focused());
+  check('run over: New Run and Quit only', vis('infinity') && vis('quit') && !vis('retry') && !vis('next') && !vis('missions'),
+    ['infinity', 'quit', 'retry', 'next', 'missions'].map(vis));
+  const chips = [...D.querySelectorAll('.m-deb-stats .m-stat')].map((c) => `${c.querySelector('span').textContent} ${c.querySelector('b').textContent}`);
+  check('run over: rounds cleared, kills, score, best', chips.join(' | ') === ['Rounds cleared 11', 'Kills 64', `Score ${(152300).toLocaleString()}`, `Best ${(152300).toLocaleString()}`].join(' | '), chips);
+  check('run over: eyebrow, round and new best', /infinity/i.test(D.querySelector('.m-deb-eye').textContent) &&
+    D.querySelector('.m-deb-sub').textContent === 'Round 12 · New local best', D.querySelector('.m-deb-sub').textContent);
+  check('run over: New Run is the primary action', D.querySelector('[data-act="infinity"]').classList.contains('primary'));
+  press('down'); check('run over: down reaches Quit', focused() === 'quit', focused());
+  press('up'); check('run over: up returns to New Run', focused() === 'infinity', focused());
+  press('ok'); check('New Run starts a new run', last()[0] === 'infinity' && !menu.open, last());
+  menu.show('debrief', { mode: 'infinity', round: 3, roundsCleared: 2, kills: 9, score: 6100, best: { score: 48250, rounds: 7, kills: 31 }, newBest: false });
+  await settle();
+  check('run over without a new best', D.querySelector('.m-deb-sub').textContent === 'Round 3' &&
+    D.querySelector('.m-deb-stats .m-stat:last-child b').textContent === (48250).toLocaleString(), D.querySelector('.m-deb-sub').textContent);
+  D.querySelector('[data-act="quit"]').click();
+  check('run over: Quit goes to the title', last()[0] === 'quit' && menu.screen === 'title', [last(), menu.screen]);
+  menu.show('debrief', { title: 'Mission accomplished', stats: 'SCORE 12,400 · KILLS 14', canNext: true, missionIndex: 4 }); await settle();
+  check('a campaign debrief brings its buttons back', vis('next') && vis('retry') && vis('missions') && !vis('infinity') && focused() === 'next',
+    ['infinity', 'retry', 'next', 'missions'].map(vis));
+  menu.hide();
+  // pause in a run
+  menu.show('pause', { mode: 'infinity', round: 7 }); await settle();
+  const restartLbl = () => scr('pause').querySelector('[data-act="restart"] .m-lbl').textContent;
+  check('pause in a run names the round', menu.el.querySelector('.m-pause-sub').textContent === 'Infinity · Round 7', menu.el.querySelector('.m-pause-sub').textContent);
+  check('pause in a run offers New Run', restartLbl() === 'New Run', restartLbl());
+  press('down'); press('ok');
+  check('New Run asks first', menu.screen === 'confirm' && /new run/i.test(scr('confirm').querySelector('.m-h2').textContent), scr('confirm').querySelector('.m-h2').textContent);
+  check('the confirm button is reachable (run)', reach('confirm-yes', 'left', 'up'), focused());
+  press('ok'); check('confirmed New Run fires onInfinity', last()[0] === 'infinity' && !menu.open, last());
+  menu.show('pause', { mode: 'infinity', round: 7 }); await settle(); press('up'); press('ok');
+  check('quitting a run says the run ends', menu.screen === 'confirm' && /run ends/i.test(scr('confirm').querySelector('.m-lede').textContent));
+  press('back'); press('back'); check('Back resumes the run', last()[0] === 'resume' && !menu.open, last());
+  menu.show('pause', { missionIndex: 2 }); await settle();
+  check('campaign pause keeps Restart Mission', restartLbl() === 'Restart Mission' && menu.el.querySelector('.m-pause-sub').textContent.includes(MISSIONS[2].name), restartLbl());
+  menu.hide();
+  // a menu without onInfinity has no entry; storage that throws leaves the entry working
+  const host = document.createElement('div'); document.body.appendChild(host);
+  const plain = new Menu(host, { settings: { ...settings }, missions: MISSIONS });
+  check('no onInfinity, no Infinity entry', !plain.el.querySelector('[data-screen="title"] [data-act="infinity"]') && plain.el.querySelectorAll('[data-screen="title"] .m-item').length === 5);
+  plain.dispose(); host.remove();
+  const SP = Storage.prototype, keep = { get: SP.getItem, set: SP.setItem };
+  SP.getItem = function () { throw new Error('blocked'); }; SP.setItem = function () { throw new Error('blocked'); };
+  let storageOk = true, bestSaved = null;
+  try { menu.show('title'); await settle(); bestSaved = saveBest({ score: 99999, rounds: 20, kills: 150 }); menu.show('title'); await settle(); } catch (e) { storageOk = false; }
+  SP.getItem = keep.get; SP.setItem = keep.set;
+  check('storage that throws: no exception, entry still works', storageOk && bestSaved === false && !!scr('title').querySelector('[data-act="infinity"]') &&
+    infLine().includes((99999).toLocaleString()), infLine());
+  check('the session keeps the best when storage fails', loadBest() && loadBest().score === 99999);
+  menu.hide();
+
   // API
   menu.show('title'); await settle();
   menu.setControllerStatus('Controller ready: Test Pad', true);
@@ -247,6 +351,7 @@ async function runSelfTest() {
   for (const key of Object.keys(DEFAULT_SETTINGS)) menu.setSetting(key, before[key]);
   menu.hide();
   try { if (backup === null) localStorage.removeItem('wingnut.settings'); else localStorage.setItem('wingnut.settings', backup); } catch { /* blocked */ }
+  try { if (bestBackup === null) localStorage.removeItem(BEST_KEY); else localStorage.setItem(BEST_KEY, bestBackup); } catch { /* blocked */ }
   calls.length = 0;
   const fails = results.filter((x) => !x.ok).length;
   console.log(fails ? `MENU_FAIL ${fails}/${results.length} checks failed` : `MENU_OK ${results.length} checks · screens ${[...visited].join(',')} · sounds ${JSON.stringify(sounds)}`);
@@ -255,12 +360,14 @@ async function runSelfTest() {
 await runSelfTest().catch((e) => console.log('MENU_FAIL exception ' + (e && e.stack || e)));
 selfTest = false;
 
-// ---- screenshot / manual mode: ?screen=title|missions|pause|debrief|settings|controls|credits|confirm ------------
+// ---- screenshot / manual mode: ?screen=title|missions|pause|debrief|runover|settings|controls|credits|confirm -------
+// (&inf=1 with pause or confirm: the INFINITY pause)
 const want = params.get('screen') || 'title';
 menu.setControllerStatus(params.get('pad') === '0' ? 'No controller detected. Press a button on it, or fly with the keyboard.' : 'Controller ready: Xbox Wireless Controller', params.get('pad') !== '0');
 menu.setQualityLabel('AUTO · MEDIUM');
 if (params.get('dev')) menu.setDevice(params.get('dev'));
-if (want === 'pause' || want === 'confirm') menu.show('pause', { missionIndex: 2 });
+if (want === 'pause' || want === 'confirm') menu.show('pause', params.get('inf') === '1' ? { mode: 'infinity', round: 7 } : { missionIndex: 2 });
+else if (want === 'runover') menu.show('debrief', { mode: 'infinity', title: 'Shot down', round: 12, roundsCleared: 11, kills: 64, score: 152300, best: 152300, newBest: params.get('best') !== '0' });
 else if (want === 'debrief') {
   const win = params.get('win') !== '0';
   menu.show('debrief', win ? { title: 'Mission accomplished', stats: 'SCORE 48,250 · KILLS 23 · TIME 07:42', canNext: true, missionIndex: 2 }
@@ -277,6 +384,11 @@ console.log(`MENU_SCREEN ${menu.screen} focus=${focused()}`);
 const input = new Input(window);
 window.addEventListener('keydown', (e) => {
   if (menu.open || playing < 0) return;
+  if (infRound > 0) {
+    if (e.code === 'KeyL') { infRound++; banner.textContent = `FLYING INFINITY · round ${infRound} · P/Esc pause · L clear round · K shot down`; }
+    if (e.code === 'KeyK') { ground(); menu.show('debrief', { mode: 'infinity', title: 'Shot down', round: infRound, roundsCleared: infRound - 1, kills: 6 * infRound, score: 2300 * infRound, best: 48250, newBest: 2300 * infRound > 48250 }); }
+    return;
+  }
   if (e.code === 'KeyK') { ground(); menu.show('debrief', { title: 'Shot down', stats: 'SCORE 3,150 · KILLS 4', canNext: false, missionIndex: playing }); }
   if (e.code === 'KeyL') { ground(); menu.show('debrief', { title: 'Mission accomplished', stats: 'SCORE 21,900 · KILLS 17', canNext: playing < MISSIONS.length - 1, missionIndex: playing }); }
 });
@@ -285,7 +397,7 @@ function loop(now) {
   const dt = Math.min(0.05, (now - t0) / 1000); t0 = now;
   input.update(dt);
   if (menu.open) menu.update(dt, input);
-  else if (playing >= 0 && input.pausePressed) { banner.hidden = true; menu.show('pause', { missionIndex: playing }); }
+  else if (playing >= 0 && input.pausePressed) { banner.hidden = true; menu.show('pause', infRound > 0 ? { mode: 'infinity', round: infRound } : { missionIndex: playing }); }
   else if (playing >= 0) banner.hidden = false;
   requestAnimationFrame(loop);
 }
