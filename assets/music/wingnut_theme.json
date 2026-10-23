@@ -1,0 +1,46 @@
+{
+  "title": "Ceiling Unlimited",
+  "bpm": 128,
+  "loopStart": 7.5,
+  "loopEnd": 120,
+  "duration": 120.5,
+  "sampleRate": 48000,
+  "lufs": -13.05,
+  "sections": {
+    "intro": [
+      0,
+      7.5
+    ],
+    "A": [
+      7.5,
+      37.5
+    ],
+    "B": [
+      37.5,
+      67.5
+    ],
+    "climax": [
+      67.5,
+      97.5
+    ],
+    "bridge": [
+      97.5,
+      120
+    ]
+  },
+  "files": {
+    "opus": {
+      "bytes": 1461988,
+      "kbps": 96
+    },
+    "mp3": {
+      "bytes": 1928905,
+      "kbps": 128
+    }
+  },
+  "preview": {
+    "file": "wingnut_theme_climax_preview.mp3",
+    "from": 67,
+    "to": 97
+  }
+}

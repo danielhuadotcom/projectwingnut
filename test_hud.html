@@ -1,0 +1,188 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WINGNUT · HUD test</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #0a1a3a; }
+  /* sky -> ground gradient stand-in for the 3D scene */
+  #stage { position: absolute; inset: 0; overflow: hidden;
+    background: linear-gradient(180deg, #0b2a6b 0%, #2f74d0 35%, #9fd0ff 52%, #b6a78a 56%, #5a6a44 75%, #33402a 100%); }
+  #stage.small { inset: auto; left: 50%; top: 50%; width: 400px; height: 700px; transform: translate(-50%, -50%);
+    outline: 1px solid rgba(255,255,255,0.35); }
+  body.small { background: #000; }
+</style>
+</head>
+<body>
+<div id="stage"></div>
+<script type="module">
+import { HUD } from './js/hud.js';
+
+const params = new URLSearchParams(location.search);
+const small = params.get('small') === '1';
+const forcedState = params.get('state');          // e.g. ?state=paused to check the dimmed HUD
+const freeze = params.has('t') ? Number(params.get('t')) : null;   // ?t=5 renders a fixed timeline instant
+const stage = document.getElementById('stage');
+if (small) { stage.classList.add('small'); document.body.classList.add('small'); }
+
+window.addEventListener('error', e => console.log('HUD_ERR ' + (e.message || e)));
+window.addEventListener('unhandledrejection', e => console.log('HUD_ERR ' + (e.reason && e.reason.message || e.reason)));
+
+const hud = new HUD(stage);
+window.hud = hud;
+
+// ---- synthetic HudFrame (objects reused every frame) ----------------------------------------------------------
+const frame = {
+  w: 0, h: 0, dt: 0, time: 0, state: 'playing',
+  player: { speed: 0, altitude: 0, radarAlt: 0, heading: 0, pitch: 0, roll: 0, gLoad: 1, throttle: 0, afterburner: false,
+            health: 100, ammo: 412, missiles: 6, maxMissiles: 8, stall: false },
+  velocityVector: { x: 0, y: 0, visible: true },
+  target: { x: 0, y: 0, onScreen: true, behind: false, distance: 2300, name: 'MIG-29 FULCRUM', health: 0.65,
+            lock: 0, locked: false, inSeekerCone: false, closure: 85, lead: { x: 0, y: 0 } },
+  contacts: [],
+  radar: { range: 8000, blips: [] },
+  warnings: { missileIncoming: false, pullUp: false, stall: false, overG: false },
+  messages: [],
+  score: 0, wave: 3, enemiesRemaining: 5, kills: 12,
+  padlock: false, lookBack: false,
+  input: { gamepadConnected: false, gamepadName: null, gamepadBlocked: false, usingGamepad: false },
+  hitFlash: 0, damageFlash: 0,
+};
+const contactA = { x: 0, y: 0, onScreen: true, behind: false, type: 'enemy', hostile: true, distance: 5200, isTarget: false };
+const contactB = { x: 0, y: 0, onScreen: true, behind: false, type: 'enemy', hostile: true, distance: 7400, isTarget: false };
+const contactT = { x: 0, y: 0, onScreen: true, behind: false, type: 'enemy', hostile: true, distance: 2300, isTarget: true };
+const contactM = { x: 0, y: 0, onScreen: true, behind: false, type: 'missile', hostile: true, distance: 1800, isTarget: false };
+const blipT = { dx: 0, dz: 0, type: 'enemy', isTarget: true, relAlt: 320 };
+const blipA = { dx: 3100, dz: -2600, type: 'enemy', isTarget: false, relAlt: -600 };
+const blipB = { dx: -4200, dz: 1900, type: 'enemy', isTarget: false, relAlt: 40 };
+const blipM = { dx: 0, dz: 0, type: 'missile', isTarget: false, relAlt: -80 };
+const MSG_DEFS = [
+  { t0: 0.5, text: 'WAVE 3 — 6 BANDITS', duration: 3.0, big: true },
+  { t0: 1.0, text: 'MISSILES REARMED', duration: 2.5, big: false },
+  { t0: 4.5, text: 'SPLASH ONE', duration: 2.5, big: true },
+  { t0: 4.8, text: '+500', duration: 2.0, big: false },
+  { t0: 9.0, text: 'TARGET BEHIND — CHECK SIX', duration: 3.0, big: false },
+];
+const msgObjs = MSG_DEFS.map(d => ({ text: d.text, age: 0, duration: d.duration, big: d.big }));
+
+function buildFrame(t, dt) {
+  const w = stage.clientWidth, h = stage.clientHeight;
+  frame.w = w; frame.h = h; frame.dt = dt; frame.time = t;
+  frame.state = forcedState || 'playing';
+  const p = frame.player;
+  p.speed = 210 + 90 * Math.sin(t * 0.5);                      // 120..300 m/s
+  p.altitude = 800 + 300 * Math.sin(t * 0.25) + 50;
+  p.radarAlt = Math.max(5, p.altitude - 600 - 100 * Math.sin(t * 0.7) - (t > 6 ? 120 : 0));
+  p.heading = (t * 9) % 360;
+  p.pitch = 8 * Math.sin(t * 0.4);
+  p.roll = 25 * Math.sin(t * 0.3);
+  p.gLoad = 3 + 2 * Math.sin(t * 0.8);                         // 1..5
+  p.throttle = Math.min(1, 0.4 + t * 0.12);
+  p.afterburner = p.throttle >= 0.98;
+  p.health = t < 2.5 ? 100 : t < 5 ? 60 : 20;
+  p.ammo = Math.max(0, 412 - Math.floor(Math.max(0, t - 3) * 14));
+  p.missiles = t < 4.6 ? 6 : 5;
+  p.stall = p.speed < 125;
+  // flight-path marker drifts around the boresight
+  frame.velocityVector.x = w / 2 + 30 * Math.sin(t * 0.9);
+  frame.velocityVector.y = h / 2 + 22 * Math.cos(t * 0.7) - 10;
+  // target: crosses the screen, then leaves (t >= 7), then is behind (t >= 8.5)
+  const tg = frame.target;
+  tg.x = w * (0.42 + 0.22 * Math.sin(t * 0.35));
+  tg.y = h * (0.40 + 0.10 * Math.cos(t * 0.5));
+  tg.onScreen = t < 7;
+  tg.behind = t >= 8.5 && t < 11;
+  if (!tg.onScreen) { tg.x = tg.behind ? w * 0.3 : w * 1.3; tg.y = tg.behind ? h * 1.4 : h * 0.5; }
+  tg.inSeekerCone = t >= 1.5 && t < 7;
+  tg.lock = t < 2 ? 0 : Math.min(1, (t - 2) / 1.4);
+  tg.locked = t >= 3.4 && t < 7;
+  tg.distance = Math.max(600, 2300 - 100 * t);
+  tg.closure = 85 + 40 * Math.sin(t);
+  tg.health = 0.65;
+  tg.lead.x = tg.x + 42; tg.lead.y = tg.y - 26;
+  // other contacts + hostile missile between t = 4..6
+  const cs = frame.contacts; cs.length = 0;
+  contactA.x = w * 0.72 + 20 * Math.sin(t); contactA.y = h * 0.33; cs.push(contactA);
+  contactB.x = w * 0.62; contactB.y = h * 0.62 + 15 * Math.cos(t * 0.6); cs.push(contactB);
+  contactT.x = tg.x; contactT.y = tg.y; contactT.onScreen = tg.onScreen; contactT.behind = tg.behind; cs.push(contactT);
+  const missile = t >= 4 && t < 6;
+  if (missile) { contactM.x = w * 0.30 + (t - 4) * 40; contactM.y = h * 0.58 - (t - 4) * 30; contactM.distance = 1800 - (t - 4) * 700; cs.push(contactM); }
+  // radar (world axes; the HUD rotates by heading)
+  const bl = frame.radar.blips; bl.length = 0;
+  const hr = p.heading * Math.PI / 180, br = hr + 0.35 * Math.sin(t * 0.35);   // target roughly ahead-right
+  blipT.dx = Math.sin(br) * tg.distance; blipT.dz = -Math.cos(br) * tg.distance; blipT.relAlt = 320;
+  bl.push(blipT, blipA, blipB);
+  if (missile) { blipM.dx = Math.sin(hr + 2.4) * contactM.distance; blipM.dz = -Math.cos(hr + 2.4) * contactM.distance; bl.push(blipM); }
+  // warnings
+  const wn = frame.warnings;
+  wn.missileIncoming = missile;
+  wn.pullUp = t >= 7 && t < 8.5;
+  wn.stall = p.stall;
+  wn.overG = p.gLoad > 4.6;
+  // messages
+  const ms = frame.messages; ms.length = 0;
+  for (let i = 0; i < MSG_DEFS.length; i++) {
+    const age = t - MSG_DEFS[i].t0;
+    if (age >= 0 && age < MSG_DEFS[i].duration) { msgObjs[i].age = age; ms.push(msgObjs[i]); }
+  }
+  frame.score = Math.floor(t * 730);
+  frame.enemiesRemaining = t < 4.6 ? 6 : 5;
+  frame.kills = t < 4.6 ? 11 : 12;
+  frame.padlock = t >= 3 && t < 6.5;
+  frame.lookBack = t >= 8.5 && t < 10;
+  // input status cycles: keyboard -> gamepad -> blocked
+  const phase = Math.floor((t % 12) / 4);
+  const inp = frame.input;
+  inp.gamepadBlocked = phase === 2;
+  inp.gamepadConnected = phase === 1;
+  inp.gamepadName = phase === 1 ? 'Xbox Wireless Controller (STANDARD GAMEPAD Vendor: 045e Product: 0b13)'.slice(0, 40) : null;
+  inp.usingGamepad = phase === 1;
+  // edge effects: a white hit flash every 2.6 s, red damage glow when the health drops
+  frame.hitFlash = Math.max(0, 1 - ((t + 0.3) % 2.6) / 0.6);
+  const lastDrop = t >= 5 ? 5 : t >= 2.5 ? 2.5 : -10;
+  frame.damageFlash = Math.max(0, 1 - (t - lastDrop) / 0.8);
+  return frame;
+}
+
+// ?crop=x,y,w,h — pixel-zoom inspection: blits that HUD region onto a full-window overlay (nearest-neighbour)
+let cropBox = null, octx = null;
+if (params.has('crop')) {
+  cropBox = params.get('crop').split(';').map(g => g.split(',').map(Number));
+  const oc = document.createElement('canvas');
+  oc.style.cssText = 'position:absolute;inset:0;z-index:10;pointer-events:none;';
+  document.body.appendChild(oc); octx = oc.getContext('2d');
+}
+function blitCrop() {
+  if (!octx) return;
+  const oc = octx.canvas, W = innerWidth, H = innerHeight;
+  if (oc.width !== W || oc.height !== H) { oc.width = W; oc.height = H; }
+  const d = hud.dpr, n = cropBox.length, slot = W / n;
+  octx.imageSmoothingEnabled = false;
+  octx.fillStyle = '#3a7bd5'; octx.fillRect(0, 0, W, H);
+  for (let i = 0; i < n; i++) {
+    const [x, y, w, h] = cropBox[i];
+    octx.drawImage(hud.canvas, x * d, y * d, w * d, h * d, Math.round(i * slot), 0, Math.round(slot), H);
+    octx.fillStyle = '#000'; if (i) octx.fillRect(Math.round(i * slot) - 1, 0, 2, H);
+  }
+}
+
+let start = null, last = null, frames = 0, errLogged = false;
+function loop(now) {
+  if (start === null) { start = now; last = now; }
+  const dt = Math.min(0.1, (now - last) / 1000); last = now;
+  const t = freeze !== null ? freeze : (now - start) / 1000;
+  try {
+    hud.render(buildFrame(t, dt));
+    blitCrop();
+    if (++frames === 1) console.log('HUD_OK');
+    if (frames === 120) console.log('HUD_FRAMES 120 ok');
+  } catch (e) {
+    if (!errLogged) { errLogged = true; console.log('HUD_ERR ' + (e && e.stack || e)); }
+  }
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>

@@ -1,0 +1,217 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>WINGNUT — aircraft test</title>
+<style>html,body{margin:0;height:100%;background:#000;overflow:hidden}canvas{display:block}#info{position:absolute;left:8px;top:8px;color:#9f9;font:12px monospace;white-space:pre;pointer-events:none;text-shadow:0 0 3px #000}</style>
+</head>
+<body>
+<div id="info"></div>
+<script type="module">
+// F-22 jet test bench. URL params:
+//   cam=chase|side|front|top|rear34|closeup   view (chase flies a scripted maneuver; the others hold a fixed pose)
+//   cam=grid      top / side / front (row 1), rear34 / chase / closeup (row 2) in one screenshot, each through PostFX
+//   ff=<s>        seconds of simulation fast-forwarded before the first frame (default 2.5 chase, 0.5 others)
+//   ab=1          light the afterburner in the fixed-pose views          ctl=roll,pitch,yaw   constant inputs (fixed pose)
+//   enemy=0|1     show an enemy-scheme jet next to the player              jets=N   N extra enemies ahead (draw-call test)
+//   sun=game      the game's 22 deg sun (default 35 deg for clearer shape reading)
+//   perf=1        GPU timing (EXT_disjoint_timer_query_webgl2): whole frame with jets shown vs hidden
+import * as THREE from 'https://cdnjs.cloudflare.com/ajax/libs/three.js/0.170.0/three.module.min.js';
+import { Aircraft, FLIGHT, AIRCRAFT_RADIUS, getJetStats } from './js/aircraft.js';
+import { PostFX } from './js/post.js';
+
+const params = new URLSearchParams(location.search);
+const CAM = ['chase', 'side', 'front', 'top', 'rear34', 'closeup', 'grid'].includes(params.get('cam')) ? params.get('cam') : 'chase';
+const GRID = ['top', 'side', 'front', 'rear34', 'chase', 'closeup'];   // 3 x 2 cells, row-major from the top-left
+const FIXED = CAM !== 'chase';  // grid counts as fixed
+const FF = Number(params.get('ff') ?? (FIXED ? 0.5 : 2.5));
+const AB = params.get('ab') === '1';
+const CTL = (params.get('ctl') || '0,0,0').split(',').map((v) => Number(v) || 0);
+const SHOW_ENEMY = params.has('enemy') ? params.get('enemy') === '1' : !FIXED;
+const EXTRA = Math.max(0, Math.min(12, Number(params.get('jets') || 0)));
+const PERF = params.get('perf') === '1';
+const W = innerWidth, H = innerHeight;
+
+const renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: 'high-performance', alpha: false, stencil: false });
+renderer.setPixelRatio(1);
+renderer.setSize(W, H);
+renderer.toneMapping = THREE.NoToneMapping;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+document.body.appendChild(renderer.domElement);
+const post = new PostFX(renderer, W, H, 1);
+
+const scene = new THREE.Scene();
+scene.fog = new THREE.FogExp2(0xa9c4dc, 0.00005);
+const camera = new THREE.PerspectiveCamera(70, W / H, 1, 60000);
+
+// sky: linear-radiance gradient dome that follows the camera (rendered first, no fog)
+const SKY_FRAG = 'varying vec3 vD; void main(){ float h = normalize(vD).y; vec3 hor = vec3(0.78, 0.86, 1.0); vec3 zen = vec3(0.16, 0.34, 0.78);'
+  + ' vec3 gnd = vec3(0.30, 0.31, 0.30); vec3 c = h > 0.0 ? mix(hor, zen, pow(h, 0.55)) : mix(hor, gnd, smoothstep(0.0, 0.08, -h)); gl_FragColor = vec4(c, 1.0); }';
+const SKY_VERT = 'varying vec3 vD; void main(){ vD = position; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }';
+const sky = new THREE.Mesh(new THREE.SphereGeometry(30000, 32, 16), new THREE.ShaderMaterial({ vertexShader: SKY_VERT, fragmentShader: SKY_FRAG, side: THREE.BackSide, depthWrite: false, fog: false }));
+sky.renderOrder = -1000; sky.frustumCulled = false;
+scene.add(sky);
+
+// lights: warm sun ahead-left (like the game), sky/ground hemisphere
+const sunEl = (params.get('sun') === 'game' ? 22 : 35) * Math.PI / 180, sunAz = 35 * Math.PI / 180;
+const sunDir = new THREE.Vector3(-Math.sin(sunAz) * Math.cos(sunEl), Math.sin(sunEl), -Math.cos(sunAz) * Math.cos(sunEl));
+const sun = new THREE.DirectionalLight(0xffd3a0, 3.0); scene.add(sun); scene.add(sun.target);
+scene.add(new THREE.HemisphereLight(0x9cc0ea, 0x6f5e46, 0.6));
+
+// environment: PMREM of a tiny sky scene (gradient dome + small tamed sun disc, like World._buildEnvironment)
+{
+  const env = new THREE.Scene();
+  env.add(new THREE.Mesh(new THREE.SphereGeometry(50, 32, 16), new THREE.ShaderMaterial({ vertexShader: SKY_VERT, fragmentShader: SKY_FRAG, side: THREE.BackSide })));
+  const disc = new THREE.Mesh(new THREE.SphereGeometry(0.6, 12, 8), new THREE.MeshBasicMaterial({ color: new THREE.Color(1.6, 1.3, 0.9) }));
+  disc.position.copy(sunDir).multiplyScalar(40); env.add(disc);
+  const pmrem = new THREE.PMREMGenerator(renderer);
+  try { scene.environment = pmrem.fromScene(env, 0.02).texture; } catch (e) { console.warn('env failed', e); }
+  pmrem.dispose();
+}
+
+// ground far below (fog-tinted), faint grid for motion cues in the chase view
+const ground = new THREE.Mesh(new THREE.PlaneGeometry(80000, 80000), new THREE.MeshStandardMaterial({ color: 0x55654a, roughness: 1, metalness: 0 }));
+ground.rotation.x = -Math.PI / 2; scene.add(ground);
+if (!FIXED) { const grid = new THREE.GridHelper(20000, 100, 0x3d4d38, 0x3d4d38); grid.position.y = 0.5; scene.add(grid); }
+
+// aircraft (same color options main.js uses)
+const player = new Aircraft(scene, { team: 'player', bodyColor: 0x9aa7b4, accentColor: 0xff6a1a, position: new THREE.Vector3(0, 300, 0), heading: 0 });
+player.speed = 240; player.throttle = AB ? 1 : 0.75;
+const enemies = [];
+const addEnemy = (x, y, z, h) => { const e = new Aircraft(scene, { team: 'enemy', bodyColor: 0x4a4f58, accentColor: 0xd8232a, position: new THREE.Vector3(x, y, z), heading: h }); e.speed = 230; e.throttle = 0.8; enemies.push(e); return e; };
+if (SHOW_ENEMY) addEnemy(FIXED ? 24 : 55, FIXED ? 300 : 292, FIXED ? -8 : -70, FIXED ? 0 : 0.15);
+for (let i = 0; i < EXTRA; i++) addEnemy((i % 4 - 1.5) * 24, 304 + (i >> 2) * 10, -40 - (i >> 2) * 45, 0);
+window.player = player; window.enemies = enemies;
+
+// per-jet draw accounting: count the player's draws / triangles via onAfterRender
+let jetCalls = 0, jetTris = 0;
+const countDraws = (root) => root.traverse((o) => {
+  if (!(o.isMesh || o.isPoints)) return;
+  const prev = o.onAfterRender;
+  o.onAfterRender = function (r, s, c, g, m, grp) { if (g.drawRange.count >= 0) { jetCalls++; jetTris += o.isMesh ? Math.min(g.index ? g.index.count : g.attributes.position.count, g.drawRange.count) / 3 : 0; } prev.call(this, r, s, c, g, m, grp); };
+});
+countDraws(player.mesh); countDraws(player.contrails.mesh);
+let sceneCalls = 0, sceneTris = 0;
+scene.onAfterRender = () => { sceneCalls = renderer.info.render.calls; sceneTris = renderer.info.render.triangles; };
+
+// scripted controls (chase view)
+function script(t) {
+  const c = { pitch: 0, roll: 0, yaw: 0, throttleDelta: 0 };
+  if (t < 1.2) c.throttleDelta = 1;                                   // light the afterburner
+  if (t > 0.3 && t < 0.72) c.roll = 0.5;                              // bank right (~60 deg)
+  if (t >= 0.72 && t < 13.0) c.pitch = 0.32;                          // hold a ~4.5 g level turn
+  if (t >= 13.0 && t < 14.2) c.roll = -0.8;                           // roll out
+  if (t >= 14.2 && t < 16.5) { c.yaw = 0.5; c.throttleDelta = -1; }   // yaw, throttle back
+  if (t >= 16.5 && t < 19) { c.roll = 1.0; c.throttleDelta = 1; }     // aileron roll + burner again
+  if (t >= 19) c.pitch = -0.2;                                        // push over
+  return c;
+}
+const fixedCtl = { roll: CTL[0], pitch: CTL[1], yaw: CTL[2], throttleDelta: 0 };
+function enemyScript(t, i) { return { pitch: 0.05, roll: Math.sin(t * 0.7 + i) * 0.35, yaw: 0, throttleDelta: 0.3 }; }
+
+const DT = 1 / 60;
+const holdPos = new THREE.Vector3(), holdQuat = new THREE.Quaternion();
+let simT = 0, nextSample = 0, badFrames = 0;
+function step() {
+  if (FIXED) {
+    holdPos.copy(player.position); holdQuat.copy(player.quaternion);
+    player.setControls(fixedCtl); player.update(DT);
+    player.position.copy(holdPos); player.quaternion.copy(holdQuat);      // fixed pose, surfaces still animate
+    player.contrails.clear();                                             // (a held pose would collapse the ribbons)
+    for (const e of enemies) { e.setControls({}); const p = e.position.clone(), q = e.quaternion.clone(); e.update(DT); e.position.copy(p); e.quaternion.copy(q); e.contrails.clear(); }
+  } else {
+    player.setControls(script(simT)); player.update(DT);
+    enemies.forEach((e, i) => { e.setControls(enemyScript(simT, i)); e.update(DT); });
+  }
+  simT += DT;
+  const q = player.quaternion;
+  const ok = Number.isFinite(player.speed + player.position.y + player.gLoad + q.x + q.y + q.z + q.w + player.velocity.lengthSq());
+  if (!ok) { if (++badFrames < 5) console.error('NAN_DETECTED at t=' + simT.toFixed(2)); }
+  if (simT >= nextSample) {
+    nextSample += 2;
+    console.log(`[sample] t=${simT.toFixed(1)} speed=${player.speed.toFixed(1)} alt=${player.position.y.toFixed(0)} g=${player.gLoad.toFixed(2)} thr=${player.throttle.toFixed(2)} ab=${player.afterburner} hdg=${(player.getHeading() * 180 / Math.PI).toFixed(0)} stall=${player.stalled} contrails=${player.contrails.active}`);
+  }
+}
+for (let i = 0; i < Math.round(FF / DT); i++) step();
+
+const CAM_ASPECT = params.get('cam') === 'grid' ? (W / 3) / (H / 2) : W / H;
+const fwd = new THREE.Vector3(), up = new THREE.Vector3(), right = new THREE.Vector3(), look = new THREE.Vector3(), WUP = new THREE.Vector3(0, 1, 0);
+function placeCamera(view = CAM) {
+  player.getForward(fwd); player.getUp(up); player.getRight(right);
+  const p = player.position;
+  let fov = 32;
+  camera.up.copy(up);
+  look.copy(p);
+  const CAM = view;
+  if (CAM === 'chase') {          // like js/camera.js: behind + above, looking well ahead
+    camera.position.copy(p).addScaledVector(fwd, -28).addScaledVector(up, 6.5);
+    look.copy(p).addScaledVector(fwd, 60).addScaledVector(up, 3);
+    camera.up.lerp(WUP, 0.5).normalize(); fov = 70;
+  } else if (CAM === 'side') camera.position.copy(p).addScaledVector(right, 30).addScaledVector(up, 0.8);
+  else if (CAM === 'front') camera.position.copy(p).addScaledVector(fwd, 32).addScaledVector(up, 4);
+  else if (CAM === 'top') { camera.position.copy(p).addScaledVector(up, 36); camera.up.copy(fwd); }
+  else if (CAM === 'rear34') { camera.position.copy(p).addScaledVector(fwd, -22).addScaledVector(right, 14).addScaledVector(up, 8); look.addScaledVector(fwd, 1); fov = 40; }
+  else if (CAM === 'closeup') { camera.position.copy(p).addScaledVector(fwd, 5.5).addScaledVector(right, -6.5).addScaledVector(up, 2.2); look.addScaledVector(fwd, 3.6).addScaledVector(up, 0.3); fov = 45; }
+  const aspect = CAM_ASPECT;
+  if (camera.fov !== fov || camera.aspect !== aspect) { camera.fov = fov; camera.aspect = aspect; camera.updateProjectionMatrix(); }
+  camera.lookAt(look);
+  sky.position.copy(camera.position);
+  sun.position.copy(p).addScaledVector(sunDir, 1000); sun.target.position.copy(p);
+}
+
+// optional GPU timing: whole frame (scene + post), jets visible vs hidden
+const gl = renderer.getContext();
+const tq = PERF ? gl.getExtension('EXT_disjoint_timer_query_webgl2') : null;
+const perf = { block: 0, frames: 0, sums: [0, 0], counts: [0, 0], cpu: [0, 0], cpuN: [0, 0], pending: [], disjoint: 0, done: false };
+const PERF_BLOCKS = 8, PERF_BLOCK = 60;    // alternating jets-on / jets-off blocks of 60 frames (first frames of a block skipped)
+function setJetsVisible(v) { for (const a of [player, ...enemies]) a.mesh.visible = v; }
+
+let last = performance.now(), acc = 0, frames = 0;
+const info = document.getElementById('info');
+function loop() {
+  const now = performance.now();
+  acc += Math.min((now - last) / 1000, 0.25); last = now;
+  while (acc >= DT) { step(); acc -= DT; }
+  jetCalls = 0; jetTris = 0;
+  let q = null;
+  const phase = perf.block & 1, measuring = tq && !perf.done && frames > 60 && perf.block < PERF_BLOCKS && perf.frames >= 10;
+  if (measuring) { q = gl.createQuery(); gl.beginQuery(tq.TIME_ELAPSED_EXT, q); }
+  const c0 = performance.now();
+  if (CAM === 'grid') {         // PostFX's final pass fills the current viewport, so each quadrant is a full pipeline render
+    const cw = Math.floor(W / 3), ch = Math.floor(H / 2);
+    GRID.forEach((v, i) => { placeCamera(v); renderer.setViewport((i % 3) * cw, (i < 3 ? 1 : 0) * ch, cw, ch); post.render(scene, camera, DT); });
+    renderer.setViewport(0, 0, W, H);
+  } else { placeCamera(); post.render(scene, camera, DT); }
+  const c1 = performance.now();
+  if (q) { gl.endQuery(tq.TIME_ELAPSED_EXT); perf.pending.push({ q, phase }); perf.cpu[phase] += c1 - c0; perf.cpuN[phase]++; }
+  if (++frames === 1) {
+    console.log('AIRCRAFT_OK calls=' + renderer.info.render.calls + ' tris=' + renderer.info.render.triangles);
+    console.log(`SCENE calls=${sceneCalls} tris=${sceneTris} | PLAYER_JET calls=${jetCalls} tris=${jetTris} | post passes=${renderer.info.render.calls - sceneCalls} | stats=${JSON.stringify(getJetStats())} radius=${AIRCRAFT_RADIUS} maxSpeed=${FLIGHT.MAX_SPEED}`);
+  }
+  if (tq && !perf.done) {
+    const disjoint = gl.getParameter(tq.GPU_DISJOINT_EXT);
+    if (disjoint) perf.disjoint++;
+    for (let i = perf.pending.length - 1; i >= 0; i--) {
+      const p = perf.pending[i];
+      if (gl.getQueryParameter(p.q, gl.QUERY_RESULT_AVAILABLE)) {
+        if (!disjoint) { perf.sums[p.phase] += gl.getQueryParameter(p.q, gl.QUERY_RESULT) / 1e6; perf.counts[p.phase]++; }
+        gl.deleteQuery(p.q); perf.pending.splice(i, 1);
+      }
+    }
+    if (frames > 60 && perf.block < PERF_BLOCKS && ++perf.frames >= PERF_BLOCK) {
+      perf.frames = 0; perf.block++;
+      setJetsVisible(perf.block >= PERF_BLOCKS || (perf.block & 1) === 0);
+    }
+    if (perf.block >= PERF_BLOCKS && perf.pending.length === 0) {
+      perf.done = true;
+      const avg = (k) => (perf.sums[k] / Math.max(1, perf.counts[k])).toFixed(3), cpu = (k) => (perf.cpu[k] / Math.max(1, perf.cpuN[k])).toFixed(3);
+      console.log(`PERF jets=${1 + enemies.length} gpu_frame_ms on=${avg(0)} off=${avg(1)} (samples ${perf.counts[0]}/${perf.counts[1]}, disjoint frames ${perf.disjoint}) | js_render_ms on=${cpu(0)} off=${cpu(1)}`);
+    }
+  }
+  info.textContent = `${CAM}  t=${simT.toFixed(1)}s  spd=${(player.speed * 3.6).toFixed(0)} km/h  alt=${player.position.y.toFixed(0)} m  g=${player.gLoad.toFixed(1)}  thr=${(player.throttle * 100).toFixed(0)}%${player.afterburner ? ' AB' : ''}  jet calls=${jetCalls} tris=${jetTris}`;
+  requestAnimationFrame(loop);
+}
+loop();
+</script>
+</body>
+</html>

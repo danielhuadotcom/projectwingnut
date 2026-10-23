@@ -1,0 +1,12 @@
+{
+  "name": "project-wingnut",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "three": "^0.170.0"
+  },
+  "devDependencies": {
+    "esbuild": "0.24.0",
+    "puppeteer-core": "^24.43.1"
+  }
+}

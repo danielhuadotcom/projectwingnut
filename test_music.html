@@ -1,0 +1,162 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8"><link rel="icon" href="data:,">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>wingnut — music test</title>
+<style>
+  html, body { margin: 0; background: #0b0f14; color: #9fe8a0; font: 13px/1.35 ui-monospace, Menlo, Consolas, monospace; }
+  #wrap { padding: 14px 18px; max-width: 1240px; }
+  h1 { font-size: 15px; margin: 0 0 8px; color: #d8f0d8; }
+  button { font: inherit; padding: 6px 12px; background: #173; color: #dfd; border: 1px solid #4a8; border-radius: 4px; cursor: pointer; }
+  button:hover { background: #285; }
+  .row { margin-bottom: 10px; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+  canvas { display: block; width: 100%; height: 300px; background: #070a0e; border: 1px solid #1c2a22; border-radius: 4px; }
+  #log { margin-top: 10px; color: #c9d6c9; white-space: pre-wrap; max-height: 36vh; overflow: auto; }
+  .ok { color: #7f7; } .bad { color: #f77; }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <h1>PROJECT WINGNUT — js/music.js test <span id="title"></span></h1>
+  <div class="row">
+    <button id="play">Play</button><button id="skip">Play (skip intro)</button><button id="seam">Jump to 6 s before loop end</button>
+    <button id="stop">Stop</button><button id="duck">Duck</button><button id="muffle">Muffle</button>
+    <label>volume <input id="vol" type="range" min="0" max="1" step="0.01" value="0.5"></label>
+  </div>
+  <canvas id="cv" width="1200" height="300"></canvas>
+  <div id="log"></div>
+</div>
+<script type="module">
+import { AudioFX } from './js/audio.js';
+import { Music } from './js/music.js';
+import { MUSIC } from './js/music_data.js';
+
+const logEl = document.getElementById('log');
+let fails = 0;
+function log(msg, cls) { console.log(msg); const s = document.createElement('div'); if (cls) s.className = cls; s.textContent = msg; logEl.appendChild(s); }
+function check(name, cond, info) { if (!cond) { fails++; console.error('MUSIC_FAIL ' + name + (info !== undefined ? ' :: ' + JSON.stringify(info) : '')); log('FAIL ' + name, 'bad'); } }
+window.addEventListener('error', (e) => console.error('MUSIC_ERR ' + (e.message || e)));
+window.addEventListener('unhandledrejection', (e) => console.error('MUSIC_ERR rejection ' + (e.reason && e.reason.message || e.reason)));
+document.getElementById('title').textContent = '— "' + MUSIC.title + '", ' + MUSIC.bpm + ' BPM';
+
+const audioFX = new AudioFX();
+const music = new Music(audioFX);
+window.audioFX = audioFX; window.music = music;
+
+// 1) everything must be a silent no-op before unlock (no AudioContext yet)
+try {
+  music.setVolume(0.7); music.duck(true); music.duck(false); music.setMuffled(true); music.setMuffled(false);
+  music.play(); music.play(); music.stop(); music.stop(); music.setVolume(NaN); music.setVolume(0.5);
+  const pre = await music.preload();
+  check('preload before unlock resolves false', pre === false);
+  check('not ready / not playing before unlock', music.ready === false && music.playing === false);
+  const tmp = new Music(audioFX); tmp.dispose(); tmp.dispose(); tmp.play(); tmp.stop(); tmp.duck(true); tmp.setMuffled(true); tmp.setVolume(1);
+  check('disposed instance preload false', (await tmp.preload()) === false);
+  log('MUSIC_PRE_UNLOCK_OK', 'ok');
+} catch (e) { fails++; console.error('MUSIC_PRE_UNLOCK_FAIL ' + (e && e.stack || e)); }
+
+// 2) unlock (headless Chrome runs with autoplay allowed; in a normal browser click "Play") and play
+async function start(opts) {
+  audioFX.unlock();
+  music.play(opts);
+  const t0 = performance.now();
+  const ok = await music.preload();
+  return { ok, ms: performance.now() - t0 };
+}
+const { ok, ms } = await start();
+const ctx = audioFX.ctx;
+check('decoded', ok && music.ready, { ok, ready: music.ready });
+check('playing after play()', music.playing);
+check('play() idempotent', (music.play(), music.play(), music.playing));
+const buf = music.buffer;
+if (buf) {
+  check('duration matches data', Math.abs(buf.duration - MUSIC.duration) < 0.05, { got: buf.duration, want: MUSIC.duration });
+  check('loop points inside buffer', MUSIC.loopStart > 0 && MUSIC.loopEnd > MUSIC.loopStart && MUSIC.loopEnd <= buf.duration);
+  const v = music._voice;
+  check('source loop setup', v && v.src.loop === true && Math.abs(v.src.loopStart - MUSIC.loopStart) < 1e-6 && Math.abs(v.src.loopEnd - MUSIC.loopEnd) < 1e-6);
+  log(`MUSIC_OK duration=${buf.duration.toFixed(3)} loop=${MUSIC.loopStart}-${MUSIC.loopEnd} format=${music.format} sampleRate=${buf.sampleRate} channels=${buf.numberOfChannels} decodeMs=${ms.toFixed(0)} ctx=${ctx && ctx.state}`, 'ok');
+} else log('MUSIC_FAIL no buffer', 'bad');
+
+// 3) seam test: let the browser itself loop the decoded buffer across loopEnd in an OfflineAudioContext and compare
+//    with the ideal continuation (end of loop followed by loop head)
+async function seamTest(b, label) {
+  const sr = b.sampleRate, pre = 0.5, post = 0.5, n = Math.round((pre + post) * sr);
+  const oc = new OfflineAudioContext(b.numberOfChannels, n, sr);
+  const s = oc.createBufferSource(); s.buffer = b; s.loop = true; s.loopStart = MUSIC.loopStart; s.loopEnd = MUSIC.loopEnd;
+  s.connect(oc.destination); s.start(0, MUSIC.loopEnd - pre);
+  const r = await oc.startRendering();
+  const x = r.getChannelData(0), src = b.getChannelData(0);
+  const iLE = Math.round(MUSIC.loopEnd * sr), iLS = Math.round(MUSIC.loopStart * sr), k = Math.round(pre * sr);
+  let err = 0, sig = 0, maxStep = 0;
+  for (let i = 0; i < n; i++) {
+    const ideal = i < k ? src[iLE - k + i] : src[iLS + (i - k)];
+    err += (x[i] - ideal) ** 2; sig += ideal * ideal;
+    if (i > 0 && Math.abs(i - k) > 2) maxStep = Math.max(maxStep, Math.abs(x[i] - x[i - 1]));
+  }
+  const wrapStep = Math.max(Math.abs(x[k] - x[k - 1]), Math.abs(x[k + 1] - x[k]));
+  const errDb = 10 * Math.log10(err / sig + 1e-20);
+  check(label + ' seam continuous', wrapStep <= maxStep * 1.0 + 1e-4 && errDb < -40, { wrapStep, maxStep, errDb });
+  log(`SEAM_OK(${label}) wrapStep=${wrapStep.toFixed(4)} typicalMaxStep=${maxStep.toFixed(4)} loopedVsIdeal=${errDb.toFixed(1)}dB`, 'ok');
+}
+if (buf) { try { await seamTest(buf, music.format); } catch (e) { fails++; console.error('MUSIC_FAIL seam ' + e); } }
+
+// 4) the MP3 fallback must decode too (used when Ogg Opus is unsupported, e.g. older Safari)
+if (MUSIC.mp3) {
+  try {
+    const bin = atob(MUSIC.mp3), u = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i);
+    const oc = new OfflineAudioContext(2, 1, buf ? buf.sampleRate : 48000);
+    const mb = await oc.decodeAudioData(u.buffer);
+    check('mp3 duration', Math.abs(mb.duration - MUSIC.duration) < 0.06, { got: mb.duration });
+    log(`MP3_OK duration=${mb.duration.toFixed(3)} sampleRate=${mb.sampleRate}`, 'ok');
+    await seamTest(mb, 'mp3');
+  } catch (e) { fails++; console.error('MUSIC_FAIL mp3 decode ' + e); }
+}
+
+// 5) controls: volume / duck / muffle glide to their targets
+const N = music._nodes;
+music.setVolume(0.8); music.duck(true); music.setMuffled(true);
+await new Promise((r) => setTimeout(r, 900));
+check('volume', Math.abs(N.vol.gain.value - 0.8) < 0.02, N.vol.gain.value);
+check('duck -6 dB', Math.abs(N.duck.gain.value - 0.5) < 0.02, N.duck.gain.value);
+check('muffled', N.lp.frequency.value < 800, N.lp.frequency.value);
+music.duck(false); music.setMuffled(false); music.setVolume(0.5);
+await new Promise((r) => setTimeout(r, 1200));
+check('unduck', N.duck.gain.value > 0.97, N.duck.gain.value);
+check('unmuffle', N.lp.frequency.value > 15000, N.lp.frequency.value);
+music.stop(); check('stopped', !music.playing); music.stop();
+music.play(); check('restart after stop', music.playing);
+log(`MUSIC_CONTROLS_OK position=${music.position.toFixed(2)} fails=${fails}`, fails ? 'bad' : 'ok');
+
+// --- visualisation (waveform overview, loop region, playhead, live spectrum) + manual buttons ---
+const cv = document.getElementById('cv'), g = cv.getContext('2d');
+const an = ctx.createAnalyser(); an.fftSize = 2048; N.vol.connect(an);
+const freq = new Uint8Array(an.frequencyBinCount);
+const W = cv.width, H = cv.height, overview = new Float32Array(W);
+if (buf) { const d = buf.getChannelData(0), step = Math.floor(d.length / W); for (let x = 0; x < W; x++) { let m = 0; for (let i = x * step; i < (x + 1) * step; i += 16) m = Math.max(m, Math.abs(d[i])); overview[x] = m; } }
+function draw() {
+  g.fillStyle = '#070a0e'; g.fillRect(0, 0, W, H);
+  if (buf) {
+    const xa = MUSIC.loopStart / buf.duration * W, xb = MUSIC.loopEnd / buf.duration * W;
+    g.fillStyle = 'rgba(80,200,120,0.10)'; g.fillRect(xa, 0, xb - xa, 160);
+    g.fillStyle = '#5fbf7f'; for (let x = 0; x < W; x++) { const h = overview[x] * 75; g.fillRect(x, 80 - h, 1, 2 * h); }
+    g.fillStyle = '#9fe8a0'; g.fillText(`loop ${MUSIC.loopStart}s → ${MUSIC.loopEnd}s`, xa + 4, 12);
+    const px = music.position / buf.duration * W; g.fillStyle = '#ffd36b'; g.fillRect(px, 0, 2, 160);
+  }
+  an.getByteFrequencyData(freq);
+  for (let x = 0; x < W; x++) { const f = Math.floor(Math.pow(freq.length - 1, x / W)); const v = freq[f] / 255; g.fillStyle = `hsl(${140 - v * 100},70%,${30 + v * 30}%)`; g.fillRect(x, H - v * 130, 1, v * 130); }
+  g.fillStyle = '#c9d6c9'; g.fillText(`${music.playing ? 'playing' : 'stopped'} ${music.position.toFixed(2)}s  format=${music.format}  ducked=${music._ducked}  muffled=${music._muffled}`, 6, 176);
+  requestAnimationFrame(draw);
+}
+draw();
+const $ = (id) => document.getElementById(id);
+$('play').onclick = () => { music.stop({ fade: 0 }); start(); };
+$('skip').onclick = () => { music.stop({ fade: 0 }); start({ skipIntro: true }); };
+$('seam').onclick = () => { music.stop({ fade: 0 }); start({ at: MUSIC.loopEnd - 6, fadeIn: 0.2 }); };
+$('stop').onclick = () => music.stop();
+$('duck').onclick = () => music.duck(!music._ducked);
+$('muffle').onclick = () => music.setMuffled(!music._muffled);
+$('vol').oninput = (e) => music.setVolume(+e.target.value);
+</script>
+</body>
+</html>

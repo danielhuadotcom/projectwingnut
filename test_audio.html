@@ -1,0 +1,154 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8"><link rel="icon" href="data:,">
+<title>wingnut — audio test</title>
+<style>
+  html, body { margin: 0; background: #0b0f14; color: #9fe8a0; font: 13px/1.35 ui-monospace, Menlo, Consolas, monospace; }
+  #wrap { padding: 14px 18px; }
+  h1 { font-size: 15px; margin: 0 0 8px; color: #d8f0d8; }
+  button { font: inherit; padding: 6px 14px; background: #173; color: #dfd; border: 1px solid #4a8; border-radius: 4px; cursor: pointer; margin-right: 8px; }
+  button:hover { background: #285; }
+  .row { margin-bottom: 10px; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+  pre { margin: 0; white-space: pre; }
+  #log { margin-top: 12px; color: #c9d6c9; max-height: 40vh; overflow: auto; }
+  .ok { color: #7f7; } .bad { color: #f77; }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <h1>PROJECT WINGNUT — js/audio.js test</h1>
+  <div class="row">
+    <button id="start">Start</button>
+    <button data-fx="gun">gun burst</button><button data-fx="missile">missile</button><button data-fx="boom">explosion 200 m</button>
+    <button data-fx="boomfar">explosion 2500 m</button><button data-fx="hit">hit</button><button data-fx="impact">impact</button>
+    <button data-fx="seek">lock seeking</button><button data-fx="lock">locked</button><button data-fx="unlock">lock none</button>
+    <button data-fx="rwr">RWR toggle</button><button data-fx="pullup">pull-up toggle</button><button data-fx="ab">afterburner toggle</button>
+    <button data-fx="select">ui select</button><button data-fx="uistart">ui start</button><button data-fx="kill">ui kill</button><button data-fx="wave">ui wave</button><button data-fx="dead">ui dead</button>
+  </div>
+  <pre id="out">loading…</pre>
+  <pre id="log"></pre>
+</div>
+<script type="module">
+import { AudioFX } from './js/audio.js';
+
+const outEl = document.getElementById('out'), logEl = document.getElementById('log');
+let fails = 0;
+function log(msg, cls) { console.log(msg); const s = document.createElement('span'); if (cls) s.className = cls; s.textContent = msg + '\n'; logEl.appendChild(s); }
+function check(name, cond, info) { if (!cond) { fails++; console.error('AUDIO_FAIL ' + name + (info !== undefined ? ' :: ' + JSON.stringify(info) : '')); log('FAIL ' + name, 'bad'); } }
+window.addEventListener('error', (e) => console.error('AUDIO_ERR ' + (e.message || e)));
+window.addEventListener('unhandledrejection', (e) => console.error('AUDIO_ERR rejection ' + (e.reason && e.reason.message || e.reason)));
+
+const audio = new AudioFX();
+window.audio = audio;
+
+// 1) every method must be a silent no-op BEFORE unlock
+try {
+  audio.setEngine({ throttle: 0.5, speedFrac: 0.5, afterburner: true, alive: true });
+  audio.setEngine(); audio.gunFire(); audio.missileLaunch(); audio.explosion(200); audio.explosion(); audio.hit(); audio.impact();
+  audio.lockTone('seeking'); audio.lockTone('locked'); audio.lockTone('none'); audio.lockTone('bogus');
+  audio.missileWarning(true); audio.missileWarning(false); audio.pullUpWarning(true); audio.pullUpWarning(false);
+  audio.ui('select'); audio.ui('start'); audio.ui('kill'); audio.ui('wave'); audio.ui('dead'); audio.ui('bogus'); audio.ui();
+  audio.setMaster(0.5); audio.setMaster(NaN);
+  check('ready false before unlock', audio.ready === false);
+  check('running false before unlock', audio.running === false && audio.activeVoices === 0);
+  log('AUDIO_PRE_UNLOCK_OK', 'ok');
+} catch (e) { fails++; console.error('AUDIO_PRE_UNLOCK_FAIL ' + (e && e.stack || e)); log('AUDIO_PRE_UNLOCK_FAIL ' + e, 'bad'); }
+
+// 2) dispose semantics on a throwaway instance (unlock -> use -> dispose -> use again must not throw)
+try {
+  const tmp = new AudioFX(); tmp.unlock(); tmp.setEngine({ throttle: 1, speedFrac: 1, afterburner: true, alive: true }); tmp.gunFire(); tmp.lockTone('seeking'); tmp.missileWarning(true);
+  const wasReady = tmp.ready; tmp.dispose();
+  tmp.gunFire(); tmp.unlock(); tmp.setEngine({}); tmp.lockTone('locked'); tmp.ui('kill'); tmp.dispose();
+  check('dispose: ready false, ctx null', tmp.ready === false && tmp.ctx === null, { wasReady });
+  log('AUDIO_DISPOSE_OK (was ready: ' + wasReady + ')', 'ok');
+} catch (e) { fails++; console.error('AUDIO_DISPOSE_FAIL ' + (e && e.stack || e)); }
+
+// 3) synthetic unlock at load (headless harness runs with --autoplay-policy=no-user-gesture-required)
+audio.setMaster(0.6);
+try { audio.unlock(); audio.unlock(); } catch (e) { fails++; console.error('AUDIO_UNLOCK_THREW ' + (e && e.stack || e)); }
+log('AUDIO_OK ready=' + audio.ready + ' state=' + (audio.ctx ? audio.ctx.state : 'none') + ' sampleRate=' + (audio.ctx ? audio.ctx.sampleRate : '-'), audio.ready ? 'ok' : 'bad');
+
+// ---------------------------------------------------------------------------------------------------------------
+// Engine ramp every frame + a scripted sequence of one-shots / continuous tones
+// ---------------------------------------------------------------------------------------------------------------
+let engineAlive = true, abForce = false, rwrOn = false, puOn = false, seqStart = -1, seqRunning = false;
+let throttle = 0, speedFrac = 0, lockState = 'none';
+const seq = [
+  [0.0, () => log('seq: engine ramp 0→1 over 3 s (afterburner > 0.98)')],
+  [0.5, () => { let n = 0; const iv = setInterval(() => { try { audio.gunFire(); } catch (e) { check('gunFire threw', false, String(e)); } if (++n >= 12) clearInterval(iv); }, 40); log('seq: gun burst (12 rounds @ 25/s)'); }],
+  [1.5, () => { audio.missileLaunch(); audio.ui('select'); log('seq: missile launch + ui select'); }],
+  [2.0, () => { audio.explosion(200); log('seq: explosion @ 200 m (delay 0.59 s)'); }],
+  [2.3, () => { audio.lockTone('seeking'); lockState = 'seeking'; log('seq: lock seeking'); }],
+  [2.6, () => { for (let i = 0; i < 40; i++) audio.explosion(2500 + i * 10); const n = audio.activeVoices; check('voice budget <= 24', n <= 24, n); log('seq: 40 far explosions queued → activeVoices=' + n + ' (budget 24)'); }],
+  [3.0, () => { audio.missileWarning(true); rwrOn = true; log('seq: missile warning on'); }],
+  [3.5, () => { audio.lockTone('locked'); audio.lockTone('locked'); lockState = 'locked'; log('seq: lock locked (called twice: idempotent)'); }],
+  [4.0, () => { audio.hit(); log('seq: hit'); }],
+  [4.2, () => { audio.impact(); audio.impact(); log('seq: impact x2'); }],
+  [4.5, () => { audio.lockTone('none'); lockState = 'none'; audio.missileWarning(false); rwrOn = false; audio.pullUpWarning(true); puOn = true; log('seq: lock none, RWR off, pull-up on'); }],
+  [5.0, () => { audio.ui('start'); log('seq: ui start'); }],
+  [5.6, () => { audio.pullUpWarning(false); puOn = false; audio.ui('kill'); log('seq: pull-up off, ui kill'); }],
+  [6.2, () => { audio.ui('wave'); log('seq: ui wave'); }],
+  [6.8, () => { audio.ui('dead'); engineAlive = false; log('seq: ui dead + engine alive=false (1 s fade)'); }],
+  [7.4, () => {
+    check('scheduler idle when no continuous tone', audio._schedTimer === 0, audio._schedTimer);
+    log('AUDIO_SEQ_OK fails=' + fails + ' state=' + (audio.ctx ? audio.ctx.state : 'none') + ' voices=' + audio.activeVoices, fails ? 'bad' : 'ok');
+    seqRunning = false; engineAlive = true;
+  }],
+];
+let seqIdx = 0;
+function runSequence() {
+  if (seqRunning) return;
+  seqRunning = true; seqIdx = 0; seqStart = performance.now(); engineAlive = true;
+}
+function frame(now) {
+  try {
+    if (seqRunning) {
+      const t = (now - seqStart) / 1000;
+      throttle = Math.min(1, t / 3); speedFrac = Math.min(1, 0.2 + throttle * 0.75);
+      while (seqIdx < seq.length && t >= seq[seqIdx][0]) { seq[seqIdx][1](); seqIdx++; }
+    } else {
+      throttle = 0.35; speedFrac = 0.4;
+    }
+    const afterburner = abForce || throttle > 0.98;
+    audio.setEngine({ throttle, speedFrac, afterburner, alive: engineAlive });
+    const ctx = audio.ctx;
+    outEl.textContent = [
+      'ready=' + audio.ready + '  running=' + audio.running + '  ctx.state=' + (ctx ? ctx.state : 'none') + '  currentTime=' + (ctx ? ctx.currentTime.toFixed(2) : '-'),
+      'engine: throttle=' + throttle.toFixed(2) + ' speedFrac=' + speedFrac.toFixed(2) + ' afterburner=' + afterburner + ' alive=' + engineAlive,
+      'activeVoices=' + audio.activeVoices + '/24  lock=' + lockState + '  rwr=' + rwrOn + '  pullUp=' + puOn + '  scheduler=' + (audio._schedTimer ? 'running' : 'idle'),
+      'sequence: ' + (seqRunning ? ('running, step ' + seqIdx + '/' + seq.length + ' t=' + ((now - seqStart) / 1000).toFixed(1) + ' s') : 'idle (press Start)'),
+    ].join('\n');
+  } catch (e) { fails++; console.error('AUDIO_ERR frame: ' + (e && e.stack || e)); }
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+if (audio.ready) runSequence(); else log('context unavailable: sequence skipped', 'bad');
+
+document.getElementById('start').addEventListener('click', () => { audio.unlock(); log('unlock() from click → state=' + (audio.ctx && audio.ctx.state)); runSequence(); });
+for (const b of document.querySelectorAll('button[data-fx]')) {
+  b.addEventListener('click', () => {
+    audio.unlock();
+    const k = b.dataset.fx;
+    if (k === 'gun') { let n = 0; const iv = setInterval(() => { audio.gunFire(); if (++n >= 15) clearInterval(iv); }, 40); }
+    else if (k === 'missile') audio.missileLaunch();
+    else if (k === 'boom') audio.explosion(200);
+    else if (k === 'boomfar') audio.explosion(2500);
+    else if (k === 'hit') audio.hit();
+    else if (k === 'impact') audio.impact();
+    else if (k === 'seek') { audio.lockTone('seeking'); lockState = 'seeking'; }
+    else if (k === 'lock') { audio.lockTone('locked'); lockState = 'locked'; }
+    else if (k === 'unlock') { audio.lockTone('none'); lockState = 'none'; }
+    else if (k === 'rwr') { rwrOn = !rwrOn; audio.missileWarning(rwrOn); }
+    else if (k === 'pullup') { puOn = !puOn; audio.pullUpWarning(puOn); }
+    else if (k === 'ab') abForce = !abForce;
+    else if (k === 'select') audio.ui('select');
+    else if (k === 'uistart') audio.ui('start');
+    else if (k === 'kill') audio.ui('kill');
+    else if (k === 'wave') audio.ui('wave');
+    else if (k === 'dead') audio.ui('dead');
+  });
+}
+</script>
+</body>
+</html>

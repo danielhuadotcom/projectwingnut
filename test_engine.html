@@ -1,0 +1,289 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Engine FX test</title>
+<link rel="icon" href="data:,">
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+  canvas { display: block; }
+  #info { position: fixed; left: 8px; bottom: 6px; color: #9fb; font: 11px/1.4 monospace; pointer-events: none; text-shadow: 0 1px 2px #000; white-space: pre; }
+</style>
+</head>
+<body>
+<div id="info"></div>
+<script type="module">
+import * as THREE from 'https://cdnjs.cloudflare.com/ajax/libs/three.js/0.170.0/three.module.min.js';
+import { PostFX } from './js/post.js';
+import { AfterburnerFX } from './js/engine_fx.js';
+
+// ?view=chase|side|rear|rear34|close   ?throttle=0.3|0.9|1 (1 = afterburner)   ?t=<s> freezes animation time
+// ?quality=low|medium|high|ultra   ?hull=1 shows the bounding hulls   ?ramp=1 toggles the burner every 1.5 s
+// ?grid=1..5  renders four views into the four quadrants (use a 2560x1440 page), see GRIDS below.
+// extra views: inside (camera inside the plume), far (300 m behind), far2 (1200 m behind)
+// ?bench=1  chase view, measures the plume GPU time for several states/qualities in one run (logs ENGINE_BENCH)
+window.addEventListener('error', (e) => console.log('PAGE_ERROR ' + (e.message || e)));
+window.addEventListener('unhandledrejection', (e) => console.log('PAGE_REJECTION ' + (e.reason && e.reason.message || e.reason)));
+
+const q = new URLSearchParams(location.search);
+const VIEW = q.get('view') || 'chase';
+const THROTTLE = q.has('throttle') ? Math.min(1, Math.max(0, parseFloat(q.get('throttle')) || 0)) : 1;
+const T_FREEZE = q.has('t') ? parseFloat(q.get('t')) : null;
+const QUALITY = q.get('quality') || 'high';
+const RAMP = q.get('ramp') === '1';
+const GRIDS = {   // [view, throttle, { quality, tOff (time offset), abmix (frozen burner ramp 0..1) }]
+  1: [['side', 1], ['chase', 1], ['rear', 1], ['side', 0.9]],
+  2: [['rear34', 1], ['close', 1], ['chase', 0.9], ['rear', 0.9]],
+  3: [['side', 0.3], ['chase', 0.3], ['close', 0.9], ['inside', 1]],
+  4: [['side', 1, { quality: 'low' }], ['side', 1, { tOff: 0.07 }], ['side', 1, { abmix: 0.45 }], ['far', 1]],
+  5: [['side', 1, { hull: true }], ['rear', 1], ['far2', 1], ['rear34', 1, { hull: true }]],
+};
+const GRID = GRIDS[q.get('grid')] || null;
+const BENCH = q.get('bench') === '1';
+// bench phases: [label, throttle, quality]; each runs ~1.1 s in the matching chase view
+const BENCH_PHASES = [['ab_high', 1, 'high'], ['mil_high', 0.9, 'high'], ['ab_low', 1, 'low'], ['ab_medium', 1, 'medium'],
+  ['ab_ultra', 1, 'ultra'], ['mil_low', 0.9, 'low'], ['idle_high', 0.3, 'high']];
+
+try { main(); } catch (e) { console.log('ENGINE_FAIL ' + (e && e.stack || e)); }
+
+// daylight sky gradient + hazy ground + sun/hemi lights + stand-in rear fuselage with an AfterburnerFX
+function buildScene(throttle, opts = {}) {
+  const scene = new THREE.Scene();
+  const HAZE = new THREE.Color(0.40, 0.48, 0.54);
+  scene.fog = new THREE.FogExp2(HAZE, 0.0011);
+  const sky = new THREE.Mesh(new THREE.SphereGeometry(20000, 32, 16), new THREE.ShaderMaterial({
+    side: THREE.BackSide, depthWrite: false, fog: false,
+    vertexShader: 'varying vec3 vDir; void main(){ vDir = position; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
+    fragmentShader: `varying vec3 vDir;
+      void main(){
+        vec3 d = normalize(vDir);
+        vec3 zen = vec3(0.03, 0.10, 0.28), hor = vec3(0.55, 0.68, 0.76), haze = vec3(0.40, 0.48, 0.54);
+        vec3 c = d.y > 0.0 ? mix(hor, zen, pow(clamp(d.y, 0.0, 1.0), 0.45)) : mix(hor, haze, clamp(-d.y * 8.0, 0.0, 1.0));
+        gl_FragColor = vec4(c, 1.0);
+      }`,
+  }));
+  sky.renderOrder = -1000;
+  sky.frustumCulled = false;
+  scene.add(sky);
+  const ground = new THREE.Mesh(new THREE.PlaneGeometry(40000, 40000), new THREE.MeshStandardMaterial({ color: new THREE.Color(0.16, 0.22, 0.11), roughness: 1, metalness: 0 }));
+  ground.rotation.x = -Math.PI / 2; ground.position.y = -120;
+  scene.add(ground);
+  const sun = new THREE.DirectionalLight(new THREE.Color(1.0, 0.93, 0.84), 3.0);
+  sun.position.set(6, 10, 12);
+  scene.add(sun);
+  scene.add(new THREE.HemisphereLight(new THREE.Color(0.55, 0.7, 1.0), new THREE.Color(0.3, 0.25, 0.18), 0.7));
+
+  // stand-in rear fuselage: nose -Z, exhaust +Z
+  const jet = new THREE.Group();
+  scene.add(jet);
+  const grey = new THREE.MeshStandardMaterial({ color: new THREE.Color(0.10, 0.11, 0.12), roughness: 0.55, metalness: 0.35 });
+  const black = new THREE.MeshStandardMaterial({ color: new THREE.Color(0.012, 0.012, 0.014), roughness: 0.9, metalness: 0.0 });
+  const box = (w, h, d, x, y, z, m) => { const b = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), m); b.position.set(x, y, z); jet.add(b); return b; };
+  box(3.4, 1.1, 8.0, 0, 0.05, 2.4, grey);                       // body forward of the nozzles (z -1.6 .. 6.4)
+  const NOZ_X = 0.85, EXIT_Z = 7.6, HW = 0.5, HH = 0.3, WALL = 0.04, DEPTH = 1.2;
+  for (const sx of [-1, 1]) {                                    // hollow 1.0 x 0.6 openings, 1.2 m deep
+    const x = sx * NOZ_X, zc = EXIT_Z - DEPTH / 2;
+    box(2 * HW + 2 * WALL, WALL, DEPTH, x, HH + WALL / 2, zc, grey);
+    box(2 * HW + 2 * WALL, WALL, DEPTH, x, -HH - WALL / 2, zc, grey);
+    box(WALL, 2 * HH, DEPTH, x - HW - WALL / 2, 0, zc, grey);
+    box(WALL, 2 * HH, DEPTH, x + HW + WALL / 2, 0, zc, grey);
+    box(2 * HW, 2 * HH, 0.04, x, 0, EXIT_Z - 0.55, black);      // dark back wall deep inside
+  }
+  const fx = new AfterburnerFX({
+    nozzles: [
+      { position: new THREE.Vector3(-NOZ_X, 0, EXIT_Z), halfWidth: HW, halfHeight: HH },
+      { position: new THREE.Vector3(NOZ_X, 0, EXIT_Z), halfWidth: HW, halfHeight: HH },
+    ],
+    quality: opts.quality || QUALITY,
+  });
+  fx.debugHull = q.get('hull') === '1' || !!opts.hull;
+  jet.add(fx.object3d);
+  const ab = throttle >= 0.99;
+  return { scene, fx, ab, throttle, opts, inputs: { throttle, afterburner: ab, speed: ab ? 440 : 280, time: 0 } };
+}
+
+function makeCamera(view, ab, aspect) {
+  const P = {
+    chase: ab ? { p: [0, 6.5, 34], l: [0, 3, -60], fov: 84 } : { p: [0, 6.5, 30], l: [0, 3, -60], fov: 72 },
+    side: { p: [8.0, 0.8, 11.0], l: [0.85, 0.0, 11.4], fov: 45 },
+    rear: { p: [0, 0.9, 24], l: [0, 0, 7.6], fov: 45 },
+    rear34: { p: [9.5, 2.8, 21], l: [0, 0, 10], fov: 50 },
+    close: { p: [2.6, 0.9, 10.2], l: [0.85, 0, 8.2], fov: 60 },
+    inside: { p: [0.85, 0.15, 12.5], l: [0.85, 0, 7.6], fov: 70 },
+    far: { p: [0, 40, 300], l: [0, 0, 0], fov: 70 },
+    far2: { p: [0, 150, 1200], l: [0, 0, 0], fov: 70 },
+  }[view] || { p: [0, 6.5, 34], l: [0, 3, -60], fov: 84 };
+  const cam = new THREE.PerspectiveCamera(P.fov, aspect, 1, 60000);
+  cam.position.fromArray(P.p);
+  cam.lookAt(new THREE.Vector3().fromArray(P.l));
+  return cam;
+}
+
+function main() {
+  const renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: 'high-performance', alpha: false, stencil: false });
+  renderer.setPixelRatio(1);
+  renderer.setSize(innerWidth, innerHeight);
+  renderer.toneMapping = THREE.NoToneMapping;
+  renderer.outputColorSpace = THREE.SRGBColorSpace;
+  document.body.appendChild(renderer.domElement);
+  renderer.debug.onShaderError = (gl, program, vs, fs) => {
+    for (const [name, sh] of [['VS', vs], ['FS', fs]]) {
+      const log = gl.getShaderInfoLog(sh) || '';
+      if (!log.trim()) continue;
+      const src = (gl.getShaderSource(sh) || '').split('\n');
+      for (const line of log.split('\n').filter(Boolean).slice(0, 8)) {
+        const m = /ERROR: \d+:(\d+)/.exec(line);
+        console.log(`SHADER_ERROR ${name} ${line.slice(0, 200)}${m ? '  >> ' + (src[+m[1] - 1] || '').trim().slice(0, 160) : ''}`);
+      }
+    }
+    console.log('PROGRAM_LOG ' + (gl.getProgramInfoLog(program) || '').slice(0, 300));
+  };
+
+  // ---------------------------------------------------------------- scenes / views
+  const W = GRID ? Math.floor(innerWidth / 2) : innerWidth, H = GRID ? Math.floor(innerHeight / 2) : innerHeight;
+  const states = new Map();
+  const getState = (thr, opts = {}) => {
+    const key = [thr, opts.quality, opts.tOff, opts.abmix, opts.hull].join('|');
+    if (!states.has(key)) states.set(key, buildScene(thr, opts));
+    return states.get(key);
+  };
+  const views = (GRID || [[VIEW, THROTTLE]]).map(([view, thr, opts], i) => {
+    const st = getState(thr, opts);
+    const vp = GRID ? [(i % 2) * W, (i < 2 ? 1 : 0) * H, W, H] : [0, 0, W, H];
+    return { view, st, cam: makeCamera(view, st.ab, W / H), vp };
+  });
+  const main0 = views[0];
+  window.fx = main0.st.fx;
+  const post = new PostFX(renderer, W, H, 1);
+  window.post = post;
+
+  // ---------------------------------------------------------------- GPU timer around the plume draw only (single view)
+  const gl = renderer.getContext();
+  const ext = GRID ? null : gl.getExtension('EXT_disjoint_timer_query_webgl2');
+  const pool = [], pending = [], samples = [];
+  let active = null;
+  const fxMain = main0.st.fx;
+  if (ext && fxMain.mesh) {
+    const before = fxMain.mesh.onBeforeRender;
+    fxMain.mesh.onBeforeRender = function (...a) {
+      before.apply(this, a);
+      if (active) return;
+      active = pool.pop() || gl.createQuery();
+      gl.beginQuery(ext.TIME_ELAPSED_EXT, active);
+    };
+    fxMain.mesh.onAfterRender = function () {
+      if (!active) return;
+      gl.endQuery(ext.TIME_ELAPSED_EXT);
+      pending.push(active); active = null;
+    };
+  }
+  function pollQueries() {
+    if (!ext) return;
+    const disjoint = gl.getParameter(ext.GPU_DISJOINT_EXT);
+    while (pending.length) {
+      const qq = pending[0];
+      if (!gl.getQueryParameter(qq, gl.QUERY_RESULT_AVAILABLE)) break;
+      const ns = gl.getQueryParameter(qq, gl.QUERY_RESULT);
+      pending.shift(); pool.push(qq);
+      if (!disjoint) samples.push(ns / 1e6);
+    }
+  }
+  const stats = () => {
+    const s = samples.slice(BENCH ? 15 : 10).sort((a, b) => a - b);   // drop warm-up / state-switch frames
+    if (!s.length) return null;
+    const mean = s.reduce((a, b) => a + b, 0) / s.length;
+    return { median: s[s.length >> 1], mean, p90: s[Math.floor(s.length * 0.9)], n: s.length };
+  };
+  // draw calls / triangles for the plume alone (both nozzles)
+  function countPlumeCalls() {
+    const rt = new THREE.WebGLRenderTarget(16, 16);
+    const prevAuto = renderer.info.autoReset;
+    renderer.info.autoReset = false; renderer.info.reset();
+    renderer.setRenderTarget(rt);
+    const savedB = fxMain.mesh.onBeforeRender, savedA = fxMain.mesh.onAfterRender;
+    fxMain.mesh.onBeforeRender = (r, s, c) => fxMain._beforeRender(r, c); fxMain.mesh.onAfterRender = () => {};
+    renderer.render(fxMain.object3d, main0.cam);
+    fxMain.mesh.onBeforeRender = savedB; fxMain.mesh.onAfterRender = savedA;
+    const calls = renderer.info.render.calls, tris = renderer.info.render.triangles;
+    renderer.setRenderTarget(null); renderer.info.autoReset = prevAuto; rt.dispose();
+    return { calls, tris };
+  }
+
+  // ---------------------------------------------------------------- loop
+  const info = document.getElementById('info');
+  let simT = 0, last = performance.now(), frames = 0, reported = false, failed = false, plumeCalls = null;
+  const stepStates = (dt) => {
+    for (const st of states.values()) {
+      let ab = st.ab;
+      if (RAMP) ab = Math.floor(simT / 1.5) % 2 === 0;
+      st.inputs.afterburner = ab; st.inputs.throttle = ab ? 1 : (st.ab ? 0.9 : st.throttle); st.inputs.speed = ab ? 440 : 280;
+      st.inputs.time = (T_FREEZE ?? simT) + (st.opts.tOff || 0);
+      st.fx.update(dt, st.inputs);
+      if (st.opts.abmix != null) { st.fx._abRamp = st.opts.abmix; st.fx.update(0, st.inputs); }
+    }
+  };
+  for (let i = 0; i < 90; i++) { simT += 1 / 60; stepStates(1 / 60); }   // settle ramps: steady state at frame 1
+  const bench = { phase: -1, t0: 0, results: [] };
+  function benchStep() {
+    const ph = Math.floor(simT / 1.1) - 2;            // phases start after ~2 s of warm-up
+    if (ph === bench.phase) return;
+    if (bench.phase >= 0 && bench.phase < BENCH_PHASES.length) {
+      const st = stats();
+      bench.results.push(BENCH_PHASES[bench.phase][0] + '=' + (st ? st.median.toFixed(3) : 'na'));
+    }
+    bench.phase = ph;
+    samples.length = 0;
+    if (ph >= BENCH_PHASES.length) {
+      if (!bench.done) { bench.done = true; console.log('ENGINE_BENCH ' + bench.results.join(' ') + ' (median ms, plume draw only, chase view 1280x720 MSAA4)'); }
+      return;
+    }
+    if (ph < 0) return;
+    const [, thr, qual] = BENCH_PHASES[ph];
+    const st0 = main0.st;
+    st0.throttle = thr; st0.ab = thr >= 0.99;
+    st0.inputs.throttle = thr; st0.inputs.afterburner = st0.ab; st0.inputs.speed = st0.ab ? 440 : 280;
+    st0.fx.setQuality(qual);
+    st0.fx._first = true;                              // snap to the steady state (no ramp / kick)
+    const c = makeCamera('chase', st0.ab, W / H);
+    main0.cam.position.copy(c.position); main0.cam.quaternion.copy(c.quaternion);
+    main0.cam.fov = c.fov; main0.cam.updateProjectionMatrix();
+  }
+  function frame() {
+    requestAnimationFrame(frame);
+    if (failed) return;
+    try {
+      const now = performance.now();
+      const dt = Math.min(0.1, (now - last) / 1000); last = now;
+      simT += dt;
+      if (BENCH) benchStep();
+      stepStates(dt);
+      pollQueries();
+      for (const v of views) {
+        renderer.setViewport(v.vp[0], v.vp[1], v.vp[2], v.vp[3]);
+        post.render(v.st.scene, v.cam, dt);
+      }
+      frames++;
+      if (frames === 2 && fxMain.mesh) plumeCalls = countPlumeCalls();
+      const st = stats();
+      if (!reported && GRID && frames > 30 && simT > 2.2) { reported = true; console.log('ENGINE_OK grid=' + q.get('grid') + ' frames=' + frames); }
+      if (!reported && !BENCH && frames > 60 && st && st.n >= 30 && simT > 2.2) {
+        reported = true;
+        console.log('ENGINE_OK gpu_ms=' + st.median.toFixed(3) + ' mean=' + st.mean.toFixed(3) + ' p90=' + st.p90.toFixed(3) + ' n=' + st.n +
+          ' view=' + VIEW + ' throttle=' + THROTTLE + ' quality=' + fxMain.quality + ' plume_calls=' + (plumeCalls && plumeCalls.calls) +
+          ' plume_tris=' + (plumeCalls && plumeCalls.tris) + ' frame_calls=' + renderer.info.render.calls + ' steps=' + fxMain._u.uSteps.value +
+          ' lod=' + fxMain._u.uLod.value.toFixed(2) + ' visible=' + fxMain.mesh.visible);
+      }
+      if (!GRID && !ext && !reported && frames > 60) { reported = true; console.log('ENGINE_OK gpu_ms=-1.000 (no timer query)'); }
+      info.textContent = `view=${VIEW} thr=${THROTTLE} q=${fxMain.quality} frame ${frames} dt=${(dt * 1000).toFixed(1)}ms calls=${renderer.info.render.calls}` +
+        (st ? `  plume gpu median ${st.median.toFixed(3)} ms (n=${st.n})` : '');
+    } catch (e) {
+      failed = true;
+      console.log('ENGINE_FRAME_ERROR ' + (e && e.stack || e));
+    }
+  }
+  frame();
+}
+</script>
+</body>
+</html>

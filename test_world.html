@@ -1,0 +1,189 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>WINGNUT — world test</title>
+<style>html,body{margin:0;height:100%;background:#000;overflow:hidden}canvas{display:block}
+#info{position:absolute;left:8px;top:8px;color:#9f9;font:12px monospace;text-shadow:0 0 3px #000;pointer-events:none;white-space:pre}</style>
+</head>
+<body>
+<div id="info"></div>
+<script type="module">
+import * as THREE from 'https://cdnjs.cloudflare.com/ajax/libs/three.js/0.170.0/three.module.min.js';
+import { World, WORLD_HALF, SEA_LEVEL } from './js/world.js';
+
+// URL parameters (all optional):
+//   view=1..6   camera preset (1 cruise 900 m, 2 above the clouds, 3 bench-like 700 m, 4 snow massif, 5 into the sun low, 6 below the clouds)
+//   t=<s>       freeze the animation clock (camera path + water/cloud animation) for deterministic screenshots
+//   q=low|medium|high|ultra   world.setQuality(q) after construction
+//   hide=terrain,water,sky,clouds,puffs   hide world meshes
+//   msaa=<n>    MSAA samples of the preview HDR target (default 4, like the game)
+//   prof=1      GPU timer queries: whole scene (even frames) vs. per-object (odd frames), logs a WORLD_PROF line
+//   prof=scene  GPU timer query around the whole scene render every frame (pass-style, no per-object queries)
+//   sun=az,el   degrees; calls world.setSunDirection (az measured from -Z toward -X)
+//   cycle=1     switch world quality every 45 frames (low -> medium -> high -> ultra), logs WORLD_Q lines
+window.addEventListener('error', (e) => console.error('WORLD_ERROR ' + (e.message || e)));
+window.addEventListener('unhandledrejection', (e) => console.error('WORLD_ERROR ' + (e.reason && e.reason.message || e.reason)));
+
+try {
+  const params = new URLSearchParams(location.search);
+  const view = params.get('view') || '1';
+  const fixedT = params.has('t') ? Number(params.get('t')) : null;
+  const info = document.getElementById('info');
+
+  const renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: 'high-performance', alpha: false, stencil: false });
+  renderer.setPixelRatio(1);
+  renderer.setSize(innerWidth, innerHeight);
+  renderer.toneMapping = THREE.NoToneMapping;
+  renderer.outputColorSpace = THREE.SRGBColorSpace;
+  document.body.appendChild(renderer.domElement);
+
+  const scene = new THREE.Scene();
+  const camera = new THREE.PerspectiveCamera(view === '3' ? 66 : 70, innerWidth / innerHeight, 1, 60000);
+  camera.rotation.order = 'YXZ';
+
+  const t0 = performance.now();
+  const world = new World(scene, renderer);
+  const buildMs = performance.now() - t0;
+  // quality preset + optional overrides (levels=128,128,96,..  cell0=8  detail=3  water=3  foam=1  puffG=8), cull=0 disables terrain culling
+  const ov = {};
+  if (params.has('levels')) ov.levels = params.get('levels').split(',').map(Number);
+  for (const k of ['cell0', 'detail', 'water', 'foam', 'puffG']) if (params.has(k)) ov[k] = Number(params.get(k));
+  if (world.setQuality && (params.has('q') || Object.keys(ov).length)) world.setQuality(params.get('q') || 'high', Object.keys(ov).length ? ov : null);
+  if (params.get('cull') === '0') world.cullTerrain = false;
+  if (params.has('sun') && world.setSunDirection) {
+    const [az, el] = params.get('sun').split(',').map((v) => THREE.MathUtils.degToRad(Number(v)));
+    world.setSunDirection(new THREE.Vector3(-Math.cos(el) * Math.sin(az), Math.sin(el), -Math.cos(el) * Math.cos(az)));
+  }
+  const hidden = (params.get('hide') || '').split(',').map((n) => world[n]).filter(Boolean);
+  for (const o of hidden) o.visible = false;
+  console.log(`world built in ${buildMs.toFixed(0)} ms (heightfield ${(world.generationTime || 0).toFixed(0)} ms), h(0,0)=${world.getHeight(0, 0).toFixed(1)} m, cloud@(0,2400,0)=${world.cloudDensityAt(0, 2400, 0).toFixed(2)}, env=${scene.environment ? 'yes' : 'no'}, quality=${world.quality || '-'}`);
+
+  // a shiny test sphere + box so the environment map / lights / fog can be judged on standard materials
+  const probe = new THREE.Mesh(new THREE.SphereGeometry(6, 32, 16), new THREE.MeshStandardMaterial({ color: 0x8d9aa6, metalness: 0.9, roughness: 0.25 }));
+  scene.add(probe);
+  const probe2 = new THREE.Mesh(new THREE.BoxGeometry(8, 3, 14), new THREE.MeshStandardMaterial({ color: 0xff5a1f, metalness: 0.2, roughness: 0.5 }));
+  scene.add(probe2);
+
+  // ---- tiny preview post pass: scene -> half-float MSAA RT -> ACES fitted + sRGB
+  const samples = params.has('msaa') ? Number(params.get('msaa')) : 4;
+  const rt = new THREE.WebGLRenderTarget(innerWidth, innerHeight, { type: THREE.HalfFloatType, minFilter: THREE.LinearFilter, magFilter: THREE.LinearFilter, depthBuffer: true, stencilBuffer: false, samples });
+  const postScene = new THREE.Scene();
+  const postCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+  const postMat = new THREE.ShaderMaterial({
+    uniforms: { tSrc: { value: rt.texture }, uExposure: { value: 1.0 } },
+    vertexShader: `varying vec2 vUv; void main(){ vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }`,
+    fragmentShader: `
+      uniform sampler2D tSrc; uniform float uExposure; varying vec2 vUv;
+      vec3 RRTAndODTFit(vec3 v){ vec3 a = v*(v+0.0245786)-0.000090537; vec3 b = v*(0.983729*v+0.4329510)+0.238081; return a/b; }
+      vec3 aces(vec3 c){
+        const mat3 inM = mat3(vec3(0.59719,0.07600,0.02840), vec3(0.35458,0.90834,0.13383), vec3(0.04823,0.01566,0.83777));
+        const mat3 outM = mat3(vec3(1.60475,-0.10208,-0.00327), vec3(-0.53108,1.10813,-0.07276), vec3(-0.07367,-0.00605,1.07602));
+        c *= uExposure / 0.6; c = inM * c; c = RRTAndODTFit(c); c = outM * c; return clamp(c, 0.0, 1.0);
+      }
+      vec3 toSRGB(vec3 c){ return mix(c*12.92, 1.055*pow(c, vec3(1.0/2.4))-0.055, step(0.0031308, c)); }
+      void main(){ vec3 c = texture2D(tSrc, vUv).rgb; gl_FragColor = vec4(toSRGB(aces(c)), 1.0); }`,
+    depthTest: false, depthWrite: false,
+  });
+  postScene.add(new THREE.Mesh(new THREE.PlaneGeometry(2, 2), postMat));
+
+  window.addEventListener('resize', () => {
+    renderer.setSize(innerWidth, innerHeight); rt.setSize(innerWidth, innerHeight);
+    camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix();
+  });
+
+  // ---- optional GPU profiler: even frames time the whole scene render, odd frames time each world mesh separately
+  const prof = params.has('prof') ? (() => {
+    const gl = renderer.getContext();
+    const ext = gl.getExtension('EXT_disjoint_timer_query_webgl2');
+    if (!ext) { console.log('WORLD_PROF unsupported'); return null; }
+    const pool = [], pending = [], sums = {}, counts = {};
+    let active = null, frameNo = 0;
+    const begin = (label) => { if (active) return; const q = pool.pop() || gl.createQuery(); gl.beginQuery(ext.TIME_ELAPSED_EXT, q); active = { q, label }; };
+    const end = () => { if (!active) return; gl.endQuery(ext.TIME_ELAPSED_EXT); pending.push({ q: active.q, label: active.label, frame: frameNo }); active = null; };
+    const perFrame = new Map();
+    const sceneOnly = params.get('prof') === 'scene';
+    const objs = sceneOnly ? {} : { sky: world.sky, terrain: world.terrain, water: world.water, clouds: world.clouds, puffs: world.puffs };
+    for (const [label, o] of Object.entries(objs)) {
+      if (!o) continue;
+      const b = o.onBeforeRender, a = o.onAfterRender;
+      o.onBeforeRender = function (...args) { b.apply(this, args); if (frameNo % 2 === 1) begin(label); };
+      o.onAfterRender = function (...args) { if (frameNo % 2 === 1) end(); a.apply(this, args); };
+    }
+    return {
+      sceneBegin() { if (sceneOnly || frameNo % 2 === 0) begin('scene'); },
+      sceneEnd() { if (sceneOnly || frameNo % 2 === 0) end(); },
+      frameEnd(warm) {
+        const disjoint = gl.getParameter(ext.GPU_DISJOINT_EXT);
+        while (pending.length) {
+          const p = pending[0];
+          if (!gl.getQueryParameter(p.q, gl.QUERY_RESULT_AVAILABLE)) break;
+          const ms = gl.getQueryParameter(p.q, gl.QUERY_RESULT) / 1e6;
+          pending.shift(); pool.push(p.q);
+          if (disjoint || p.frame < warm) continue;
+          const k = p.frame + ':' + p.label; perFrame.set(k, (perFrame.get(k) || 0) + ms);
+        }
+        frameNo++;
+      },
+      report() {
+        for (const [k, ms] of perFrame) { const label = k.split(':')[1]; sums[label] = (sums[label] || 0) + ms; counts[label] = (counts[label] || 0) + 1; }
+        perFrame.clear();
+        const out = {};
+        for (const k of Object.keys(sums)) out[k] = +(sums[k] / counts[k]).toFixed(3);
+        return out;
+      },
+    };
+  })() : null;
+
+  const V = {
+    1: { p: [0, 900, 0], yaw: 0, pitch: -8, move: 1 },
+    2: { p: [0, 3500, 0], yaw: 0, pitch: -35, move: 1 },
+    3: { p: [0, 700, 0], yaw: 8, pitch: -4, move: 0.6 },
+    4: { p: [2500, 1100, 1500], yaw: -80, pitch: -6, move: 0.2 },
+    5: { p: [-3000, 250, -4000], yaw: 35, pitch: 2, move: 0.2 },
+    6: { p: [1500, 1500, -2500], yaw: 20, pitch: 12, move: 0.2 },
+  }[view] || { p: [0, 900, 0], yaw: 0, pitch: -8, move: 1 };
+  const yaw0 = THREE.MathUtils.degToRad(V.yaw), pitch0 = THREE.MathUtils.degToRad(V.pitch);
+  const fwdX = -Math.sin(yaw0), fwdZ = -Math.cos(yaw0);
+  let last = performance.now() / 1000, frames = 0, worldDraws = 0, worldTris = 0, profReported = false;
+  function frame() {
+    const now = performance.now() / 1000;
+    const dt = Math.min(0.1, now - last); last = now;
+    const t = fixedT !== null ? fixedT : frames * (1 / 60);   // deterministic animation independent of frame rate
+    const m = V.move;
+    camera.position.set(V.p[0] + Math.sin(t * 0.08) * 120 * m + fwdX * t * 70 * m, V.p[1] + Math.sin(t * 0.21) * 25 * m, V.p[2] + fwdZ * t * 70 * m);
+    camera.rotation.set(pitch0 + Math.sin(t * 0.17) * 0.03 * m, yaw0 + Math.sin(t * 0.11) * 0.12 * m, Math.sin(t * 0.23) * 0.18 * m);
+    probe.position.set(camera.position.x - 22, camera.position.y - 6, camera.position.z - 70);
+    probe2.position.set(camera.position.x + 18, camera.position.y - 8, camera.position.z - 60);
+    probe2.rotation.y = t * 0.5;
+    world.update(dt, camera, t);
+    for (const o of hidden) o.visible = false;
+    renderer.setRenderTarget(rt);
+    if (prof) prof.sceneBegin();
+    renderer.render(scene, camera);
+    if (prof) prof.sceneEnd();
+    worldDraws = renderer.info.render.calls; worldTris = renderer.info.render.triangles;
+    renderer.setRenderTarget(null);
+    renderer.render(postScene, postCam);
+    frames++;
+    if (prof) {
+      prof.frameEnd(30);
+      if (frames === 400 && !profReported) { profReported = true; console.log('WORLD_PROF ' + JSON.stringify(prof.report())); }
+    }
+    if (frames === 1) console.log('WORLD_OK draws=' + worldDraws + ' tris=' + worldTris);
+    if (params.has('cycle') && world.setQuality && frames % 45 === 0) {
+      const order = ['low', 'medium', 'high', 'ultra'];
+      const q = order[(order.indexOf(world.quality) + 1) % order.length];
+      const t1 = performance.now(); world.setQuality(q);
+      console.log(`WORLD_Q ${q} set in ${(performance.now() - t1).toFixed(1)} ms, previous frame draws=${worldDraws} tris=${worldTris}`);
+    }
+    if (frames % 30 === 0) info.textContent = `draws ${worldDraws}  tris ${worldTris}  cam ${camera.position.x.toFixed(0)},${camera.position.y.toFixed(0)},${camera.position.z.toFixed(0)}  terrain below ${world.getHeight(camera.position.x, camera.position.z).toFixed(0)} m  cloud ${world.cloudDensityAt(camera.position.x, camera.position.y, camera.position.z).toFixed(2)}  build ${buildMs.toFixed(0)} ms`;
+    requestAnimationFrame(frame);
+  }
+  frame();
+} catch (e) {
+  console.error('WORLD_ERROR ' + (e && e.stack || e));
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,363 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PostFX test</title>
+<link rel="icon" href="data:,">
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+  canvas { display: block; }
+  #info { position: fixed; left: 8px; bottom: 6px; color: #9fb; font: 11px/1.4 monospace; pointer-events: none; text-shadow: 0 1px 2px #000; white-space: pre; }
+</style>
+</head>
+<body>
+<div id="info"></div>
+<script type="module">
+import * as THREE from 'https://cdnjs.cloudflare.com/ajax/libs/three.js/0.170.0/three.module.min.js';
+import { PostFX } from './js/post.js';
+import { Profiler } from './js/profiler.js';
+
+window.addEventListener('error', e => console.log('PAGE_ERROR ' + (e.message || e)));
+window.addEventListener('unhandledrejection', e => console.log('PAGE_REJECTION ' + (e.reason && e.reason.message || e.reason)));
+
+// Query-string knobs, e.g. ?damage=0.6&flash=0.25&hold=1&bloom=0.8&exposure=1.2&grain=0&ca=0
+//   t=3          freeze the animation at t seconds (deterministic screenshots)
+//   scale=0.75   internal render scale (PostFX.setRenderScale)      msaa=0|2|4   MSAA samples (PostFX.setSamples)
+//   q=high       quality preset (PostFX.setQuality)                 sharp=0..1   RCAS strength override, fxaa=0 disables edge AA
+//   sun=0        no sun / lens flare                                 hdr16=1      compactHDR: false (RGBA16F buffers)
+//   zoom=3&zx=0.27&zy=0.655   nearest-neighbour 3x view of the region starting at (zx, zy) (fractions of the canvas;
+//                these defaults frame the resolution chart) so sharpness / AA differences survive a PNG screenshot
+//   bench=1      GPU micro-benchmark (js/profiler.js pass timings, medians): BENCH_ROW per config, then BENCH_DONE.
+//                Frames are fence-paced (max 2 in flight) and an untimed ALU 'ballast' draw keeps the Intel GPU clock
+//                stable; extra knobs: rounds=2 warm=30 frames=100 ballast=1400. Run with
+//                node tools/check.mjs "http://127.0.0.1:8765/test_post.html?bench=1" out.png 60 1920 1080
+const q = new URLSearchParams(location.search);
+const num = (k, d) => (q.has(k) ? parseFloat(q.get(k)) : d);
+
+try { main(); } catch (e) { console.log('POST_FAIL ' + (e && e.stack || e)); }
+
+function makeChartTexture() {
+  // Resolution chart: line pairs (1..6 px), fine text, a Siemens star, checkers. Unlit sRGB colours (<= 1.0 linear).
+  const c = document.createElement('canvas'); c.width = 2048; c.height = 512;
+  const g = c.getContext('2d');
+  g.fillStyle = '#d8d8d0'; g.fillRect(0, 0, c.width, c.height);
+  g.fillStyle = '#101010';
+  let x = 16;
+  for (const w of [1, 2, 3, 4, 6]) {           // vertical line pairs
+    for (let i = 0; i < 10; i++) g.fillRect(x + i * 2 * w, 16, w, 200);
+    x += 20 * w + 18;
+  }
+  x = 16;
+  for (const w of [1, 2, 3, 4, 6]) {           // horizontal line pairs
+    for (let i = 0; i < 10; i++) g.fillRect(x, 240 + i * 2 * w, 20 * w, w);
+    x += 20 * w + 18;
+  }
+  // Siemens star
+  const cx = 1010, cy = 256, R = 230;
+  for (let i = 0; i < 72; i += 2) {
+    const a0 = (i / 72) * Math.PI * 2, a1 = ((i + 1) / 72) * Math.PI * 2;
+    g.beginPath(); g.moveTo(cx, cy); g.lineTo(cx + Math.cos(a0) * R, cy + Math.sin(a0) * R); g.lineTo(cx + Math.cos(a1) * R, cy + Math.sin(a1) * R); g.closePath(); g.fill();
+  }
+  // text
+  let ty = 60;
+  for (const s of [44, 30, 20, 14, 10]) {
+    g.font = `bold ${s}px monospace`;
+    g.fillText('WINGNUT 0123456789 ACES', 1270, ty); ty += s + 14;
+  }
+  // checkers
+  for (let yy = 0; yy < 8; yy++) for (let xx = 0; xx < 40; xx++) if ((xx + yy) & 1) g.fillRect(1270 + xx * 4, 360 + yy * 4, 4, 4);
+  for (let yy = 0; yy < 4; yy++) for (let xx = 0; xx < 80; xx++) if ((xx + yy) & 1) g.fillRect(1270 + xx * 2, 400 + yy * 2, 2, 2);
+  g.strokeStyle = '#101010'; g.lineWidth = 2;
+  for (let i = 0; i < 12; i++) { g.beginPath(); g.moveTo(1460 + i * 14, 340); g.lineTo(1460 + i * 14 + 90, 500); g.stroke(); }
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.anisotropy = 8;
+  return tex;
+}
+
+function main() {
+  const renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: 'high-performance', alpha: false, stencil: false });
+  renderer.setPixelRatio(1);
+  renderer.setSize(innerWidth, innerHeight);
+  renderer.toneMapping = THREE.NoToneMapping;
+  renderer.outputColorSpace = THREE.SRGBColorSpace;
+  document.body.appendChild(renderer.domElement);
+
+  const scene = new THREE.Scene();
+  const camera = new THREE.PerspectiveCamera(60, innerWidth / innerHeight, 1, 2000);
+  camera.position.set(0, 6, 42);
+  camera.lookAt(0, 0, 0);
+
+  // dark-blue gradient background: big inverted sphere, pure-black below the horizon to judge black levels
+  const bg = new THREE.Mesh(new THREE.SphereGeometry(900, 32, 16), new THREE.ShaderMaterial({
+    side: THREE.BackSide, depthWrite: false,
+    vertexShader: `varying vec3 vDir; void main() { vDir = normalize(position); gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
+    fragmentShader: `varying vec3 vDir;
+      void main() {
+        float h = clamp(vDir.y * 0.5 + 0.5, 0.0, 1.0);
+        vec3 top = vec3(0.004, 0.008, 0.03), hor = vec3(0.05, 0.09, 0.2), ground = vec3(0.0005, 0.0005, 0.001);
+        vec3 c = h > 0.5 ? mix(hor, top, pow((h - 0.5) * 2.0, 0.6)) : mix(ground, hor, smoothstep(0.4, 0.5, h));
+        gl_FragColor = vec4(c, 1.0);
+      }`,
+  }));
+  bg.renderOrder = -1000;
+  scene.add(bg);
+
+  // lights
+  const sun = new THREE.DirectionalLight(new THREE.Color(1, 0.9, 0.78), 3);
+  sun.position.set(1, 1.2, 0.8);
+  scene.add(sun);
+  scene.add(new THREE.HemisphereLight(new THREE.Color(0.3, 0.45, 0.8), new THREE.Color(0.25, 0.2, 0.15), 0.6));
+
+  // rotating group: grid of PBR spheres + bright emitters + tracer
+  const group = new THREE.Group();
+  scene.add(group);
+  const sphereGeo = new THREE.SphereGeometry(1.4, 32, 24);
+  for (let ix = 0; ix < 6; ix++) for (let iy = 0; iy < 4; iy++) {
+    const mat = new THREE.MeshStandardMaterial({
+      color: new THREE.Color().setHSL((ix * 4 + iy) / 24, 0.65, 0.5),
+      roughness: 0.25 + 0.6 * (iy / 3), metalness: ix % 2 ? 0.6 : 0.05,
+    });
+    const m = new THREE.Mesh(sphereGeo, mat);
+    m.position.set((ix - 2.5) * 5, (iy - 1.5) * 5, 0);
+    group.add(m);
+  }
+  function emissive(x, y, z, rad, rgb, mult) {
+    const m = new THREE.Mesh(new THREE.SphereGeometry(rad, 24, 16),
+      new THREE.MeshBasicMaterial({ color: new THREE.Color(rgb[0], rgb[1], rgb[2]).multiplyScalar(mult) }));
+    m.position.set(x, y, z);
+    group.add(m);
+    return m;
+  }
+  emissive(-8, 4, 6, 1.0, [1, 0.6, 0.2], 12);       // orange, strong
+  emissive(7, -4, 7, 0.8, [0.3, 0.8, 1.0], 8);      // cyan
+  emissive(0, 8.5, -3, 1.2, [1, 1, 1], 6);          // white, mild
+  emissive(13, 3, 2, 0.6, [1, 0.2, 0.7], 15);       // magenta, small
+  emissive(-14, -6.5, 4, 0.35, [1, 0.9, 0.3], 20);  // tiny hot yellow (firefly test)
+  const tracer = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.12, 36),
+    new THREE.MeshBasicMaterial({ color: new THREE.Color(1, 0.85, 0.55).multiplyScalar(8) }));
+  tracer.position.set(-4, -1, 10);
+  group.add(tracer);
+
+  // static resolution chart below the spheres (sharpness / upscale / edge-AA check) + thin dark wires against the sky
+  const chart = new THREE.Mesh(new THREE.PlaneGeometry(36, 9), new THREE.MeshBasicMaterial({ map: makeChartTexture() }));
+  chart.position.set(0, -14.5, 6);
+  chart.lookAt(camera.position);
+  scene.add(chart);
+  const wirePts = [];
+  for (let i = 0; i < 9; i++) { wirePts.push(new THREE.Vector3(-30, 12 + i * 0.9, -5), new THREE.Vector3(30, 9 + i * 1.6, -5)); }
+  const wires = new THREE.LineSegments(new THREE.BufferGeometry().setFromPoints(wirePts), new THREE.LineBasicMaterial({ color: 0x050505 }));
+  scene.add(wires);
+  const brightWirePts = [];
+  for (let i = 0; i < 5; i++) { brightWirePts.push(new THREE.Vector3(-28, -9 + i * 0.7, 3), new THREE.Vector3(28, -6.5 + i * 1.3, 3)); }
+  const brightWires = new THREE.LineSegments(new THREE.BufferGeometry().setFromPoints(brightWirePts),
+    new THREE.LineBasicMaterial({ color: new THREE.Color(1, 0.8, 0.5).multiplyScalar(3) }));
+  scene.add(brightWires);
+
+  // sun-like disc placed so it projects to screen (0.72, 0.3) (0..1, y up) — matches setSunScreenPos
+  const SUN_X = 0.72, SUN_Y = 0.3;
+  const sunOn = num('sun', 1) > 0;
+  const sunDisc = new THREE.Mesh(new THREE.CircleGeometry(12, 48),
+    new THREE.MeshBasicMaterial({ color: new THREE.Color(1, 0.95, 0.85).multiplyScalar(20) }));
+  sunDisc.visible = sunOn;
+  scene.add(sunDisc);
+  const tmp = new THREE.Vector3();
+  function placeSun() {
+    tmp.set(SUN_X * 2 - 1, SUN_Y * 2 - 1, 0.5).unproject(camera).sub(camera.position).normalize().multiplyScalar(400);
+    sunDisc.position.copy(camera.position).add(tmp);
+    sunDisc.lookAt(camera.position);
+  }
+  placeSun();
+
+  const opts = { samples: q.has('msaa') ? num('msaa', 4) : 4 };
+  if (q.has('scale')) opts.renderScale = num('scale', 1);
+  if (q.has('q')) opts.quality = q.get('q');
+  if (q.has('hdr16')) opts.compactHDR = false;   // RGBA16F everywhere instead of R11G11B10F
+  const post = new PostFX(renderer, innerWidth, innerHeight, 1, opts);
+  window.post = post;
+  window.renderer = renderer;
+  // new-API knobs (guarded so this page also runs against older PostFX versions)
+  if (q.has('scale') && post.setRenderScale) post.setRenderScale(num('scale', 1));
+  if (q.has('msaa') && post.setSamples) post.setSamples(num('msaa', 4));
+  if (q.has('q') && post.setQuality) post.setQuality(q.get('q'));
+  if (q.has('sharp')) post.sharpness = num('sharp', 0);
+  if (q.has('fxaa')) post.fxaa = num('fxaa', 1) > 0;
+  post.exposure = num('exposure', post.exposure);
+  post.bloomStrength = num('bloom', post.bloomStrength);
+  post.bloomThreshold = num('threshold', post.bloomThreshold);
+  post.bloomRadius = num('radius', post.bloomRadius);
+  post.vignette = num('vignette', post.vignette);
+  post.chromatic = num('ca', post.chromatic);
+  post.flareStrength = num('flare', post.flareStrength);
+  post.grain = num('grain', post.grain);
+  if (q.has('hold')) { post.flashTime = 1e9; post.damageTime = 1e9; }   // freeze overlays for screenshots
+  if (q.has('flash')) post.flash(num('flash', 0));
+  if (q.has('damage')) post.damage(num('damage', 0));
+
+  window.addEventListener('resize', () => {
+    renderer.setSize(innerWidth, innerHeight);
+    camera.aspect = innerWidth / innerHeight;
+    camera.updateProjectionMatrix();
+    post.setSize(innerWidth, innerHeight, 1);
+    placeSun();
+  });
+
+  // optional nearest-neighbour zoom of a canvas region (sharpness comparisons survive the PNG downscale)
+  const zoom = num('zoom', 0);
+  let zoomCanvas = null;
+  if (zoom > 0) {
+    zoomCanvas = document.createElement('canvas');
+    zoomCanvas.width = innerWidth; zoomCanvas.height = innerHeight;
+    zoomCanvas.style.cssText = 'position:fixed;left:0;top:0;width:100%;height:100%;image-rendering:pixelated;';
+    document.body.appendChild(zoomCanvas);
+  }
+
+  // benchmark ballast: an untimed, ALU-heavy draw each frame keeps the GPU saturated so its clock stays stable
+  const ballastIters = num('ballast', q.has('bench') ? 1400 : 0);
+  let ballast = null;
+  if (ballastIters > 0) {
+    const brt = new THREE.WebGLRenderTarget(512, 512, { type: THREE.HalfFloatType, depthBuffer: false });
+    const bmat = new THREE.ShaderMaterial({
+      uniforms: { uT: { value: 0 } }, depthTest: false, depthWrite: false,
+      vertexShader: 'varying vec2 vUv; void main() { vUv = position.xy * 0.5 + 0.5; gl_Position = vec4(position.xy, 0.0, 1.0); }',
+      fragmentShader: `uniform float uT; varying vec2 vUv;
+        void main() { vec2 p = vUv * 7.0 + uT; float a = 0.0;
+          for (int i = 0; i < ${ballastIters | 0}; i++) { p = vec2(sin(p.y * 1.3 + a), cos(p.x * 0.7 - a)); a += p.x * p.y * 0.01; }
+          gl_FragColor = vec4(a, p, 1.0); }`,
+    });
+    const bgeo = new THREE.BufferGeometry();
+    bgeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array([-1, -1, 0, 3, -1, 0, -1, 3, 0]), 3));
+    const bmesh = new THREE.Mesh(bgeo, bmat); bmesh.frustumCulled = false;
+    const bscene = new THREE.Scene(); bscene.add(bmesh);
+    const bcam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+    ballast = () => { bmat.uniforms.uT.value = (bmat.uniforms.uT.value + 0.013) % 100; renderer.setRenderTarget(brt); renderer.render(bscene, bcam); renderer.setRenderTarget(null); };
+  }
+
+  const info = document.getElementById('info');
+  const frozen = q.has('t');
+  const tFixed = num('t', 0);
+  const clock = new THREE.Clock();
+  let frames = 0, flashed = false, damaged = false, failed = false;
+  let benchHook = null;
+  // bench pacing: at most 2 frames in flight (fence sync), otherwise a light scene lets the CPU queue hundreds of
+  // frames ahead and timer-query results arrive long after the configuration that produced them
+  const gl = renderer.getContext();
+  const pace = q.has('bench');
+  const fences = [];
+  function gpuReady() {
+    while (fences.length && gl.getSyncParameter(fences[0], gl.SYNC_STATUS) === gl.SIGNALED) gl.deleteSync(fences.shift());
+    return fences.length < 2;
+  }
+  function frame() {
+    requestAnimationFrame(frame);
+    if (failed) return;
+    if (pace && !gpuReady()) return;
+    try {
+      let dt = clock.getDelta();
+      let t = clock.elapsedTime;
+      if (frozen) { t = tFixed; dt = 1 / 60; }
+      group.rotation.y = t * 0.25;
+      group.rotation.x = Math.sin(t * 0.3) * 0.15;
+      tracer.rotation.set(0.6 + t * 0.2, t * 0.7, 0);
+      if (!q.has('hold') && !frozen && !benchHook) {   // hold/frozen modes keep only the query-string overlay levels
+        if (!flashed && t > 1) { flashed = true; post.flash(0.6); }
+        if (!damaged && t > 2) { damaged = true; post.damage(0.8); }
+      }
+      post.setSunScreenPos(SUN_X, SUN_Y, sunOn);
+      if (ballast) ballast();
+      post.render(scene, camera, dt);
+      if (zoomCanvas) {
+        const zc = zoomCanvas.getContext('2d'); zc.imageSmoothingEnabled = false;
+        const sw = innerWidth / zoom, sh = innerHeight / zoom;
+        const sx = num('zx', 0.06) * innerWidth, sy = num('zy', 0.66) * innerHeight;
+        zc.drawImage(renderer.domElement, sx, sy, sw, sh, 0, 0, innerWidth, innerHeight);
+      }
+      if (pace) { fences.push(gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0)); gl.flush(); }
+      frames++;
+      if (benchHook) benchHook(dt);
+      if (frames === 1) {
+        console.log('POST_OK webgl2=' + renderer.capabilities.isWebGL2 + ' samples=' + post.activeSamples +
+          ' levels=' + post.bloomLevels + ' size=' + post.pixelWidth + 'x' + post.pixelHeight +
+          ' internal=' + (post.renderWidth || post.pixelWidth) + 'x' + (post.renderHeight || post.pixelHeight) +
+          ' quality=' + (post.quality || '-') + ' hdr=' + (post.hdrType === THREE.HalfFloatType));
+      }
+      info.textContent = `frame ${frames}  t=${t.toFixed(1)}s  dt=${(dt * 1000).toFixed(1)}ms  calls=${renderer.info.render.calls}  msaa=${post.activeSamples}` +
+        `  scale=${post.renderScale ?? 1}  q=${post.quality ?? '-'}`;
+    } catch (e) {
+      failed = true;
+      console.log('POST_FRAME_ERROR ' + (e && e.stack || e));
+    }
+  }
+  frame();
+
+  if (q.has('bench')) runBench(q.get('bench'));
+
+  // ------------------------------------------------------------------ GPU micro-benchmark
+  // Each config: apply, warm up, then time the PostFX passes with EXT_disjoint_timer_query_webgl2 (js/profiler.js, 'pass' mode).
+  async function runBench(set) {
+    const prof = new Profiler(renderer);
+    if (!prof.supported) { console.log('BENCH_DONE no timer queries'); return; }
+    post.profiler = prof;
+    let pending = null;
+    benchHook = (dt) => { prof.frameEnd(dt * 1000); if (pending && --pending.n <= 0) { const r = pending.resolve; pending = null; r(); } };
+    const waitFrames = (n) => new Promise((resolve) => { pending = { n, resolve }; });
+    const reset = () => {
+      post.setRenderScale && post.setRenderScale(1); post.setSamples && post.setSamples(4); post.setQuality && post.setQuality('high');
+      post.chromatic = 1; post.flareStrength = 1; post.grain = 1; post.sharpness = null; post.fxaa = true;
+      sunDisc.visible = true; sunVisible = true;
+    };
+    let sunVisible = true;
+    const origSet = post.setSunScreenPos.bind(post);
+    post.setSunScreenPos = (x, y, v) => origSet(x, y, v && sunVisible);
+    const C = (name, fn) => ({ name, fn });
+    const sets = window.BENCH_SETS || {};
+    const configs = (sets[set] || sets.default || []).map((c) => (Array.isArray(c) ? C(c[0], c[1]) : c));
+    console.log('BENCH_BEGIN ' + configs.length + ' configs x ' + num('rounds', 2) + ' rounds, ' + innerWidth + 'x' + innerHeight);
+    const warm = num('warm', 30), meas = num('frames', 100), rounds = num('rounds', 2);
+    for (let round = 0; round < rounds; round++) for (const cfg of configs) {
+      reset();
+      try { cfg.fn(post, { setSun: (v) => { sunVisible = v; sunDisc.visible = v; } }); } catch (e) { console.log('BENCH_SKIP ' + cfg.name + ' ' + e.message); continue; }
+      prof.setMode('off');
+      await waitFrames(warm);
+      const glErr = renderer.getContext().getError();
+      if (glErr) console.log('BENCH_GL_ERROR ' + cfg.name + ' 0x' + glErr.toString(16));
+      prof.reset(); prof.setMode('pass');
+      const t0 = performance.now();
+      await waitFrames(meas);
+      const wall = (performance.now() - t0) / meas;
+      prof.setMode('off');
+      await waitFrames(4);
+      const s = prof.summary().gpuPass;
+      const m = (k) => (s[k] ? +s[k].p50.toFixed(3) : null);
+      const extra = {};
+      for (const k of Object.keys(s)) if (!['scene', 'bloom', 'composite', '__total'].includes(k)) extra[k] = m(k);
+      console.log('BENCH_ROW ' + JSON.stringify({ round, name: cfg.name, scene: m('scene'), bloom: m('bloom'), composite: m('composite'), total: m('__total'),
+        frameMs: +wall.toFixed(2), internal: [post.renderWidth, post.renderHeight], msaa: post.activeSamples, q: post.quality, ...extra }));
+    }
+    reset();
+    console.log('BENCH_DONE');
+  }
+}
+</script>
+<script>
+// Micro-benchmark configuration sets (?bench=<name>, default set: ?bench=1); each entry: [name, (post, ctx) => { ...apply... }]
+// Everything starts from: renderScale 1, 4x MSAA, quality 'high', sun visible.
+window.BENCH_SETS = {
+  default: [
+    ['high   4x  s1.00', () => {}],
+    ['high   2x  s1.00', (p) => { p.setSamples(2); }],
+    ['high   0x  s1.00 fxaa', (p) => { p.setSamples(0); }],
+    ['high   4x  s0.75', (p) => { p.setRenderScale(0.75); }],
+    ['high   2x  s0.75', (p) => { p.setSamples(2); p.setRenderScale(0.75); }],
+    ['high   0x  s0.75 fxaa', (p) => { p.setSamples(0); p.setRenderScale(0.75); }],
+    ['high   4x  s0.50', (p) => { p.setRenderScale(0.5); }],
+    ['high   4x  s1.00 nosun', (p, c) => { c.setSun(false); }],
+    ['low    4x  s1.00', (p) => { p.setQuality('low'); }],
+    ['medium 4x  s1.00', (p) => { p.setQuality('medium'); }],
+    ['ultra  4x  s1.00', (p) => { p.setQuality('ultra'); }],
+  ],
+};
+</script>
+</body>
+</html>

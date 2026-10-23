@@ -1,0 +1,582 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Wingnut weapons test</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+  canvas { display: block; }
+  #info { position: absolute; left: 8px; top: 6px; font: 12px/1.4 ui-monospace, Menlo, Consolas, monospace; color: #eef4ff;
+          text-shadow: 0 1px 2px #000, 0 0 4px #000; pointer-events: none; white-space: pre; }
+</style>
+</head>
+<body>
+<div id="info"></div>
+<script type="module">
+import * as THREE from 'https://cdnjs.cloudflare.com/ajax/libs/three.js/0.170.0/three.module.min.js';
+import { Weapons } from './js/weapons.js';
+
+// URL options (all optional):
+//   ?scenario=flares            countermeasures: an enemy missile at a target jet that deploys flares at t = 1.5 s; the
+//                               missile diverts to a flare. Chase camera on the target, rendered through js/post.js
+//                               (PostFX). Also runs self-tests once at load (gun hit radius per team, missile defaults,
+//                               unguided flight, spoofing range / protection window / burn-out, ground targets) and
+//                               logs SELFTEST_OK / SELFTEST_FAIL, FLARES_OK decoyed=<n> and FLARES_RESULT.
+//   ?t=4.3                      freeze the scenario at t seconds (deterministic screenshot)
+//   ?grid=1.2,3.4,4.3,5.8       four independent sims frozen at those times, one per quadrant
+//   ?cam=near | ?cams=chase,near,side,chase   chase camera (default), close view of the target, or abeam the gun line
+//                               (flares: chase (default), side = abeam the target, wide = fixed overview)
+//   ?preroll=2.8                live mode only: seconds of calm flight before t=0 (so a 6 s headless screenshot lands just after the kill)
+//                               (flares default 2.5: a 5 s headless screenshot lands as the missile reaches the flares)
+//   ?post=real|mini             render through js/post.js PostFX (flares default) or this page's mini bloom (default otherwise)
+//   ?turn=1.6,0.8               flares: missile turn-rate limits boost,coast in rad/s (default: main.js gameplay tuning)
+//   ?noflares=1                 flares: control run, the target never deploys flares
+const params = new URLSearchParams(location.search);
+const SCENARIO = params.get('scenario') === 'flares' ? 'flares' : 'default';
+const FLARES = SCENARIO === 'flares';
+const freezeT = params.has('t') ? parseFloat(params.get('t')) : null;
+const gridTimes = params.has('grid') ? params.get('grid').split(',').map(Number).filter(Number.isFinite).slice(0, 4) : null;
+const camModes = (params.get('cams') || params.get('cam') || 'chase').split(',');
+const STEP = 1 / 60;
+const preroll = params.has('preroll') ? Math.max(0, parseFloat(params.get('preroll')) || 0) : (FLARES ? 2.5 : 2.8);
+const USE_POST = params.has('post') ? params.get('post') === 'real' : FLARES;
+const TURN = (params.get('turn') || '1.6,0.8').split(',').map(Number);
+const NO_FLARES = params.get('noflares') === '1';
+const SUN = new THREE.Vector3(0.4, 0.6, 0.5).normalize();
+const infoEl = document.getElementById('info');
+
+const renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: 'high-performance', alpha: false, stencil: false });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 1.5));
+renderer.setSize(innerWidth, innerHeight);
+renderer.toneMapping = THREE.NoToneMapping;
+renderer.info.autoReset = false;
+document.body.appendChild(renderer.domElement);
+
+// ---------------------------------------------------------------- HDR target + tiny bloom + ACES/sRGB present
+const size = renderer.getDrawingBufferSize(new THREE.Vector2());
+const rtScene = new THREE.WebGLRenderTarget(size.x, size.y, { type: THREE.HalfFloatType, depthBuffer: true });
+const canBloom = renderer.extensions.has('EXT_color_buffer_float');
+const rtBloom = new THREE.WebGLRenderTarget(size.x >> 1, size.y >> 1, { type: THREE.HalfFloatType, depthBuffer: false,
+  generateMipmaps: true, minFilter: THREE.LinearMipmapLinearFilter, magFilter: THREE.LinearFilter });
+const FS_VERT = 'varying vec2 vUv; void main(){ vUv = position.xy * 0.5 + 0.5; gl_Position = vec4(position.xy, 0.0, 1.0); }';
+const fsGeo = new THREE.BufferGeometry();
+fsGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array([-1, -1, 0, 3, -1, 0, -1, 3, 0]), 3));
+const fsCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+function fsPass(frag, uniforms) {
+  const s = new THREE.Scene();
+  const m = new THREE.Mesh(fsGeo, new THREE.ShaderMaterial({ uniforms, vertexShader: FS_VERT, fragmentShader: frag, depthTest: false, depthWrite: false }));
+  m.frustumCulled = false; s.add(m); return s;
+}
+const brightScene = fsPass(`uniform sampler2D tSrc; varying vec2 vUv;
+  void main(){ vec3 c = texture2D(tSrc, vUv).rgb; float l = max(max(c.r, c.g), c.b);
+    gl_FragColor = vec4(c * smoothstep(0.9, 2.5, l), 1.0); }`, { tSrc: { value: rtScene.texture } });
+const presentScene = fsPass(`uniform sampler2D tScene; uniform sampler2D tBloom; uniform float uBloom; varying vec2 vUv;
+  vec3 aces(vec3 x){ return clamp((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14), 0.0, 1.0); }
+  void main(){
+    vec3 c = texture2D(tScene, vUv).rgb;
+    vec3 b = textureLod(tBloom, vUv, 1.0).rgb * 0.3 + textureLod(tBloom, vUv, 2.5).rgb * 0.3
+           + textureLod(tBloom, vUv, 4.0).rgb * 0.25 + textureLod(tBloom, vUv, 5.5).rgb * 0.15;
+    c = aces(c + b * uBloom);
+    c = mix(c * 12.92, 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055, step(0.0031308, c));
+    gl_FragColor = vec4(c, 1.0); }`, { tScene: { value: rtScene.texture }, tBloom: { value: rtBloom.texture }, uBloom: { value: canBloom ? 0.8 : 0.0 } });
+
+// ---------------------------------------------------------------- environment
+function makeEnvironment(scene) {
+  scene.background = new THREE.Color(0x87b5e0);
+  scene.fog = new THREE.FogExp2(new THREE.Color(0.55, 0.66, 0.82), 0.00009);
+  const sky = new THREE.Mesh(new THREE.SphereGeometry(30000, 32, 16), new THREE.ShaderMaterial({
+    side: THREE.BackSide, depthWrite: false, uniforms: { uSun: { value: SUN } },
+    vertexShader: 'varying vec3 vDir; void main(){ vDir = normalize(position); gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
+    fragmentShader: `uniform vec3 uSun; varying vec3 vDir;
+      void main(){ vec3 d = normalize(vDir); float h = clamp(d.y, 0.0, 1.0);
+        vec3 c = mix(vec3(0.62, 0.72, 0.86), vec3(0.13, 0.3, 0.72), pow(h, 0.55));
+        float s = max(dot(d, uSun), 0.0); c += vec3(1.0, 0.85, 0.6) * (pow(s, 12.0) * 0.5 + pow(s, 900.0) * 40.0);
+        gl_FragColor = vec4(c, 1.0); }` }));
+  sky.renderOrder = -1000; sky.frustumCulled = false; scene.add(sky);
+  const ground = new THREE.Mesh(new THREE.PlaneGeometry(80000, 80000), new THREE.MeshStandardMaterial({ color: 0x2c4a28, roughness: 1 }));
+  ground.rotation.x = -Math.PI / 2; scene.add(ground);
+  const grid = new THREE.GridHelper(20000, 200, 0x4d6b45, 0x4d6b45); grid.position.y = 0.5; scene.add(grid);
+  const sun = new THREE.DirectionalLight(0xfff0dd, 3); sun.position.copy(SUN).multiplyScalar(1000); scene.add(sun); scene.add(sun.target);
+  scene.add(new THREE.HemisphereLight(0xbcd6ff, 0x3a4a2a, 0.9));
+  return { sky, sun };
+}
+
+function buildJet(color) {
+  const g = new THREE.Group();
+  const mat = new THREE.MeshStandardMaterial({ color, roughness: 0.45, metalness: 0.35 });
+  const add = (geo, m, x, y, z, rx = 0) => { const o = new THREE.Mesh(geo, m); o.position.set(x, y, z); o.rotation.x = rx; g.add(o); return o; };
+  add(new THREE.CylinderGeometry(0.75, 0.9, 12, 12), mat, 0, 0, 0, Math.PI / 2);
+  add(new THREE.ConeGeometry(0.75, 3.5, 12), mat, 0, 0, -7.75, -Math.PI / 2);
+  add(new THREE.BoxGeometry(11, 0.18, 3.6), mat, 0, -0.2, 1.2);
+  add(new THREE.BoxGeometry(4.6, 0.15, 1.8), mat, 0, 0, 5.4);
+  add(new THREE.BoxGeometry(0.15, 2.6, 2.2), mat, 0, 1.4, 5.0);
+  add(new THREE.SphereGeometry(0.6, 12, 8), new THREE.MeshStandardMaterial({ color: 0x223344, roughness: 0.1, metalness: 0.8 }), 0, 0.7, -3.5).scale.set(1, 0.8, 2.4);
+  add(new THREE.CircleGeometry(0.7, 12), new THREE.MeshBasicMaterial({ color: new THREE.Color(5, 2, 0.6) }), 0, 0, 6.01);
+  return g;
+}
+
+// ---------------------------------------------------------------- FakeAircraft (matches the Aircraft interface used by Weapons)
+class FakeAircraft {
+  constructor(name, team, color, scene) {
+    this.name = name; this.team = team;
+    this.mesh = buildJet(color); scene.add(this.mesh);
+    this.position = this.mesh.position; this.quaternion = this.mesh.quaternion;
+    this.velocity = new THREE.Vector3();
+    this.alive = true; this.health = 100; this.ammo = 500; this.missiles = 8; this.maxMissiles = 8;
+    this._muzzles = [new THREE.Vector3(), new THREE.Vector3()];
+    this._rails = [new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3()];
+  }
+  getForward(out) { return out.set(0, 0, -1).applyQuaternion(this.quaternion); }
+  getUp(out) { return out.set(0, 1, 0).applyQuaternion(this.quaternion); }
+  getRight(out) { return out.set(1, 0, 0).applyQuaternion(this.quaternion); }
+  _local(out, x, y, z) { return out.set(x, y, z).applyQuaternion(this.quaternion).add(this.position); }
+  getGunMuzzles() { this._local(this._muzzles[0], -1, 0, -7); this._local(this._muzzles[1], 1, 0, -7); return this._muzzles; }
+  getMissileRails() {
+    const r = this._rails;
+    this._local(r[0], -2.6, -0.7, 0.8); this._local(r[1], 2.6, -0.7, 0.8); this._local(r[2], -3.8, -0.6, 1.4); this._local(r[3], 3.8, -0.6, 1.4);
+    return r;
+  }
+  applyDamage(amount) {
+    if (!this.alive) return false;
+    this.health -= amount;
+    if (this.health <= 0) { this.health = 0; this.alive = false; this.mesh.visible = false; return true; }
+    return false;
+  }
+}
+
+// ---------------------------------------------------------------- scenario
+// shooter: straight & level at 250 m/s, y=300, toward -Z. target: ahead-right at 200 m/s in a gentle right turn (tough: 400 hp so
+// it survives until the scripted aircraftDeath at t=4). drone: dead ahead, 32 hp -> killed by the gun (exercises onHit/onKill path).
+// gun held 0..2 s, missiles at 0.5 s and 1.5 s, weapons.explode(pos, 2) at 3 s, weapons.aircraftDeath(target) at 4 s.
+const TGT = { x0: 5, y: 302, z0: -700, v: 200, w: 0.026 };
+function makeSim(verbose, camMode) {
+  const scene = new THREE.Scene();
+  makeEnvironment(scene);
+  const camera = new THREE.PerspectiveCamera(60, innerWidth / innerHeight, 1, 60000);
+  const world = { getHeight: (x, z) => 0, sunDirection: new THREE.Vector3(0.4, 0.6, 0.5).normalize() };
+  const log = (s) => { if (verbose) console.log(s); };
+  const S = { scene, camera, t: 0, verbose, camMode, events: {}, deathPos: new THREE.Vector3() };
+  S.weapons = new Weapons(scene, world, {
+    onHit: (t, dmg, sh, kind) => log(`[cb] onHit t=${S.t.toFixed(2)} target=${t.name} dmg=${dmg} shooter=${sh ? sh.name : '-'} kind=${kind} hpBefore=${t.health}`),
+    onKill: (t, sh) => log(`[cb] onKill t=${S.t.toFixed(2)} target=${t.name} shooter=${sh ? sh.name : '-'}`),
+    onExplosion: (p, s) => log(`[cb] onExplosion t=${S.t.toFixed(2)} pos=(${p.x.toFixed(0)},${p.y.toFixed(0)},${p.z.toFixed(0)}) size=${s}`),
+    onMissileLaunch: (m) => log(`[cb] onMissileLaunch t=${S.t.toFixed(2)} id=${m.id} owner=${m.owner.name} target=${m.target ? m.target.name : 'none'}`),
+  });
+  S.shooter = new FakeAircraft('shooter', 'player', 0x8d9aa6, scene);
+  S.target = new FakeAircraft('target', 'enemy', 0xb0563a, scene); S.target.health = 400;
+  S.drone = new FakeAircraft('drone', 'enemy', 0x9a8a5a, scene); S.drone.health = 32;
+  S.list = [S.shooter, S.target, S.drone];
+  placeAircraft(S, 0);
+  updateCamera(S);
+  return S;
+}
+
+const _q = new THREE.Quaternion(), _e = new THREE.Euler();
+function placeAircraft(S, t) {
+  S.shooter.position.set(0, 300, -250 * t); S.shooter.velocity.set(0, 0, -250);
+  if (S.target.alive) {
+    const R = TGT.v / TGT.w, th = TGT.w * t;
+    S.target.position.set(TGT.x0 + R * (1 - Math.cos(th)), TGT.y, TGT.z0 - R * Math.sin(th));
+    S.target.velocity.set(Math.sin(th), 0, -Math.cos(th)).multiplyScalar(TGT.v);
+    const bank = Math.atan(TGT.v * TGT.w / 9.81);
+    S.target.quaternion.setFromEuler(_e.set(0, -th, -bank, 'YXZ'));
+  }
+  if (S.drone.alive) { S.drone.position.set(0, 299, -450 - 220 * t); S.drone.velocity.set(0, 0, -220); }
+}
+
+function step(S, dt) {
+  S.t += dt;
+  const t = S.t, W = S.weapons, ev = S.events;
+  placeAircraft(S, t);
+  if (t >= 0 && t <= 2.0) W.fireGun(S.shooter);
+  if (!ev.m1 && t >= 0.5) { ev.m1 = true; W.fireMissile(S.shooter, S.target); }
+  if (!ev.m2 && t >= 1.5) { ev.m2 = true; W.fireMissile(S.shooter, S.target); }
+  if (!ev.ex && t >= 3.0) {
+    ev.ex = true;
+    const p = new THREE.Vector3(-90, 45, -380).add(S.shooter.position);
+    W.explode(p, 2);
+  }
+  if (!ev.death && t >= 4.0) {
+    ev.death = true;
+    if (S.target.alive) {
+      S.target.alive = false; S.target.mesh.visible = false;
+      if (S.verbose) console.log(`[scenario] t=${t.toFixed(2)} scripted aircraftDeath(target) hp=${S.target.health}`);
+      W.aircraftDeath(S.target);
+    }
+    S.deathPos.copy(S.target.position);
+  }
+  W.update(dt, S.list, S.camera);
+  updateCamera(S);
+}
+
+function updateCamera(S) {
+  const c = S.camera, sp = S.shooter.position;
+  if (S.camMode === 'side') {                // abeam the gun line, ~260 m ahead of the shooter
+    c.position.set(sp.x - 140, sp.y + 15, sp.z - 260);
+    c.lookAt(sp.x, sp.y, sp.z - 330);
+  } else if (S.camMode === 'near') {
+    const tp = S.target.alive ? S.target.position : S.deathPos;
+    c.position.set(tp.x - 150, tp.y + 30, tp.z + 120);
+    c.lookAt(tp.x, tp.y, tp.z - 40);
+  } else {
+    c.position.set(sp.x, sp.y + 8, sp.z + 30);
+    c.lookAt(sp.x, sp.y + 1, sp.z - 300);
+  }
+  c.updateMatrixWorld();
+}
+
+function disposeSim(S) {
+  S.weapons.dispose();
+  S.scene.traverse((o) => { if (o.geometry) o.geometry.dispose(); if (o.material) o.material.dispose(); });
+}
+
+// ---------------------------------------------------------------- flares scenario
+// target ('player' team, the camera's subject): straight & level at 230 m/s, y = 1500, heading -Z.
+// bandit: ~1.8 km ahead-left, nose on the target's t = 0.8 s position; fires one missile at t = 0 with main.js' turn-rate
+// tuning. t = 1.5: target deployFlares -> the missile switches to a flare on its side of the jet and diverts behind it.
+const FL = { y: 1500, v: 230, enemy0: new THREE.Vector3(-1150, 1560, -1350), ev: 220, launchT: 0, flareT: 1.5 };
+const FLARE_CAMS = {                        // target-relative, yaw-only frame: [right, up, back]
+  chase: { pos: [120, 30, 250], look: [-100, -38, 100], fov: 52 },
+  side: { pos: [300, 30, 60], look: [-50, -20, 80] },
+};
+const _cf = new THREE.Vector3(), _cr = new THREE.Vector3(), _cl = new THREE.Vector3();
+
+function makeFlareSim(verbose, camMode) {
+  const scene = new THREE.Scene();
+  makeEnvironment(scene);
+  const camera = new THREE.PerspectiveCamera(60, innerWidth / innerHeight, 1, 60000);
+  const world = { getHeight: (x, z) => 0, sunDirection: SUN.clone() };
+  const S = { scene, camera, t: 0, verbose, camMode, events: {}, missile: null, missileId: 0, minDist: Infinity, minFlareDist: Infinity,
+    outcome: null, decoyed: 0, lostAt: -1, resultLogged: false, deathPos: new THREE.Vector3() };
+  const log = (s) => { if (verbose) console.log(s); };
+  const v3 = (p) => `(${p.x.toFixed(0)},${p.y.toFixed(0)},${p.z.toFixed(0)})`;
+  S.log = log;
+  S.weapons = new Weapons(scene, world, {
+    onHit: (t, dmg, sh, kind) => {
+      log(`[cb] onHit t=${S.t.toFixed(2)} target=${t.name} dmg=${dmg} shooter=${sh ? sh.name : '-'} kind=${kind} hpBefore=${t.health}`);
+      if (kind === 'missile' && t === S.target && !S.outcome) S.outcome = 'hit-target';
+    },
+    onKill: (t, sh) => log(`[cb] onKill t=${S.t.toFixed(2)} target=${t.name} shooter=${sh ? sh.name : '-'}`),
+    onExplosion: (p, sz) => {
+      log(`[cb] onExplosion t=${S.t.toFixed(2)} pos=${v3(p)} size=${sz} dTarget=${p.distanceTo(S.target.position).toFixed(0)}m`);
+      if (!S.outcome && sz < 0.75) S.outcome = sz > 0.6 ? 'burst-on-flare' : 'self-destruct-after-losing-flare';
+    },
+    onMissileLaunch: (m) => log(`[cb] onMissileLaunch t=${S.t.toFixed(2)} id=${m.id} owner=${m.owner.name} target=${m.target ? m.target.name : 'none'} range=${m.target ? m.position.distanceTo(m.target.position).toFixed(0) + 'm' : '-'}`),
+    onDecoy: (m, f, a) => {
+      S.decoyed++;
+      log(`[cb] onDecoy t=${S.t.toFixed(2)} missile=${m.id} from=${a ? a.name : '-'} -> ${f.name} side=${f.side > 0 ? 'R' : 'L'} ejectIn=${Math.max(0, f.ejectAt - S.weapons.time).toFixed(2)}s range=${m.position.distanceTo(a.position).toFixed(0)}m`);
+    },
+  });
+  if (Number.isFinite(TURN[0])) S.weapons.missileTurnRateBoost = TURN[0];
+  if (Number.isFinite(TURN[1])) S.weapons.missileTurnRateCoast = TURN[1];
+  S.target = new FakeAircraft('target', 'player', 0x8d9aa6, scene);
+  S.enemy = new FakeAircraft('bandit', 'enemy', 0xb0563a, scene);
+  S.list = [S.target, S.enemy];
+  S.enemyDir = new THREE.Vector3(0, FL.y, -FL.v * 0.8).sub(FL.enemy0).normalize();
+  S.enemy.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, -1), S.enemyDir);
+  placeFlareAircraft(S, 0);
+  updateFlareCamera(S);
+  return S;
+}
+
+function placeFlareAircraft(S, t) {
+  S.target.position.set(0, FL.y, -FL.v * t); S.target.velocity.set(0, 0, -FL.v);
+  S.enemy.position.copy(FL.enemy0).addScaledVector(S.enemyDir, FL.ev * t); S.enemy.velocity.copy(S.enemyDir).multiplyScalar(FL.ev);
+}
+
+function stepFlares(S, dt) {
+  S.t += dt;
+  const t = S.t, W = S.weapons, ev = S.events;
+  placeFlareAircraft(S, t);
+  if (!ev.launch && t >= FL.launchT) {
+    ev.launch = true;
+    S.missile = W.fireMissile(S.enemy, S.target);
+    S.missileId = S.missile ? S.missile.id : 0;
+  }
+  if (!ev.flares && t >= FL.flareT) {
+    ev.flares = true;
+    if (!NO_FLARES) {
+      const m = S.missile, rng = m && m.alive ? m.position.distanceTo(S.target.position).toFixed(0) + 'm' : '-';
+      const n = W.deployFlares(S.target);
+      S.log(`FLARES_OK decoyed=${n} t=${t.toFixed(2)} missileRange=${rng} flares=${W.getStats().flares} missileTarget=${m && m.target ? m.target.name : 'none'}`);
+    } else S.log(`[scenario] t=${t.toFixed(2)} noflares=1: control run, no flares`);
+  }
+  W.update(dt, S.list, S.camera);
+  const m = S.missile;
+  if (m && m.id === S.missileId && m.alive) {
+    S.minDist = Math.min(S.minDist, m.position.distanceTo(S.target.position));
+    if (m.target && m.target.isDecoy) S.minFlareDist = Math.min(S.minFlareDist, m.position.distanceTo(m.target.position));
+    if (!m.target && S.lostAt < 0 && ev.flares) {
+      S.lostAt = t;
+      S.log(`[scenario] t=${t.toFixed(2)} missile ${m.id} lost its flare (overshoot / burn-out): ballistic until self-destruct`);
+    }
+  } else if (m && !S.resultLogged) {
+    S.resultLogged = true;
+    S.log(`FLARES_RESULT outcome=${S.outcome || 'none'} t=${t.toFixed(2)} missMin=${S.minDist.toFixed(1)}m flareMin=${Number.isFinite(S.minFlareDist) ? S.minFlareDist.toFixed(1) + 'm' : '-'} decoyed=${S.decoyed} targetHp=${S.target.health}`);
+  }
+  updateFlareCamera(S);
+}
+
+function updateFlareCamera(S) {
+  const c = S.camera, tp = S.target.position;
+  if (S.camMode === 'wide') {
+    c.position.set(1100, FL.y + 300, -300);
+    c.lookAt(-250, FL.y - 40, -700);
+  } else {
+    const cfg = FLARE_CAMS[S.camMode] || FLARE_CAMS.chase;
+    if (cfg.fov && c.fov !== cfg.fov) { c.fov = cfg.fov; c.updateProjectionMatrix(); }
+    S.target.getForward(_cf); _cf.y = 0; _cf.normalize();
+    _cr.set(-_cf.z, 0, _cf.x);
+    c.position.copy(tp).addScaledVector(_cr, cfg.pos[0]).addScaledVector(_cf, -cfg.pos[2]); c.position.y += cfg.pos[1];
+    _cl.copy(tp).addScaledVector(_cr, cfg.look[0]).addScaledVector(_cf, -cfg.look[2]); _cl.y += cfg.look[1];
+    c.lookAt(_cl);
+  }
+  c.updateMatrixWorld();
+}
+
+// ---------------------------------------------------------------- self-tests (headless Weapons instances, never rendered)
+function runSelfTests() {
+  const out = [], fails = [];
+  const ok = (name, cond, info = '') => { out.push(`${name}=${cond ? 'ok' : 'FAIL'}${info ? '[' + info + ']' : ''}`); if (!cond) fails.push(name); };
+  const scene = new THREE.Scene();
+  const world = { getHeight: () => 0, sunDirection: SUN.clone() };
+  const dummy = (name, team, x, y, z, extra = {}) => Object.assign({ name, team, position: new THREE.Vector3(x, y, z),
+    quaternion: new THREE.Quaternion(), velocity: new THREE.Vector3(), alive: true, health: 1e6, ammo: 1e6, missiles: 99,
+    applyDamage(a) { this.health -= a; return false; } }, extra);
+  const run = (W, list, secs, each) => {
+    for (let i = 0, n = Math.max(1, Math.round(secs * 60)); i < n; i++) {
+      if (each) each(i / 60);
+      for (const a of list) a.position.addScaledVector(a.velocity, 1 / 60);
+      W.update(1 / 60, list, null);
+    }
+  };
+  const t0 = performance.now();
+  try {
+    { // tunable defaults
+      const W = new Weapons(scene, world);
+      ok('defaults', W.missileBoostTime === 2.2 && W.missileMaxSpeed === 620 && W.missileLife === 6 && W.missileDropTime === 0.15
+        && W.flareDecoyRange === 4000 && W.flareProtectTime === 1 && W.gunHitRadius.player === 16 && W.gunHitRadius.enemy === 6
+        && W.bulletDamage === 4 && typeof W.deployFlares === 'function');
+      W.dispose();
+    }
+    { // gun hit sphere radius by shooter team (+ target.hitRadius for big ground targets)
+      const gun = (team, off, extra) => {
+        let hits = 0, dmg = 0;
+        const W = new Weapons(scene, world, { onHit: (t, d, sh, k) => { if (k === 'gun') { hits++; dmg = d; } } });
+        W.gunSpread = 0;
+        const sh = dummy('sh', team, 0, 1000, 0), tg = dummy('tg', team === 'player' ? 'enemy' : 'player', off, 1000, -400, extra);
+        run(W, [sh, tg], 1.0, (t) => { if (t < 0.2) W.fireGun(sh); });
+        W.dispose();
+        return { hits, dmg };
+      };
+      const p12 = gun('player', 12), e12 = gun('enemy', 12), p20 = gun('player', 20), e5 = gun('enemy', 5);
+      const ship = gun('enemy', 25, { isGround: true, hitRadius: 30 });
+      ok('gunRadius', p12.hits > 0 && e12.hits === 0 && p20.hits === 0 && e5.hits > 0 && ship.hits > 0 && p12.dmg === 4,
+        `player@12m=${p12.hits} enemy@12m=${e12.hits} player@20m=${p20.hits} enemy@5m=${e5.hits} enemy>ship(r30)@25m=${ship.hits} dmg=${p12.dmg}`);
+    }
+    { // a missile fired without a target flies straight for its whole life, then self-destructs
+      const W = new Weapons(scene, world);
+      const sh = dummy('sh', 'player', 0, 2000, 0); sh.velocity.set(0, 0, -250);
+      const m = W.fireMissile(sh, null);
+      sh.velocity.set(0, 0, 0);
+      run(W, [sh], 5.5);
+      const ang = Math.acos(Math.min(1, -m.velocity.z / m.velocity.length()));
+      const straight = m.alive && m.unguided && ang < 1e-3 && Math.abs(m.position.x) < 0.01 && Math.abs(m.position.y - 2000) < 1.5;
+      const info = `angle=${ang.toExponential(1)} dy=${(m.position.y - 2000).toFixed(2)} speed=${m.speed.toFixed(0)}`;
+      run(W, [sh], 0.6);
+      ok('unguidedStraight', straight && !m.alive, info + ` deadAt6s=${!m.alive}`);
+      W.dispose();
+    }
+    { // spoofing: tail-chase that hits without flares; with flares the missile chases a flare and never touches the jet
+      const shot = (flares) => {
+        let decoys = 0, hits = 0, n = -1, spoofed = false, lostAt = -1, deadAt = -1;
+        const sizes = [];
+        const W = new Weapons(scene, world, { onDecoy: () => decoys++, onExplosion: (p, s) => sizes.push(s), onHit: (t, d, sh, k) => { if (k === 'missile') hits++; } });
+        const tg = dummy('tg', 'player', 0, 2000, -1200); tg.velocity.set(0, 0, -230);
+        const sh = dummy('sh', 'enemy', 0, 2000, 0); sh.velocity.set(0, 0, -250);
+        const m = W.fireMissile(sh, tg);
+        run(W, [sh, tg], 0.5);
+        if (flares) { n = W.deployFlares(tg); spoofed = !!(m.target && m.target.isDecoy && m.decoyedFrom === tg); }
+        for (let i = 0; i < 7 * 60 && deadAt < 0; i++) {
+          run(W, [sh, tg], 1 / 60);
+          if (lostAt < 0 && m.alive && !m.target) lostAt = W.time;
+          if (!m.alive) deadAt = W.time;
+        }
+        W.dispose();
+        return { decoys, hits, n, spoofed, lostAt, deadAt, sizes };
+      };
+      const ctl = shot(false), fl = shot(true);
+      ok('spoof', ctl.hits === 1 && fl.n === 1 && fl.spoofed && fl.decoys === 1 && fl.hits === 0 && fl.deadAt > 0,
+        `control:hit=${ctl.hits}@${ctl.deadAt.toFixed(2)}s flares:returned=${fl.n} spoofed=${fl.spoofed} hits=${fl.hits} lost@${fl.lostAt.toFixed(2)} died@${fl.deadAt.toFixed(2)} burst=${fl.sizes.join(',')}`);
+    }
+    { // beyond flareDecoyRange: not spoofed
+      const W = new Weapons(scene, world);
+      const tg = dummy('tg', 'player', 0, 2000, -4500), sh = dummy('sh', 'enemy', 0, 2000, 0);
+      const m = W.fireMissile(sh, tg);
+      run(W, [sh, tg], 0.1);
+      const n = W.deployFlares(tg);
+      ok('rangeLimit', n === 0 && m.target === tg, `returned=${n}`);
+      W.dispose();
+    }
+    { // launched within flareProtectTime of the deployment: spoofed; later: not
+      const W = new Weapons(scene, world);
+      const tg = dummy('tg', 'player', 0, 2000, -2000), sh = dummy('sh', 'enemy', 0, 2000, 0);
+      W.deployFlares(tg);
+      run(W, [sh, tg], 0.5);
+      const m1 = W.fireMissile(sh, tg), in1 = !!(m1 && m1.target && m1.target.isDecoy);
+      run(W, [sh, tg], 0.8);
+      const m2 = W.fireMissile(sh, tg), in2 = !!(m2 && m2.target === tg);
+      ok('protectWindow', in1 && in2, `@0.5s=${in1 ? 'FLARE' : 'jet'} @1.3s=${in2 ? 'jet' : 'FLARE'}`);
+      W.dispose();
+    }
+    { // ground targets: the missile fuses on a SAM site sitting on the terrain / on a ship's hull radius
+      const gnd = (extra, y) => {
+        let hit = null;
+        const W = new Weapons(scene, world, { onHit: (t, d, sh, k) => { if (k === 'missile') hit = t; } });
+        const gt = dummy('gt', 'enemy', 0, y, -1600, Object.assign({ isGround: true }, extra));
+        const sh = dummy('sh', 'player', 0, 350, 0); sh.velocity.set(0, 0, -240);
+        W.fireMissile(sh, gt);
+        run(W, [sh, gt], 6);
+        W.dispose();
+        return hit === gt;
+      };
+      const sam = gnd({ hitRadius: 8 }, 0.5), ship = gnd({ hitRadius: 45 }, 0);
+      ok('groundTarget', sam && ship, `sam=${sam} ship=${ship}`);
+    }
+    { // ground launcher (no rails / muzzles): pops up toward the target instead of dropping into the terrain
+      const W = new Weapons(scene, world);
+      const sam = dummy('sam', 'enemy', 0, 0, 0, { isGround: true, hitRadius: 8 });
+      const jet = dummy('jet', 'player', 0, 1500, -2500); jet.velocity.set(0, 0, -230);
+      const m = W.fireMissile(sam, jet);
+      const rounds = W.fireGun(sam);
+      run(W, [sam, jet], 1.0);
+      ok('groundLaunch', !!m && m.alive && m.position.y > 40 && rounds > 0, `missileY@1s=${m ? m.position.y.toFixed(0) : '-'} gunRounds=${rounds}`);
+      W.dispose();
+    }
+  } catch (e) {
+    fails.push('exception'); out.push('exception=' + (e && e.stack || e));
+  }
+  console.log((fails.length ? 'SELFTEST_FAIL failed=' + fails.join(',') + ' ' : 'SELFTEST_OK ') + out.join(' ') + ` (${(performance.now() - t0).toFixed(0)} ms)`);
+}
+
+// ---------------------------------------------------------------- views
+const SC = FLARES ? { make: makeFlareSim, step: stepFlares, loopAt: 8.5 } : { make: makeSim, step, loopAt: 9.5 };
+const views = [];
+if (FLARES) runSelfTests();
+if (gridTimes && gridTimes.length) {
+  gridTimes.forEach((T, i) => {
+    const S = SC.make(i === 0, camModes[i % camModes.length]);
+    while (S.t < T - 1e-6) SC.step(S, STEP);
+    views.push({ S, frozen: true, cell: i });
+  });
+} else {
+  const S = SC.make(true, camModes[0]);
+  if (freezeT !== null) while (S.t < freezeT - 1e-6) SC.step(S, STEP);
+  else S.t = -preroll;                     // live: approach for a moment, weapons start at t = 0
+  views.push({ S, frozen: freezeT !== null, cell: -1 });
+}
+
+// Real post pipeline (js/post.js) when requested; loaded dynamically so a broken post.js falls back to the mini bloom
+let post = null;
+async function initPost() {
+  if (!USE_POST) return;
+  try {
+    const mod = await import('./js/post.js');
+    post = new mod.PostFX(renderer, innerWidth, innerHeight, renderer.getPixelRatio());
+    console.log('[post] rendering through js/post.js PostFX');
+  } catch (e) {
+    post = null;
+    console.warn('[post] PostFX unavailable, using the mini pipeline: ' + (e && e.message || e));
+  }
+}
+
+let last = performance.now(), acc = 0, frame = 0, lastLog = 0;
+function renderFrame(dt) {
+  renderer.info.reset();
+  const W = size.x, H = size.y, grid = views.length > 1;
+  if (post) {
+    const pr = renderer.getPixelRatio();
+    try {
+      for (const v of views) {
+        const w = grid ? W >> 1 : W, h = grid ? H >> 1 : H;
+        const x = grid ? (v.cell % 2) * w : 0, y = grid ? (v.cell < 2 ? h : 0) : 0;
+        v.S.camera.aspect = w / h; v.S.camera.updateProjectionMatrix();
+        renderer.setViewport(x / pr, y / pr, w / pr, h / pr);   // PostFX's final pass fills the current viewport
+        post.render(v.S.scene, v.S.camera, dt);
+      }
+      renderer.setViewport(0, 0, W / pr, H / pr);
+      return renderer.info.render.calls;
+    } catch (e) {
+      console.warn('[post] PostFX render failed, switching to the mini pipeline: ' + (e && e.message || e));
+      post = null;
+      renderer.setViewport(0, 0, W / pr, H / pr);
+      renderer.info.reset();
+    }
+  }
+  for (const v of views) {
+    const w = grid ? W >> 1 : W, h = grid ? H >> 1 : H;
+    const x = grid ? (v.cell % 2) * w : 0, y = grid ? (v.cell < 2 ? h : 0) : 0;
+    rtScene.viewport.set(x, y, w, h); rtScene.scissor.set(x, y, w, h); rtScene.scissorTest = true;
+    v.S.camera.aspect = w / h; v.S.camera.updateProjectionMatrix();
+    renderer.setRenderTarget(rtScene);
+    renderer.render(v.S.scene, v.S.camera);
+  }
+  const sceneCalls = renderer.info.render.calls;
+  renderer.setRenderTarget(rtBloom); renderer.render(brightScene, fsCam);
+  renderer.setRenderTarget(null); renderer.render(presentScene, fsCam);
+  return sceneCalls;
+}
+
+function describeMissile(S) {
+  const m = S.missile;
+  if (!m || !m.alive || m.id !== S.missileId) return 'missile=done';
+  const tg = m.target;
+  return `missile=${tg ? (tg.isDecoy ? 'FLARE' : tg.name) : 'ballistic'} dTarget=${m.position.distanceTo(S.target.position).toFixed(0)}m`
+    + (tg && tg.isDecoy ? ` dFlare=${m.position.distanceTo(tg.position).toFixed(0)}m` : '') + ` speed=${m.speed.toFixed(0)}`;
+}
+
+function loop(now) {
+  requestAnimationFrame(loop);
+  try {
+    const realDt = Math.min(1.0, (now - last) / 1000); last = now;
+    const main = views[0];
+    if (!main.frozen) {
+      acc += realDt;
+      let n = 0;
+      while (acc >= STEP && n < 60) { SC.step(main.S, STEP); acc -= STEP; n++; }
+      if (n === 60) acc = 0;
+      if (main.S.t > SC.loopAt) {              // loop the scenario for live viewing
+        disposeSim(main.S); main.S = SC.make(false, camModes[0]); main.S.t = -1; views[0].S = main.S; lastLog = -1;
+      }
+    }
+    const calls = renderFrame(realDt || STEP);
+    const st = main.S.weapons.getStats();
+    if (frame === 0) {
+      console.log('WEAPONS_OK calls=' + renderer.info.render.calls + ' (' + (post ? 'incl. post passes' : 'scene ' + calls)
+        + ', weapons ' + st.drawCalls + ') t=' + main.S.t.toFixed(2) + (views.length > 1 ? ' views=' + views.length : '')
+        + ' scenario=' + SCENARIO + ' post=' + (post ? 'PostFX' : 'mini'));
+    }
+    if (!main.frozen && main.S.t - lastLog >= 1) {
+      lastLog = Math.floor(main.S.t);
+      const extra = FLARES ? ' ' + describeMissile(main.S) + ` flares=${st.flares}` : '';
+      console.log(`[t=${main.S.t.toFixed(2)}] bullets=${st.bullets} missiles=${st.missiles} debris=${st.debris} emitters=${st.emitters} weaponDraws=${st.drawCalls} calls=${renderer.info.render.calls}${extra}`);
+    }
+    infoEl.textContent = views.map((v) => `t=${v.S.t.toFixed(2)}${v.frozen ? ' (frozen)' : ''}  cam=${v.S.camMode}`).join('\n')
+      + `\nbullets ${st.bullets}  missiles ${st.missiles}  flares ${st.flares}  debris ${st.debris}  draw calls ${renderer.info.render.calls}`
+      + (FLARES ? '\n' + describeMissile(main.S) : '');
+    frame++;
+  } catch (err) {
+    if (!loop.failed) { loop.failed = true; console.error('LOOP_ERROR ' + (err && err.stack || err)); }
+  }
+}
+// compile the pooled (hidden while idle) FX shaders up front, for the target the scene is drawn into: first-use compile
+// stalls would otherwise eat live sim time
+function precompileFx() {
+  const target = post && post.rtScene ? post.rtScene : rtScene;
+  for (const v of views) if (v.S.weapons.precompile) v.S.weapons.precompile(renderer, v.S.camera, target);
+}
+initPost().finally(() => { precompileFx(); last = performance.now(); requestAnimationFrame(loop); });
+</script>
+</body>
+</html>

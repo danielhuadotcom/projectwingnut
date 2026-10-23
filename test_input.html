@@ -1,0 +1,242 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8"><link rel="icon" href="data:,">
+<title>wingnut — input test</title>
+<style>
+  html, body { margin: 0; background: #0b0f14; color: #9fe8a0; font: 13px/1.35 ui-monospace, Menlo, Consolas, monospace; }
+  #wrap { padding: 14px 18px; }
+  h1 { font-size: 15px; margin: 0 0 6px; color: #d8f0d8; }
+  .note { color: #8fb0b8; margin-bottom: 10px; white-space: pre; }
+  pre { margin: 0; white-space: pre; }
+  #log { margin: 0 0 12px; color: #c9d6c9; max-height: 38vh; overflow: hidden; }
+  .ok { color: #7f7; } .bad { color: #f77; }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <h1>PROJECT WINGNUT — js/input.js live test</h1>
+  <div class="note">Keys: W/S or Up/Down = pitch (S/Down = nose up) · A/D or Left/Right = roll · Q/E = yaw · Shift,+ / Ctrl,- = throttle
+Space = gun · F / Enter = missile · Tab = target (hold = padlock) · V = look back · Esc / P = pause · I = invert pitch · R = restart
+Gamepad (standard mapping): L-stick X yaw, L-stick Y throttle, R-stick roll/pitch, LT missile, RT gun, RB target, LB look back, Start pause, Back invert, Y restart</div>
+  <pre id="log"></pre>
+  <pre id="out">loading…</pre>
+</div>
+<script type="module">
+import { Input, shapeAxis } from './js/input.js';
+
+const outEl = document.getElementById('out');
+const logEl = document.getElementById('log');
+const results = [];
+function check(name, cond, info) {
+  const ok = !!cond; results.push({ name, ok, info });
+  if (!ok) console.error('INPUT_FAIL ' + name + (info !== undefined ? ' :: ' + JSON.stringify(info) : ''));
+}
+const near = (a, b, eps = 1e-6) => Math.abs(a - b) <= eps;
+const KEYNAME = { Tab: 'Tab', Space: ' ', Enter: 'Enter', Escape: 'Escape', ShiftLeft: 'Shift', ControlLeft: 'Control', ArrowUp: 'ArrowUp' };
+function key(type, code, extra, target) {
+  const k = KEYNAME[code] || (code.startsWith('Key') ? code.slice(3).toLowerCase() : code);
+  const ev = new KeyboardEvent(type, Object.assign({ code, key: k, bubbles: true, cancelable: true }, extra || {}));
+  (target || window).dispatchEvent(ev);
+  return ev;
+}
+window.addEventListener('error', (e) => console.error('INPUT_ERR ' + (e.message || e)));
+window.addEventListener('unhandledrejection', (e) => console.error('INPUT_ERR rejection ' + (e.reason && e.reason.message || e.reason)));
+
+// ---------------------------------------------------------------------------------------------------------------
+// Self-test with synthetic KeyboardEvents + a mocked Gamepad API (deterministic dt = 1/60)
+// ---------------------------------------------------------------------------------------------------------------
+function selfTest() {
+  const DT = 1 / 60;
+  const t = new Input(window);
+  const steps = (n) => { for (let i = 0; i < n; i++) t.update(DT); };
+  const originalInvert = t.invertPitch;
+
+  t.update(DT);
+  check('idle state', t.pitch === 0 && t.roll === 0 && t.yaw === 0 && t.throttleDelta === 0 && !t.gun && !t.missile && !t.targetButton && !t.anyPressed && !t.gamepadBlocked);
+
+  // pitch ramp (attack 0.15 s -> 1/9 per frame), release 0.1 s
+  key('keydown', 'KeyS'); t.update(DT);
+  check('S: first frame pitch ~0.111', near(t.pitch, DT / 0.15, 1e-6), t.pitch);
+  check('S: anyPressed one frame', t.anyPressed === true);
+  check('S: usingGamepad false', t.usingGamepad === false);
+  t.update(DT);
+  check('anyPressed cleared next frame', t.anyPressed === false);
+  steps(8);
+  check('S: full deflection after ~0.15 s', t.pitch === 1, t.pitch);
+  key('keyup', 'KeyS'); steps(3);
+  check('release: half way after 0.05 s', near(t.pitch, 0.5, 1e-3), t.pitch);
+  steps(3);
+  check('release: back to 0 after 0.1 s', t.pitch === 0, t.pitch);
+
+  // W = nose down
+  key('keydown', 'KeyW'); steps(10); check('W: pitch -1', t.pitch === -1, t.pitch); key('keyup', 'KeyW'); steps(6);
+  // sign flip W->S goes through zero with release rate then attack
+  key('keydown', 'ArrowDown'); steps(10); check('ArrowDown: pitch +1', t.pitch === 1, t.pitch);
+  key('keyup', 'ArrowDown'); key('keydown', 'ArrowUp'); steps(3); check('flip: release rate toward 0 (0.5 after 3 frames)', near(t.pitch, 0.5, 1e-3), t.pitch);
+  steps(4); check('flip: crossed 0 heading negative after 7 frames', t.pitch < 0 && t.pitch > -1, t.pitch);
+  key('keyup', 'ArrowUp'); steps(6); check('flip: settled 0', t.pitch === 0, t.pitch);
+
+  // Tab: preventDefault + edges
+  const tabEv = key('keydown', 'Tab');
+  check('Tab preventDefault', tabEv.defaultPrevented === true);
+  t.update(DT);
+  check('Tab: targetPressed + held', t.targetPressed === true && t.targetButton === true && t.targetReleased === false);
+  t.update(DT);
+  check('Tab: pressed edge one frame only', t.targetPressed === false && t.targetButton === true);
+  key('keydown', 'Tab', { repeat: true }); t.update(DT);
+  check('Tab repeat ignored', t.targetPressed === false && t.anyPressed === false);
+  key('keyup', 'Tab'); t.update(DT);
+  check('Tab: released edge', t.targetReleased === true && t.targetButton === false);
+  t.update(DT);
+  check('Tab: released edge one frame only', t.targetReleased === false);
+
+  // tap entirely between frames still registers one held frame + both edges
+  key('keydown', 'Space'); key('keyup', 'Space'); t.update(DT);
+  check('Space tap: gun held + gunPressed', t.gun === true && t.gunPressed === true && t.gunAnalog === 1);
+  t.update(DT);
+  check('Space tap: released next frame', t.gun === false && t.gunReleased === true && t.gunPressed === false);
+
+  // missile keys
+  key('keydown', 'Enter'); t.update(DT);
+  check('Enter: missile', t.missile === true && t.missilePressed === true);
+  key('keyup', 'Enter'); key('keydown', 'KeyF'); t.update(DT);
+  check('Enter->F handover: still held, no new edge', t.missile === true && t.missilePressed === false);
+  key('keyup', 'KeyF'); t.update(DT);
+  check('F up: missile released', t.missile === false && t.missileReleased === true);
+  const sp = key('keydown', 'Space'); check('Space preventDefault', sp.defaultPrevented); key('keyup', 'Space'); steps(2);
+
+  // momentary actions
+  key('keydown', 'Escape'); t.update(DT); check('Escape: pausePressed', t.pausePressed === true); t.update(DT); check('pausePressed one frame', t.pausePressed === false); key('keyup', 'Escape');
+  key('keydown', 'KeyP'); t.update(DT); check('P: pausePressed', t.pausePressed === true); key('keyup', 'KeyP'); t.update(DT);
+  key('keydown', 'KeyR'); t.update(DT); check('R: restartPressed', t.restartPressed === true); key('keyup', 'KeyR'); t.update(DT); check('restartPressed one frame', t.restartPressed === false);
+  key('keydown', 'KeyV'); t.update(DT); check('V: lookBack', t.lookBack === true); key('keyup', 'KeyV'); t.update(DT); check('V up: lookBack off', t.lookBack === false);
+  key('keydown', 'KeyQ'); steps(10); check('Q: yaw -1', t.yaw === -1); key('keyup', 'KeyQ'); key('keydown', 'KeyE'); steps(20); check('E: yaw +1', t.yaw === 1); key('keyup', 'KeyE'); steps(6);
+
+  // invert pitch toggle + persistence
+  key('keydown', 'KeyI'); t.update(DT);
+  check('I: invertPitchToggled + flipped', t.invertPitchToggled === true && t.invertPitch === !originalInvert);
+  let stored = null; try { stored = localStorage.getItem('wingnut.invertPitch'); } catch (e) { stored = 'n/a'; }
+  check('I: persisted', stored === 'n/a' || stored === (t.invertPitch ? '1' : '0'), stored);
+  key('keyup', 'KeyI'); t.update(DT); check('toggled one frame', t.invertPitchToggled === false);
+  t.setInvertPitch(true); key('keydown', 'KeyS'); steps(10); check('inverted: S gives -1', t.pitch === -1, t.pitch); key('keyup', 'KeyS'); steps(6);
+  t.setInvertPitch(originalInvert);
+  try { stored = localStorage.getItem('wingnut.invertPitch'); check('restored storage', stored === (originalInvert ? '1' : '0'), stored); } catch (e) { /* ignore */ }
+
+  // throttle: Shift up, Ctrl down, both cancel
+  key('keydown', 'ShiftLeft'); steps(10); check('Shift: throttle +1', t.throttleDelta === 1, t.throttleDelta);
+  key('keydown', 'ControlLeft'); steps(6); check('Shift+Ctrl: 0', t.throttleDelta === 0, t.throttleDelta);
+  key('keyup', 'ShiftLeft', { shiftKey: false }); steps(10); check('Ctrl: throttle -1', t.throttleDelta === -1, t.throttleDelta);
+  key('keyup', 'ControlLeft', { ctrlKey: false }); steps(6); check('throttle back to 0', t.throttleDelta === 0);
+  key('keydown', 'Equal'); steps(10); check('= : throttle +1', t.throttleDelta === 1); key('keyup', 'Equal'); key('keydown', 'Minus'); steps(20); check('- : throttle -1', t.throttleDelta === -1); key('keyup', 'Minus'); steps(6);
+
+  // blur clears held keys
+  key('keydown', 'KeyD'); steps(10); check('D: roll +1', t.roll === 1 && t.keyboardActive === true);
+  window.dispatchEvent(new Event('blur')); steps(6);
+  check('blur clears keys', t.roll === 0 && t.keyboardActive === false, t.roll);
+
+  // keys typed into an editable element are ignored
+  const inp = document.createElement('input'); document.body.appendChild(inp);
+  key('keydown', 'Space', {}, inp); t.update(DT);
+  check('input element keys ignored', t.gun === false && t.anyPressed === false);
+  key('keyup', 'Space', {}, inp); inp.remove(); t.update(DT);
+
+  // ---- mocked gamepad ---------------------------------------------------------------------------------------------
+  const hadGetGamepads = typeof navigator.getGamepads === 'function';
+  const fake = {
+    id: 'Fake Pad (STANDARD GAMEPAD Vendor: 1234 Product: 5678)', index: 0, connected: true, mapping: 'standard', timestamp: 1,
+    axes: [0, -1, 0.5, 1],
+    buttons: Array.from({ length: 17 }, (_, i) => ({ pressed: i === 5, touched: i === 5, value: i === 6 ? 0.5 : (i === 5 ? 1 : 0) })),
+  };
+  try {
+    navigator.getGamepads = () => [fake, null];
+    t.update(DT);
+    check('gp: connected + name', t.gamepadConnected === true && t.gamepadName === 'Fake Pad' && t.gamepadIndex === 0, t.gamepadName);
+    check('gp: left Y up -> throttle +1', t.throttleDelta === 1, t.throttleDelta);
+    check('gp: right X 0.5 -> roll expo', near(t.roll, shapeAxis(0.5)) && near(shapeAxis(0.5), 0.2386, 1e-3), t.roll);
+    check('gp: right Y +1 (pull) -> pitch +1', t.pitch === (originalInvert ? -1 : 1), t.pitch);
+    check('gp: yaw 0 (deadzone)', t.yaw === 0);
+    check('gp: LT 0.5 -> missile, RT 0 -> no gun', t.missile === true && t.gun === false && t.missileAnalog === 0.5);
+    check('gp: RB -> targetButton + edge + anyPressed', t.targetButton === true && t.targetPressed === true && t.anyPressed === true);
+    check('gp: usingGamepad', t.usingGamepad === true);
+    t.update(DT);
+    check('gp: edges one frame', t.targetPressed === false && t.anyPressed === false && t.targetButton === true);
+    fake.buttons[5] = { pressed: false, touched: false, value: 0 }; t.update(DT);
+    check('gp: RB release edge', t.targetReleased === true && t.targetButton === false);
+    fake.buttons[9] = { pressed: true, touched: true, value: 1 }; t.update(DT); check('gp: Start -> pausePressed', t.pausePressed === true);
+    t.update(DT); check('gp: Start held -> no repeat', t.pausePressed === false);
+    fake.buttons[9] = { pressed: false, touched: false, value: 0 };
+    fake.buttons[3] = { pressed: true, touched: true, value: 1 }; t.update(DT); check('gp: Y -> restartPressed', t.restartPressed === true); fake.buttons[3] = { pressed: false, touched: false, value: 0 };
+    fake.buttons[8] = { pressed: true, touched: true, value: 1 }; t.update(DT); check('gp: Back -> invertPitchToggled', t.invertPitchToggled === true && t.invertPitch === !originalInvert);
+    fake.buttons[8] = { pressed: false, touched: false, value: 0 }; t.update(DT); t.setInvertPitch(originalInvert);
+    fake.buttons[7] = { pressed: true, touched: true, value: 0.8 }; fake.buttons[4] = { pressed: true, touched: true, value: 1 }; t.update(DT);
+    check('gp: RT -> gun, LB -> lookBack', t.gun === true && t.gunPressed === true && t.lookBack === true && near(t.gunAnalog, 0.8));
+    fake.buttons[7] = { pressed: false, touched: false, value: 0 }; fake.buttons[4] = { pressed: false, touched: false, value: 0 };
+    fake.axes = [0.05, 0.1, -0.11, 0]; t.update(DT);
+    check('gp: deadzone -> all axes 0', t.pitch === 0 && t.roll === 0 && t.yaw === 0 && t.throttleDelta === 0);
+    key('keydown', 'KeyQ'); t.update(DT); check('held LT keeps usingGamepad on despite key', t.usingGamepad === true); key('keyup', 'KeyQ'); steps(6);
+    fake.buttons[6] = { pressed: false, touched: false, value: 0 }; t.update(DT); check('gp: LT release -> missileReleased', t.missileReleased === true && t.missile === false);
+    key('keydown', 'KeyQ'); t.update(DT); check('keyboard flips usingGamepad off', t.usingGamepad === false); key('keyup', 'KeyQ'); steps(6);
+    fake.axes = [0.9, 0, 0, 0]; t.update(DT); check('stick flips usingGamepad on', t.usingGamepad === true && near(t.yaw, shapeAxis(0.9)) && t.yaw > 0.7, t.yaw); fake.axes = [0, 0, 0, 0];
+    navigator.getGamepads = () => [null]; t.update(DT);
+    check('gp: disconnect detected', t.gamepadConnected === false && t.gamepadName === null);
+    // Permissions-Policy block: SecurityError -> gamepadBlocked, polling stops
+    navigator.getGamepads = () => { throw new DOMException('blocked by permissions policy', 'SecurityError'); };
+    let threw = false; try { t.update(DT); } catch (e) { threw = true; }
+    check('gp: SecurityError swallowed -> gamepadBlocked', threw === false && t.gamepadBlocked === true);
+    let calls = 0; navigator.getGamepads = () => { calls++; return []; }; steps(3);
+    check('gp: polling stopped after block', calls === 0, calls);
+  } finally {
+    delete navigator.getGamepads;
+  }
+  check('getGamepads restored', hadGetGamepads === (typeof navigator.getGamepads === 'function'));
+
+  // dispose detaches listeners
+  t.dispose();
+  key('keydown', 'KeyS'); t.update(DT);
+  check('dispose: inert', t.pitch === 0 && t.anyPressed === false);
+  key('keyup', 'KeyS');
+
+  const fails = results.filter((r) => !r.ok);
+  const line = `INPUT_SELFTEST ok=${results.length - fails.length} fail=${fails.length}` + (fails.length ? ' :: ' + fails.map((f) => f.name).join(' | ') : '');
+  console.log(line);
+  logEl.innerHTML = `<span class="${fails.length ? 'bad' : 'ok'}">${line}</span>\n` + results.map((r) => `${r.ok ? ' ok ' : 'FAIL'} ${r.name}${r.ok ? '' : ' :: ' + JSON.stringify(r.info)}`).join('\n');
+}
+
+try { selfTest(); } catch (e) { console.error('INPUT_ERR selftest threw: ' + (e && e.stack || e)); logEl.textContent = 'selftest threw: ' + e; }
+
+// ---------------------------------------------------------------------------------------------------------------
+// Live view: a fresh Input updated every rAF
+// ---------------------------------------------------------------------------------------------------------------
+const input = new Input(window);
+window.input = input;
+const edgeNames = ['gunPressed', 'gunReleased', 'missilePressed', 'missileReleased', 'targetPressed', 'targetReleased', 'pausePressed', 'restartPressed', 'invertPitchToggled', 'anyPressed'];
+const edgeSticky = {}; // show edges for ~0.25 s so a human can see them
+let last = performance.now(), firstDone = false;
+function frame(now) {
+  const dt = Math.min(0.1, (now - last) / 1000); last = now;
+  try {
+    input.update(dt);
+    for (const n of edgeNames) { if (input[n]) edgeSticky[n] = now; }
+    const lines = [];
+    const f = (v) => typeof v === 'number' ? (Math.abs(v) < 1e-9 ? '0' : v.toFixed(3)).padStart(7) : String(v);
+    lines.push('axes      pitch ' + f(input.pitch) + '  roll ' + f(input.roll) + '  yaw ' + f(input.yaw) + '  throttleDelta ' + f(input.throttleDelta));
+    lines.push('held      gun=' + input.gun + ' missile=' + input.missile + ' targetButton=' + input.targetButton + ' lookBack=' + input.lookBack + '   (analog gun ' + f(input.gunAnalog) + ' missile ' + f(input.missileAnalog) + ')');
+    lines.push('edges     ' + edgeNames.map((n) => n + '=' + (input[n] ? 'TRUE' : (now - (edgeSticky[n] || -1e9) < 250 ? 'true' : 'false'))).join(' '));
+    lines.push('status    gamepadConnected=' + input.gamepadConnected + ' gamepadName=' + JSON.stringify(input.gamepadName) + ' gamepadBlocked=' + input.gamepadBlocked + ' gamepadSupported=' + input.gamepadSupported);
+    lines.push('          usingGamepad=' + input.usingGamepad + ' invertPitch=' + input.invertPitch + ' keyboardActive=' + input.keyboardActive + ' dt=' + dt.toFixed(4));
+    lines.push('');
+    lines.push('all public fields:');
+    for (const k of Object.keys(input)) if (!k.startsWith('_')) lines.push('  ' + k.padEnd(20) + ' ' + (typeof input[k] === 'number' ? input[k].toFixed(4) : JSON.stringify(input[k])));
+    outEl.textContent = lines.join('\n');
+    if (!firstDone) { firstDone = true; console.log('INPUT_OK'); }
+  } catch (e) {
+    console.error('INPUT_ERR ' + (e && e.stack || e));
+    outEl.textContent = 'ERROR ' + e;
+  }
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

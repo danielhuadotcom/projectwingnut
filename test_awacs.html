@@ -1,0 +1,145 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8"><link rel="icon" href="data:,">
+<title>wingnut — AWACS test</title>
+<style>
+  html, body { margin: 0; background: #0b0f14; color: #9fe8a0; font: 13px/1.35 ui-monospace, Menlo, Consolas, monospace; }
+  #wrap { padding: 14px 18px; }
+  h1 { font-size: 15px; margin: 0 0 8px; color: #d8f0d8; }
+  button { font: inherit; padding: 6px 14px; background: #173; color: #dfd; border: 1px solid #4a8; border-radius: 4px; cursor: pointer; margin: 0 6px 6px 0; }
+  canvas { display: block; width: 100%; max-width: 960px; height: 260px; background: #050806; border: 1px solid #1d3a24; }
+  pre { margin: 8px 0 0; white-space: pre-wrap; color: #c9d6c9; max-height: 40vh; overflow: auto; }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <h1>PROJECT WINGNUT — js/awacs.js test (AWACS Claude radio lines)</h1>
+  <div id="buttons"></div>
+  <canvas id="scope" width="960" height="260"></canvas>
+  <pre id="log"></pre>
+</div>
+<script type="module">
+import { AudioFX } from './js/audio.js';
+import { Awacs } from './js/awacs.js';
+import { AWACS_CLIPS } from './js/awacs_clips.js';
+
+const logEl = document.getElementById('log');
+let fails = 0, subtitle = '', subtitleKey = '';
+const order = [];
+function log(msg) { console.log(msg); logEl.textContent += msg + '\n'; }
+function check(name, cond, info) { if (!cond) { fails++; console.error('AWACS_FAIL ' + name + (info !== undefined ? ' :: ' + JSON.stringify(info) : '')); logEl.textContent += 'FAIL ' + name + '\n'; } }
+window.addEventListener('error', (e) => console.error('AWACS_ERR ' + (e.message || e)));
+window.addEventListener('unhandledrejection', (e) => console.error('AWACS_ERR rejection ' + (e.reason && e.reason.message || e.reason)));
+
+// 1) before unlock: everything is a safe no-op
+const fx0 = new AudioFX(), aw0 = new Awacs(fx0);
+try {
+  check('preload before unlock resolves false', (await aw0.preload()) === false);
+  check('say before unlock is false', aw0.say('kill') === false);
+  aw0.update(0.016); aw0.setVolume(0.5); aw0.setVolume(NaN); aw0.stop(); aw0.dispose(); aw0.dispose();
+  check('say after dispose is false', aw0.say('kill') === false);
+  log('AWACS_PRE_UNLOCK_OK');
+} catch (e) { check('pre-unlock threw', false, String(e && e.stack || e)); }
+
+// 2) unlock (harness allows autoplay) + preload (idempotent)
+const fx = new AudioFX();
+fx.unlock();
+let seqWall = 0, seqCtx = 0, maxGap = 0;
+const aw = new Awacs(fx, { onSubtitle: (text, secs, key) => { subtitle = text; subtitleKey = key; order.push(key); log(`  on air wall=${((performance.now() - seqWall) / 1000).toFixed(2)} ctx=${(fx.ctx.currentTime - seqCtx).toFixed(2)} [${key}] "${text}" (${secs.toFixed(2)} s)`); } });
+window.awacs = aw;
+const expectedClips = Object.values(AWACS_CLIPS).reduce((n, a) => n + a.length, 0);
+const t0 = performance.now();
+const [ok1, ok2] = await Promise.all([aw.preload(), aw.preload()]);
+const ok3 = await aw.preload();
+check('preload resolves true (x3)', ok1 && ok2 && ok3, { ok1, ok2, ok3 });
+check('all clips decoded', aw.decodedCount === aw.clipCount && aw.clipCount === expectedClips, { decoded: aw.decodedCount, clips: aw.clipCount });
+let secs = 0; for (const k of aw.keys) for (const c of aw._events[k].clips) secs += c.buffer ? c.buffer.duration : 0;
+log(`AWACS_OK clips=${aw.clipCount} decoded=${aw.decodedCount} events=${aw.keys.length} audio=${secs.toFixed(1)}s decodeMs=${(performance.now() - t0).toFixed(0)} ctx=${fx.ctx.state}@${fx.ctx.sampleRate}`);
+
+// 3) live queue sequence (real time; the harness mutes output but the clock runs)
+const analyser = fx.ctx.createAnalyser(); analyser.fftSize = 2048; aw._chain.out.connect(analyser);
+const scopeBuf = new Float32Array(analyser.fftSize);
+const want = ['groundTargets', 'pullUp', 'missileDefeated', 'kill'];
+let done = false;
+const at = (ms, fn) => setTimeout(() => { try { fn(); } catch (e) { check('sequence step threw', false, String(e && e.stack || e)); } }, ms);
+seqWall = performance.now(); seqCtx = fx.ctx.currentTime;
+try {   // queue logic runs synchronously right after the first line goes on air (no timer dependence)
+  check('say groundTargets starts', aw.say('groundTargets', { priority: 2 }) && subtitleKey === 'groundTargets');
+  check('missileDefeated queued (equal priority waits)', aw.say('missileDefeated', { priority: 2 }) && subtitleKey === 'groundTargets');
+  check('kill queued', aw.say('kill', { priority: 1 }));
+  check('kill again merges', aw.say('kill', { priority: 1 }) && aw._nPending === 2, aw._nPending);
+  check('waveClear rejected (queue full)', aw.say('waveClear', { priority: 1 }) === false);
+} catch (e) { check('sequence step threw', false, String(e && e.stack || e)); }
+at(400, () => {
+  check('pullUp preempts', aw.say('pullUp', { priority: 3 }) && subtitleKey === 'pullUp', subtitleKey);
+  check('same event on air rejected', aw.say('pullUp', { priority: 3, cooldown: 0 }) === false);
+});
+const finish = () => {
+  if (done) return; done = true;
+  check('queue order', want.every((k, i) => order[i] === k), order);
+  check('kill cooldown', aw.say('kill') === false);
+  const w = (performance.now() - seqWall) / 1000, c = fx.ctx.currentTime - seqCtx;
+  log(`AWACS_CLOCK wall=${w.toFixed(2)}s ctx=${c.toFixed(2)}s ratio=${(c / w).toFixed(3)} maxFrameGap=${maxGap.toFixed(0)}ms`);
+  log(`AWACS_SEQ_OK order=${order.join(',')} fails=${fails}`);
+  if (!fails) log('AWACS_ALL_OK'); else console.error('AWACS_FAILS ' + fails);
+};
+at(5200, () => { if (!done) { check('sequence completed in time', false, order); finish(); } });
+
+(async () => {
+// 4) variant picker never repeats the previous variant
+{
+  const e = aw._events.kill; let prev = -1, repeats = 0; const seen = new Set();
+  for (let i = 0; i < 300; i++) { const v = aw._pickVariant(e); if (v === prev) repeats++; seen.add(v); e.last = prev = v; }
+  e.last = -1;
+  check('no back-to-back repeat', repeats === 0, { repeats }); check('all kill variants used', seen.size === AWACS_CLIPS.kill.length, [...seen]);
+  log(`AWACS_VARIANTS_OK repeats=${repeats} used=${seen.size}/${AWACS_CLIPS.kill.length}`);
+}
+
+// 5) offline render through the radio chain: level / clipping sanity
+try {
+  const off = new OfflineAudioContext(1, 48000 * 2, 48000);
+  const awOff = new Awacs({ ctx: off });
+  await awOff.preload();
+  check('offline say', awOff.say('kill', { priority: 1 }));
+  const buf = await off.startRendering(), d = buf.getChannelData(0);
+  let peak = 0, sum = 0, n = 0;
+  for (let i = 0; i < d.length; i++) { const a = Math.abs(d[i]); if (a > peak) peak = a; if (a > 0.003) { sum += d[i] * d[i]; n++; } }
+  const rms = Math.sqrt(sum / Math.max(1, n));
+  check('radio chain not clipping', peak < 1.0, peak); check('radio chain audible', rms > 0.02, rms);
+  log(`AWACS_RENDER_OK peak=${peak.toFixed(3)} (${(20 * Math.log10(peak)).toFixed(1)} dBFS) activeRms=${rms.toFixed(3)} (${(20 * Math.log10(rms)).toFixed(1)} dBFS)`);
+  awOff.dispose();
+} catch (e) { check('offline render threw', false, String(e && e.stack || e)); }
+})();
+
+// buttons for manual listening (real browser: click once to unlock)
+const btns = document.getElementById('buttons');
+for (const k of aw.keys) { const b = document.createElement('button'); b.textContent = k; b.onclick = () => { fx.unlock(); aw.say(k, { priority: 5, cooldown: 0 }); }; btns.appendChild(b); }
+
+// frame loop: drive the queue + draw scope and subtitle
+const cv = document.getElementById('scope'), g = cv.getContext('2d');
+let last = performance.now();
+let lastDraw = 0;
+function frame(now) {
+  const dt = (now - last) / 1000; last = now;
+  if (dt * 1000 > maxGap && now - seqWall > 100) maxGap = dt * 1000;
+  aw.update(dt);
+  if (!done && order.length >= want.length) finish();
+  requestAnimationFrame(frame);
+  if (now - lastDraw < 33) return;   // draw the scope at ~30 fps (the harness runs rAF unthrottled)
+  lastDraw = now;
+  analyser.getFloatTimeDomainData(scopeBuf);
+  g.fillStyle = '#050806'; g.fillRect(0, 0, cv.width, cv.height);
+  g.strokeStyle = '#1d3a24'; g.beginPath(); g.moveTo(0, 130); g.lineTo(cv.width, 130); g.stroke();
+  g.strokeStyle = aw.speaking ? '#7f7' : '#3a6'; g.lineWidth = 2; g.beginPath();
+  for (let i = 0; i < scopeBuf.length; i++) { const x = i / (scopeBuf.length - 1) * cv.width, y = 130 - scopeBuf[i] * 110; if (i) g.lineTo(x, y); else g.moveTo(x, y); }
+  g.stroke();
+  g.fillStyle = '#d8f0d8'; g.font = '18px ui-monospace, monospace';
+  g.fillText(aw.speaking ? `AWACS CLAUDE: ${subtitle}` : 'AWACS CLAUDE: (standing by)', 14, 28);
+  g.fillStyle = '#9fe8a0'; g.font = '13px ui-monospace, monospace';
+  g.fillText(`clips ${aw.decodedCount}/${aw.clipCount}  on air: ${order.join(' > ')}  fails: ${fails}`, 14, 250);
+}
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

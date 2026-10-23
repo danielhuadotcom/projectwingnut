@@ -1,0 +1,398 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>WINGNUT · touch controls test</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@600;700&family=JetBrains+Mono:wght@400;700&display=swap">
+<style>
+  /* Same tokens as the game page so js/touch.js picks up the real fonts */
+  :root { --display: "Chakra Petch", "Segoe UI", system-ui, sans-serif; --mono: "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace; color-scheme: dark; }
+  html, body { margin: 0; height: 100%; overflow: hidden; overscroll-behavior: none; background: #04070d; color: #e8eef4; font-family: var(--mono); }
+  /* fake #game: a golden-hour gradient stands in for the WebGL frame; the real HUD canvas draws over it */
+  #game { position: fixed; inset: 0; overflow: hidden; touch-action: none;
+    background: radial-gradient(110% 60% at 68% 47%, rgba(255, 210, 150, 0.5), rgba(255, 210, 150, 0) 46%),
+      linear-gradient(180deg, #0d2c63 0%, #2c6bc0 34%, #8fc3ef 50%, #c9b48e 53%, #6d7650 66%, #3a4630 100%); }
+  #gl, #hud { position: absolute; inset: 0; }
+  #hud { pointer-events: none; }
+  #ui { position: absolute; inset: 0; pointer-events: none; display: grid; place-items: center; padding: 16px; }
+  .overlay { pointer-events: auto; box-sizing: border-box; width: min(520px, 100%); max-height: 100%; overflow: auto; padding: 18px 22px;
+    background: rgba(4, 8, 14, 0.8); border: 1px solid rgba(143, 230, 255, 0.3); border-radius: 6px; }
+  .overlay h2 { font-family: var(--display); margin: 0 0 6px; letter-spacing: 0.04em; font-size: 30px; }
+  .overlay p { margin: 0 0 12px; color: #8fa0b3; font-size: 12.5px; line-height: 1.5; }
+  .overlay button { font: inherit; font-size: 12px; color: #e8eef4; background: rgba(255, 255, 255, 0.06); border: 1px solid rgba(255, 255, 255, 0.22); border-radius: 4px; padding: 6px 12px; }
+  #readout { position: absolute; left: 50%; bottom: calc(8px + env(safe-area-inset-bottom, 0px)); transform: translateX(-50%); z-index: 6; margin: 0;
+    padding: 6px 9px; pointer-events: none; font: 10.5px/1.45 var(--mono); color: #9CEBFF; background: rgba(2, 8, 14, 0.76);
+    border: 1px solid rgba(156, 235, 255, 0.3); border-radius: 4px; white-space: pre; font-variant-numeric: tabular-nums; }
+  #readout.fail { color: #FFB547; border-color: #FF4D4D; }
+</style>
+</head>
+<body>
+<div id="game">
+  <div id="gl"></div>
+  <div id="hud"></div>
+  <div id="ui">
+    <section id="menu" class="overlay" hidden aria-label="Fake menu">
+      <h2 id="menuTitle">DEBRIEF</h2>
+      <p id="menuText">Tap this panel to continue. Buttons stay tappable while the flight controls are hidden.</p>
+      <button id="menuBtn" type="button">Graphics ▶</button>
+    </section>
+  </div>
+  <pre id="readout">loading…</pre>
+</div>
+<script type="module">
+// Test page for js/touch.js: controls forced on, a live readout of what input.js would read, and a self-test that
+// drives multi-touch with synthetic PointerEvents (pointerType 'touch', distinct pointerIds), then logs TOUCH_OK.
+// URL params: ?show=fly|idle|paused|menu (state left on screen for the screenshot), ?hud=0 (no HUD underlay).
+import { TouchControls } from './js/touch.js';
+
+const P = new URLSearchParams(location.search);
+const SHOW = P.get('show') || 'fly';
+const game = document.getElementById('game');
+const readout = document.getElementById('readout');
+const menu = document.getElementById('menu');
+const log = (s) => console.log(s);
+window.addEventListener('error', (e) => log('TOUCH_ERR ' + (e.message || e)));
+window.addEventListener('unhandledrejection', (e) => log('TOUCH_ERR ' + ((e.reason && e.reason.stack) || e.reason)));
+
+let status = 'running checks…';
+let anyTouch = 0;
+const activeChanges = [];
+const touch = new TouchControls(game, {
+  onAnyTouch: () => { anyTouch++; },
+  onActiveChange: (a) => { activeChanges.push(a); render(); },
+  onInput: () => render(),                 // readout updates on change only
+});
+window.touch = touch;
+touch.setMode('on');
+touch.setVisible(true);
+
+const f2 = (v) => (v < 0 ? '-' : '+') + Math.abs(v).toFixed(2);
+function render() {
+  const b = touch.buttons, held = Object.keys(b).filter((k) => b[k]);
+  readout.textContent =
+    'L  x' + f2(touch.lx) + ' y' + f2(touch.ly) + '    R  x' + f2(touch.rx) + ' y' + f2(touch.ry) + '\n' +
+    'held  ' + (held.length ? held.join(' ') : '-') + '\n' +
+    (touch.active ? 'active' : 'inactive') + ' · ' + (touch.visible ? 'flight' : touch.paused ? 'paused' : 'hidden') +
+    ' · ' + touch.mode + '   ' + status;
+}
+render();
+
+// ---- real HUD underneath (optional: the touch checks don't depend on it) -------------------------------------
+let hud = null;
+if (P.get('hud') !== '0') {
+  try { const mod = await import('./js/hud.js'); hud = new mod.HUD(document.getElementById('hud')); }
+  catch (e) { log('TOUCH_NOTE hud unavailable: ' + (e && e.message)); }
+}
+const frame = {
+  w: 0, h: 0, dt: 1 / 60, time: 12.25, state: 'playing',
+  player: { speed: 238, altitude: 1260, radarAlt: 640, heading: 47, pitch: 4, roll: -12, gLoad: 3.4, throttle: 0.86, afterburner: false,
+    health: 82, ammo: 388, missiles: 2, maxMissiles: 2, stall: false, hardpoints: [1, 0.6], flareCooldown: 1, flareReady: true, flareReload: 7 },
+  velocityVector: { x: 0, y: 0, visible: true },
+  target: { x: 0, y: 0, onScreen: true, behind: false, distance: 1850, name: 'SU-57 FELON', health: 0.7, lock: 1, locked: true,
+    inSeekerCone: true, closure: 96, lead: { x: 0, y: 0 } },
+  contacts: [],
+  radar: { range: 8000, blips: [
+    { dx: 900, dz: -1600, type: 'enemy', isTarget: true, relAlt: 300 },
+    { dx: -3600, dz: -2400, type: 'enemy', isTarget: false, relAlt: -500 },
+    { dx: 2800, dz: 3100, type: 'enemy', isTarget: false, relAlt: 0 } ] },
+  warnings: { missileIncoming: false, pullUp: false, stall: false, overG: false },
+  messages: [{ text: 'SPLASH ONE', age: 0.9, duration: 3, big: true }],
+  score: 4250, wave: 2, enemiesRemaining: 4, kills: 3,
+  padlock: false, lookBack: false,
+  input: { gamepadConnected: false, gamepadName: null, gamepadBlocked: false, usingGamepad: true, pointerLocked: false },
+  hitFlash: 0, damageFlash: 0,
+};
+const cA = { x: 0, y: 0, onScreen: true, behind: false, type: 'enemy', hostile: true, distance: 4100, isTarget: false };
+const cT = { x: 0, y: 0, onScreen: true, behind: false, type: 'enemy', hostile: true, distance: 1850, isTarget: true };
+function hudLoop() {
+  if (hud) {
+    try {
+      const w = game.clientWidth, h = game.clientHeight, t = frame.target;
+      frame.w = w; frame.h = h;
+      frame.velocityVector.x = w / 2 + 10; frame.velocityVector.y = h / 2 - 6;
+      t.x = w * 0.6; t.y = h * 0.38; t.lead.x = t.x + 28; t.lead.y = t.y - 16;
+      cA.x = w * 0.34; cA.y = h * 0.43; cT.x = t.x; cT.y = t.y;
+      frame.contacts.length = 0; frame.contacts.push(cA, cT);
+      hud.render(frame);
+    } catch (e) { log('TOUCH_NOTE hud render failed: ' + (e && e.message)); hud = null; }
+  }
+  requestAnimationFrame(hudLoop);
+}
+requestAnimationFrame(hudLoop);
+
+// ---- synthetic multi-touch -----------------------------------------------------------------------------------
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const frames2 = () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+const near = (a, b, eps) => Math.abs(a - b) <= eps;
+const DZ = 0.08, TR = 60;                         // module defaults (deadzone fraction, knob travel px)
+const shape = (d) => { const m = Math.min(d, TR) / TR; return m <= DZ ? 0 : (m - DZ) / (1 - DZ); };
+
+class Finger {
+  constructor(id) { this.id = id; this.el = null; this.x = 0; this.y = 0; }
+  down(x, y) { this.x = x; this.y = y; this.el = document.elementFromPoint(x, y) || document.body; return this.fire('pointerdown'); }
+  move(x, y) { this.x = x; this.y = y; return this.fire('pointermove'); }
+  up() { const e = this.fire('pointerup'); this.el = null; return e; }
+  cancel() { const e = this.fire('pointercancel'); this.el = null; return e; }
+  fire(type) {   // follow-up events go to the touch-down target, like implicit touch capture
+    const pressed = type === 'pointerdown' || type === 'pointermove';
+    const ev = new PointerEvent(type, { pointerId: this.id, pointerType: 'touch', isPrimary: false, clientX: this.x, clientY: this.y,
+      bubbles: true, cancelable: true, composed: true, button: type === 'pointermove' ? -1 : 0, buttons: pressed ? 1 : 0,
+      width: 22, height: 22, pressure: pressed ? 0.5 : 0 });
+    (this.el || document.body).dispatchEvent(ev);
+    return ev;
+  }
+}
+
+const results = { checks: 0, passed: 0, failed: [] };
+function check(name, ok, detail) {
+  results.checks++;
+  if (ok) results.passed++;
+  else { results.failed.push(name); log('TOUCH_CHECK_FAIL ' + name + (detail !== undefined ? ' :: ' + detail : '')); }
+}
+const root = game.querySelector('.wn-touch');
+const sink = root.querySelector('.wn-sink');
+const B = (n) => root.querySelector('[data-b="' + n + '"]');
+const mid = (el) => { const r = el.getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; };
+const cs = (el) => getComputedStyle(el);
+const xy = (el) => { const m = /translate3d\(([-\d.]+)px,\s*([-\d.]+)px/.exec(el.style.transform); return m ? [+m[1], +m[2]] : [NaN, NaN]; };
+
+async function run() {
+  await frames2();
+  const W = game.clientWidth, H = game.clientHeight;
+  const stl = root.querySelector('.wn-stl'), str = root.querySelector('.wn-str'), knobL = stl.querySelector('.wn-knob');
+
+  // ---- 0. setup, styles, layout ----
+  check('active after setMode("on")', touch.active === true);
+  check('overlay visible in flight', cs(root).visibility === 'visible' && root.classList.contains('wn-flight'));
+  check('overlay root never takes pointer events itself', cs(root).pointerEvents === 'none');
+  check('touch-action: none on sink + buttons', cs(sink).touchAction === 'none' && cs(B('gun')).touchAction === 'none');
+  const small = [...root.querySelectorAll('.wn-b:not(.wn-pause)')].filter((b) => { const r = b.getBoundingClientRect(); return r.width < 64 || r.height < 64; });
+  check('main buttons >= 64 px', small.length === 0, small.map((b) => b.dataset.b).join(','));
+  const pr = B('pause').getBoundingClientRect();
+  check('pause hit area >= 64 px (padded)', pr.width + 18 >= 64 && pr.height + 18 >= 64, pr.width + 'x' + pr.height);
+  const rects = touch.getRects(), names = ['lt', 'lb', 'rb', 'rt', 'flr', 'pause'];
+  let overlap = '';
+  for (let i = 0; i < names.length; i++) for (let j = i + 1; j < names.length; j++) {
+    const a = rects[names[i]], b = rects[names[j]];
+    if (a && b && a.x < b.x + b.w - 1 && b.x < a.x + a.w - 1 && a.y < b.y + b.h - 1 && b.y < a.y + a.h - 1) overlap += names[i] + '/' + names[j] + ' ';
+  }
+  check('controls do not overlap', overlap === '', overlap);
+  const outside = names.filter((n) => { const r = rects[n]; return !r || r.x < 0 || r.y < 0 || r.x + r.w > W + 0.5 || r.y + r.h > H + 0.5; });
+  check('controls inside the screen', outside.length === 0, outside.join(','));
+  const hdg = Math.min(0.26 * W, 0.31 * Math.min(W, H)), tapeL = W / 2 - hdg, tapeR = W / 2 + hdg, pz = rects.pause;
+  results.pauseClearOfHudHeadingTape = pz ? (pz.x >= tapeR - 0.5 || pz.x + pz.w <= tapeL + 0.5 || pz.y > 60) : null;
+
+  // ---- 1. left stick (floating) ----
+  const A = new Finger(11), Bf = new Finger(12), C = new Finger(13), D = new Finger(14), E = new Finger(15);
+  // touch the sticks at their resting centers: on the sink in any viewport (FLR sits above the ring by design)
+  const [ax, ay] = xy(stl).map(Math.round);
+  touch.used = false;
+  const evA = A.down(ax, ay);
+  check('stick touch lands on the sink', A.el === sink, A.el && (A.el.id || A.el.className));
+  check('touch-down preventDefault-ed (no synthesized mouse events)', evA.defaultPrevented === true);
+  check('touch-down is neutral', touch.lx === 0 && touch.ly === 0);
+  const [bx0, by0] = xy(stl);
+  check('left base jumps under the thumb', near(bx0, ax, 0.5) && near(by0, ay, 0.5), bx0 + ',' + by0);
+  A.move(ax, ay - 60);
+  check('left stick up = boost: ly = +1', near(touch.ly, 1, 1e-3) && near(touch.lx, 0, 1e-3), f2(touch.lx) + ',' + f2(touch.ly));
+  check('used set on change', touch.used === true);
+  check('BOOST label lights', stl.querySelector('.wn-ln').classList.contains('wn-lit'));
+  A.move(ax - 30, ay);
+  check('left stick left = rudder left, deadzone rescaled', near(touch.lx, -shape(30), 1e-3) && touch.ly === 0, touch.lx);
+  A.move(ax + 3, ay - 2);
+  check('small deadzone', touch.lx === 0 && touch.ly === 0);
+
+  // ---- 2. right stick at the same time ----
+  const [rx0, ry0] = xy(str).map(Math.round);
+  Bf.down(rx0, ry0);
+  Bf.move(rx0 + 20, ry0 + 30);
+  const dB = Math.hypot(20, 30), eRx = shape(dB) * 20 / dB, eRy = shape(dB) * 30 / dB;
+  check('right stick pull down = nose up (+ry), right = roll right (+rx)', near(touch.rx, eRx, 2e-3) && near(touch.ry, eRy, 2e-3), f2(touch.rx) + ',' + f2(touch.ry));
+  A.move(ax, ay + 45);
+  check('two sticks at once: left down = airbrake (-ly), right unchanged',
+    near(touch.ly, -shape(45), 1e-3) && near(touch.rx, eRx, 2e-3) && near(touch.ry, eRy, 2e-3), f2(touch.ly));
+
+  // ---- 3. buttons while both sticks are held ----
+  C.down(...mid(B('gun')));
+  check('GUN (RT) held + pressed state', touch.buttons.gun === true && B('gun').classList.contains('wn-on'));
+  D.down(...mid(B('missile')));
+  check('MSL (LT) with four fingers down', touch.buttons.missile && touch.buttons.gun && touch.ly < -0.5 && touch.ry > 0.3);
+
+  // ---- 4. an extra finger in a held stick's zone is ignored ----
+  const keep = [touch.lx, touch.ly];
+  E.down(ax + 40, ay - 10); E.move(ax + 100, ay - 70);
+  check('extra finger in the left zone ignored', touch.lx === keep[0] && touch.ly === keep[1]);
+  E.up();
+
+  // ---- 5. releases ----
+  await sleep(110);
+  C.up();
+  check('GUN released on lift', touch.buttons.gun === false && !B('gun').classList.contains('wn-on'));
+  D.up();
+  check('MSL released', touch.buttons.missile === false);
+  A.up();
+  check('left stick springs back to center', touch.lx === 0 && touch.ly === 0);
+  check('left knob returns (CSS spring)', near(xy(knobL)[0], 0, 0.01) && near(xy(knobL)[1], 0, 0.01) && !stl.classList.contains('wn-act'));
+  check('right stick unaffected by left release', near(touch.ry, eRy, 2e-3));
+
+  // ---- 6. the base trails the thumb past full deflection ----
+  Bf.move(rx0, ry0 - 100);
+  check('full push saturates at ry = -1 (nose down)', near(touch.ry, -1, 1e-3) && near(touch.rx, 0, 1e-3), f2(touch.rx) + ',' + f2(touch.ry));
+  check('base followed the thumb', near(xy(str)[1], ry0 - 40, 0.5), xy(str).join(','));
+  Bf.move(rx0, ry0 - 70);
+  check('reversal responds at once', near(touch.ry, -shape(30), 1e-3), f2(touch.ry));
+  Bf.cancel();
+  check('pointercancel releases the stick', touch.rx === 0 && touch.ry === 0);
+
+  // ---- 7. taps and holds ----
+  const T = new Finger(21);
+  T.down(...mid(B('target'))); T.up();
+  check('TGT quick tap still reported right after lift (min press)', touch.buttons.target === true);
+  await sleep(140);
+  check('TGT tap ends after the min press', touch.buttons.target === false);
+  T.down(...mid(B('lookBack')));
+  await sleep(120);
+  check('LOOK (LB) held', touch.buttons.lookBack === true);
+  T.up();
+  check('LOOK released on lift', touch.buttons.lookBack === false);
+  T.down(...mid(B('flares')));
+  check('FLR (L3) press', touch.buttons.flares === true);
+  T.up(); await sleep(140);
+  T.down(...mid(B('pause')));
+  check('pause press', touch.buttons.pause === true);
+  T.up(); await sleep(140);
+  check('all buttons idle again', Object.values(touch.buttons).every((v) => !v));
+
+  // ---- 8. hidden: nothing blocks the menus; menu taps pulse confirm / back ----
+  A.down(ax, ay); A.move(ax - 20, ay - 40);
+  touch.setVisible(false);
+  check('setVisible(false) releases a held stick', touch.lx === 0 && touch.ly === 0);
+  A.up();
+  check('hidden: sink gone', cs(sink).display === 'none');
+  menu.hidden = false;
+  const mb = document.getElementById('menuBtn');
+  check('hidden: menu button gets the touch', document.elementFromPoint(...mid(mb)) === mb);
+  check('hidden: nothing of ours under the stick zone', !root.contains(document.elementFromPoint(ax, ay)));
+  const M = new Finger(31), M2 = new Finger(32);
+  const mt = mid(document.getElementById('menuText'));
+  M.down(...mt); M.up();
+  check('menu tap -> confirm pulse', touch.buttons.confirm === true);
+  await sleep(170);
+  check('confirm pulse ends', touch.buttons.confirm === false);
+  M.down(...mid(mb)); M.up();
+  check('tap on a menu <button> is left alone', touch.buttons.confirm === false);
+  M.down(mt[0] - 40, mt[1]); M2.down(mt[0] + 40, mt[1]); M.up(); M2.up();
+  check('two-finger tap -> back pulse', touch.buttons.back === true && touch.buttons.confirm === false);
+  await sleep(170);
+  M.down(mt[0], mt[1]); M.move(mt[0] + 60, mt[1]); M.up();
+  check('a drag is not a tap', touch.buttons.confirm === false);
+  menu.hidden = true;
+
+  // ---- 9. paused: only the resume button ----
+  touch.setVisible('paused');
+  check('paused: resume button only', cs(B('pause')).display === 'flex' && cs(B('gun')).display === 'none' && cs(sink).display === 'none');
+  T.down(...mid(B('pause')));
+  check('resume press -> pause held', touch.buttons.pause === true);
+  T.up(); await sleep(140);
+
+  // ---- 10. modes + detection ----
+  touch.setMode('off');
+  check('setMode("off") hides everything', touch.active === false && cs(root).visibility === 'hidden');
+  touch.setMode('auto');
+  check('auto: touches were seen -> active, onAnyTouch fired', touch.active === true && anyTouch > 0, 'anyTouch=' + anyTouch);
+  touch.setMode('on');
+
+  // ---- 10b. robustness ----
+  touch.setVisible(true);
+  const G1 = new Finger(61), G2 = new Finger(62);
+  G1.down(...mid(B('gun'))); G2.down(...mid(B('gun')));
+  await sleep(100);
+  G1.up();
+  check('two fingers on GUN: lifting one keeps it held', touch.buttons.gun === true);
+  G2.up();
+  check('lifting both releases it', touch.buttons.gun === false);
+  A.down(ax, ay); A.move(ax, ay - 50);
+  window.dispatchEvent(new Event('blur'));
+  check('window blur releases held controls', touch.ly === 0 && touch.lx === 0);
+  A.up();
+  touch.setMode('auto');
+  window.dispatchEvent(new Event('gamepadconnected'));
+  check('auto: a gamepad hides the touch controls', touch.active === false && cs(root).visibility === 'hidden');
+  const Q = new Finger(63); Q.down(W * 0.5, H * 0.5); Q.up();
+  check('auto: touching the screen mid-flight brings them back', touch.active === true);
+  touch.setMode('on');
+  touch.setPitchInverted(true);
+  check('setPitchInverted swaps DIVE / CLIMB', str.querySelector('.wn-ln').textContent === 'CLIMB' && str.querySelector('.wn-ls').textContent === 'DIVE');
+  touch.setPitchInverted(false);
+  let fsOk = false;
+  try { fsOk = typeof (await touch.requestFullscreenLandscape()) === 'boolean'; } catch (e) { fsOk = false; }
+  check('requestFullscreenLandscape never throws', fsOk);
+
+  // ---- 11. dispose (a second instance) ----
+  const box = document.createElement('div');
+  box.style.cssText = 'position:fixed;left:0;top:0;width:200px;height:120px;';
+  document.body.appendChild(box);
+  let boxTouches = 0;
+  const t2 = new TouchControls(box, { onAnyTouch: () => { boxTouches++; } });
+  t2.setMode('on'); t2.setVisible(true);
+  t2.dispose();
+  touch.setVisible(false);
+  const Z = new Finger(41); Z.down(5, 5); Z.up();
+  check('dispose removes its DOM + listeners (shared style kept)', !box.querySelector('.wn-touch') && boxTouches === 0 && !!document.getElementById('wn-touch-style'));
+  box.remove();
+  await sleep(170);
+
+  // ---- 12. rotate hint follows the container's orientation (flip it, then restore) ----
+  touch.setVisible(true);
+  const hint = root.querySelector('.wn-rot');
+  const hintOk = (portrait) => root.classList.contains('wn-portrait') === portrait && (cs(hint).display === 'flex') === portrait;
+  const startPortrait = H > W;
+  check('rotate hint matches the start orientation', hintOk(startPortrait), cs(hint).display);
+  if (startPortrait) { game.style.bottom = 'auto'; game.style.height = Math.round(W * 0.6) + 'px'; }
+  else { game.style.right = 'auto'; game.style.width = Math.round(H * 0.6) + 'px'; }
+  await sleep(60); await frames2();
+  check('rotate hint follows a flip (' + (startPortrait ? 'to landscape' : 'to portrait') + ')', hintOk(!startPortrait), cs(hint).display);
+  game.style.right = ''; game.style.width = ''; game.style.bottom = ''; game.style.height = '';
+  await sleep(60); await frames2();
+  check('rotate hint restored', hintOk(startPortrait), cs(hint).display);
+  check('onActiveChange reported the flips', activeChanges.length >= 2, activeChanges.join(','));
+}
+
+/** Leave a representative state on screen for the screenshot. */
+async function showcase() {
+  touch.setMode('on');
+  const W = game.clientWidth, H = game.clientHeight;
+  if (SHOW === 'menu') { touch.setVisible(false); menu.hidden = false; return; }
+  if (SHOW === 'paused') {
+    touch.setVisible('paused');
+    document.getElementById('menuTitle').textContent = 'PAUSED';
+    document.getElementById('menuText').textContent = 'Mission hold. The RESUME button stays on top of the pause menu.';
+    menu.hidden = false; return;
+  }
+  touch.setVisible(true);
+  if (SHOW === 'idle') return;
+  // fly: left thumb boosting with a touch of left rudder, right thumb pulling into a right roll, index finger on GUN
+  const L = new Finger(51), R = new Finger(52), G = new Finger(53);
+  const [lx0, ly0] = xy(root.querySelector('.wn-stl')).map(Math.round), [rx0, ry0] = xy(root.querySelector('.wn-str')).map(Math.round);
+  L.down(lx0, ly0); L.move(lx0 - 24, ly0 - 46);
+  R.down(rx0, ry0); R.move(rx0 + 30, ry0 + 36);
+  G.down(...mid(B('gun')));
+}
+
+try { await run(); } catch (e) { check('test runner threw', false, e && e.stack); }
+const ok = results.failed.length === 0;
+status = (ok ? 'TOUCH_OK ' : 'TOUCH_FAIL ') + results.passed + '/' + results.checks;
+await showcase();
+readout.classList.toggle('fail', !ok);
+render();
+const r2 = (k, v) => (typeof v === 'number' ? Math.round(v) : v);
+log((ok ? 'TOUCH_OK ' : 'TOUCH_FAIL ') + JSON.stringify({ passed: results.passed, checks: results.checks, failed: results.failed,
+  pauseClearOfHudHeadingTape: results.pauseClearOfHudHeadingTape, show: SHOW, viewport: [innerWidth, innerHeight],
+  state: { lx: +touch.lx.toFixed(3), ly: +touch.ly.toFixed(3), rx: +touch.rx.toFixed(3), ry: +touch.ry.toFixed(3), gun: touch.buttons.gun } }));
+const rc = touch.getRects();
+log('TOUCH_RECTS ' + JSON.stringify({ lt: rc.lt, lb: rc.lb, rb: rc.rb, rt: rc.rt, flr: rc.flr, pause: rc.pause }, r2));
+</script>
+</body>
+</html>

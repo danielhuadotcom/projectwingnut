@@ -1,0 +1,266 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8"><link rel="icon" href="data:,">
+<title>wingnut — sampled SFX test</title>
+<style>
+  html, body { margin: 0; background: #0b0f14; color: #9fe8a0; font: 13px/1.35 ui-monospace, Menlo, Consolas, monospace; }
+  #wrap { padding: 12px 16px; }
+  h1 { font-size: 15px; margin: 0 0 8px; color: #d8f0d8; }
+  button { font: inherit; padding: 5px 12px; background: #173; color: #dfd; border: 1px solid #4a8; border-radius: 4px; cursor: pointer; margin: 0 6px 6px 0; }
+  canvas { display: block; margin: 8px 0; border: 1px solid #234; }
+  pre { margin: 0; white-space: pre-wrap; }
+  #log { color: #c9d6c9; max-height: 34vh; overflow: auto; }
+  .ok { color: #7f7; } .bad { color: #f77; }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <h1>PROJECT WINGNUT — js/audio.js sampled SFX test (js/sfx_data.js)</h1>
+  <div>
+    <button data-fx="run">re-run sequence</button><button data-fx="gun">gun burst</button><button data-fx="missile">missile</button>
+    <button data-fx="near">explosion 80 m</button><button data-fx="mid">explosion 500 m</button><button data-fx="far">explosion 1500 m</button>
+    <button data-fx="hit">hit</button><button data-fx="impact">impact</button><button data-fx="flare">flare</button><button data-fx="wilhelm">wilhelm</button>
+    <button data-fx="ab">afterburner toggle</button><button data-fx="thr">throttle 0.2/0.6/1.0</button><button data-fx="pause">pause toggle</button>
+  </div>
+  <canvas id="cv" width="1240" height="420"></canvas>
+  <pre id="out">loading…</pre>
+  <pre id="log"></pre>
+</div>
+<script type="module">
+import { AudioFX } from './js/audio.js';
+import { SFX } from './js/sfx_data.js';
+
+const outEl = document.getElementById('out'), logEl = document.getElementById('log'), cv = document.getElementById('cv'), g2 = cv.getContext('2d');
+let fails = 0;
+function log(msg, cls) { console.log(msg); const s = document.createElement('span'); if (cls) s.className = cls; s.textContent = msg + '\n'; logEl.appendChild(s); }
+function check(name, cond, info) { if (!cond) { fails++; console.error('SFX_FAIL ' + name + (info !== undefined ? ' :: ' + JSON.stringify(info) : '')); log('FAIL ' + name, 'bad'); } return cond; }
+window.addEventListener('error', (e) => { fails++; console.error('SFX_ERR ' + (e.message || e)); });
+window.addEventListener('unhandledrejection', (e) => { fails++; console.error('SFX_ERR rejection ' + (e.reason && e.reason.message || e.reason)); });
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// ---- embedded data sanity ----------------------------------------------------------------------------------------
+let total = 0, b64 = 0;
+for (const k of Object.keys(SFX)) { const l = Array.isArray(SFX[k]) ? SFX[k] : [SFX[k]]; total += l.length; for (const d of l) b64 += d.data.length; }
+log(`SFX entries: ${Object.keys(SFX).join(', ')} (${total} buffers, ${(b64 / 1024).toFixed(1)} KB base64)`);
+
+// ---- 1) everything is a silent no-op before unlock ------------------------------------------------------------------
+const audio = new AudioFX(); window.audio = audio;
+try {
+  audio.setEngine({ throttle: 1, speedFrac: 1, afterburner: true, alive: true }); audio.setEngine();
+  audio.gunFire(); audio.missileLaunch(); audio.explosion(100); audio.explosion(); audio.hit(); audio.impact(); audio.flare();
+  check('wilhelm() false before unlock', audio.wilhelm(50) === false);
+  audio.setPaused(true); audio.setPaused(false); audio.lockTone('seeking'); audio.lockTone('none'); audio.missileWarning(true); audio.missileWarning(false);
+  audio.ui('select'); audio.setMaster(0.6);
+  check('ready false before unlock', audio.ready === false && audio.activeVoices === 0 && audio.sampleStatus.state === 'none');
+  log('SFX_PRE_UNLOCK_OK', 'ok');
+} catch (e) { fails++; console.error('SFX_PRE_UNLOCK_FAIL ' + (e && e.stack || e)); }
+
+// ---- 2) dispose while decoding must not throw or leak ----------------------------------------------------------------
+try {
+  const tmp = new AudioFX(); tmp.unlock(); tmp.gunFire(); tmp.setEngine({ throttle: 1, speedFrac: 1, afterburner: true, alive: true });
+  tmp.dispose(); tmp.unlock(); tmp.gunFire(); tmp.wilhelm(); tmp.setPaused(true); tmp.dispose();
+  check('dispose: ready false, ctx null', tmp.ready === false && tmp.ctx === null);
+  tmp.whenSamplesReady().then((r) => log('disposed instance decode promise resolved ' + JSON.stringify(r)));
+} catch (e) { fails++; console.error('SFX_DISPOSE_FAIL ' + (e && e.stack || e)); }
+
+// ---- 3) unlock + decode (test_sfx.html?synth=1 skips decoding to measure the synthesized fallbacks) -----------------
+const SYNTH = /[?&]synth=1/.test(location.search);
+if (SYNTH) { audio._sfxState = 'disabled'; log('SYNTH MODE: samples not decoded, testing synthesized fallbacks'); }
+audio.unlock();
+log(`unlock: ready=${audio.ready} state=${audio.ctx && audio.ctx.state} sampleRate=${audio.ctx && audio.ctx.sampleRate}`);
+let engineThr = 0.6, engineAB = false, engineSpd = 0.5;
+function frame() { try { audio.setEngine({ throttle: engineThr, speedFrac: engineSpd, afterburner: engineAB, alive: true }); } catch (e) { fails++; console.error('SFX_ERR setEngine ' + e); } requestAnimationFrame(frame); }
+requestAnimationFrame(frame);
+
+const t0 = performance.now();
+const res = SYNTH ? { decoded: 0, failed: 0 } : await Promise.race([audio.whenSamplesReady(), sleep(4000).then(() => null)]);
+const st = audio.sampleStatus;
+if (!SYNTH) {
+  log(`SFX_OK decoded=${st.decoded} failed=${st.failed}`, st.failed === 0 && st.decoded === total ? 'ok' : 'bad');
+  check('decode finished', !!res, st);
+  check('all buffers decoded', st.decoded === total && st.failed === 0, st);
+  log(`decode took ${(performance.now() - t0).toFixed(0)} ms, state=${st.state}, engine samples attached=${audio._engineSamples}`);
+  check('engine switched to samples', audio._engineSamples === true);
+} else check('synth mode: engine stays synthesized', audio._engineSamples === false && !audio._sfx);
+
+// ---- 4) validate decoded buffers -------------------------------------------------------------------------------------
+const S = audio._sfx || {};
+const thumbs = [];
+for (const name of (SYNTH ? [] : Object.keys(SFX))) {
+  const recs = S[name] || [];
+  check(`decoded ${name}`, recs.length === (Array.isArray(SFX[name]) ? SFX[name].length : 1), recs.length);
+  recs.forEach((r, i) => {
+    const d = r.buffer.getChannelData(0); let pk = 0, ss = 0;
+    for (let k = 0; k < d.length; k++) { const a = Math.abs(d[k]); if (a > pk) pk = a; ss += d[k] * d[k]; }
+    const rms = Math.sqrt(ss / d.length);
+    let info = `${name}[${i}] ${r.buffer.duration.toFixed(3)} s @${r.buffer.sampleRate} ch=${r.buffer.numberOfChannels} peak ${(20 * Math.log10(pk)).toFixed(1)} dBFS rms ${(20 * Math.log10(rms)).toFixed(1)} dB gain ${r.gain}`;
+    check(`${name}[${i}] not silent`, pk > 0.05, pk);
+    check(`${name}[${i}] peak below 0 dBFS`, pk < 1.0, pk);
+    const def = Array.isArray(SFX[name]) ? SFX[name][i] : SFX[name];
+    if (def.loop) {
+      check(`${name} loop points inside buffer`, r.loopStart > 0 && r.loopEnd > r.loopStart && r.loopEnd < r.buffer.duration, [r.loopStart, r.loopEnd, r.buffer.duration]);
+      const sr = r.buffer.sampleRate, a = r.loopStart * sr, e = r.loopEnd * sr;
+      const at = (p) => { const k = Math.floor(p), f = p - k; return d[k] * (1 - f) + d[k + 1] * f; };
+      const jump = Math.abs(at(e) - at(a));                      // value the loop jumps back to vs where it left
+      let dsum = 0; for (let k = Math.floor(a); k < Math.floor(e) - 1; k++) dsum += Math.abs(d[k + 1] - d[k]);
+      const meanStep = dsum / (Math.floor(e) - Math.floor(a));
+      info += ` loop ${r.loopStart.toFixed(3)}-${r.loopEnd.toFixed(3)} s seam ${(jump / meanStep).toFixed(2)}x mean step`;
+      check(`${name} seam continuous`, jump < 6 * meanStep, { jump, meanStep });
+    }
+    log(info);
+    thumbs.push({ label: `${name}${recs.length > 1 ? '[' + i + ']' : ''}`, d, dur: r.buffer.duration, loop: def.loop ? [r.loopStart, r.loopEnd] : null });
+  });
+}
+drawThumbs();
+
+// ---- 5) output tap (read-only): level + spectrum of the final mix ------------------------------------------------------
+const ctx = audio.ctx, N = audio._nodes;
+const an = ctx.createAnalyser(); an.fftSize = 2048; an.smoothingTimeConstant = 0;
+N.safety.connect(an);                                             // tap after the safety clipper (what reaches the speakers)
+const td = new Float32Array(an.fftSize), fd = new Float32Array(an.frequencyBinCount);
+const meter = { peak: 0, sum: 0, n: 0, spec: new Float64Array(an.frequencyBinCount), specN: 0 };
+let metering = false, specOn = false;
+function meterTick() {
+  if (metering) {
+    an.getFloatTimeDomainData(td); let s = 0;
+    for (let k = 0; k < td.length; k++) { const a = Math.abs(td[k]); if (a > meter.peak) meter.peak = a; s += td[k] * td[k]; }
+    meter.sum += s / td.length; meter.n++;
+    if (specOn) { an.getFloatFrequencyData(fd); for (let k = 0; k < fd.length; k++) meter.spec[k] += Math.pow(10, fd[k] / 10); meter.specN++; }
+  }
+  requestAnimationFrame(meterTick);
+}
+requestAnimationFrame(meterTick);
+function resetMeter() { meter.peak = 0; meter.sum = 0; meter.n = 0; meter.spec.fill(0); meter.specN = 0; }
+function bandDb(f0, f1) { const hz = ctx.sampleRate / an.fftSize; let s = 0; for (let k = Math.ceil(f0 / hz); k < Math.min(meter.spec.length, f1 / hz); k++) s += meter.spec[k]; return 10 * Math.log10(s / Math.max(1, meter.specN) + 1e-20); }
+
+// ?diag=1: per-layer engine levels (solo each layer at full throttle + afterburner, measured at the engine bus, pre-dynamics)
+if (/[?&]diag=1/.test(location.search)) {
+  const E = N.engine, tap = ctx.createAnalyser(); tap.fftSize = 2048; N.engineBus.connect(tap);
+  const buf = new Float32Array(tap.fftSize), fbuf = new Float32Array(tap.frequencyBinCount);
+  const layers = { roarS: E.sRoarGain, turbS: E.sTurbGain, abS: E.sAbGain, synthWhine: E.whineGain, synthWhistle: E.whistleGain, synthRoar: E.roarGain, thunder: E.abGain, crackle: E.crackleGain, sub: E.subGain, wind: E.windGain };
+  const dest = (k) => (k === 'wind' ? N.engineBus : E.mix);
+  for (const thrDiag of [0.6, 1]) {
+    engineThr = thrDiag; engineAB = thrDiag === 1; engineSpd = thrDiag === 1 ? 1 : 0.5;
+    await sleep(500);
+    const row = [];
+    for (const [k, node] of Object.entries(layers)) {
+      if (!node) continue;
+      for (const [k2, n2] of Object.entries(layers)) if (n2 && k2 !== k) { try { n2.disconnect(); } catch (e) { /* */ } }
+      await sleep(250);
+      let sum = 0, n = 0, pk = 0, lo = 0, hi = 0, mid = 0; const hz = ctx.sampleRate / tap.fftSize;
+      for (let r = 0; r < 8; r++) { tap.getFloatTimeDomainData(buf); for (const v of buf) { sum += v * v; pk = Math.max(pk, Math.abs(v)); } n += buf.length;
+        tap.getFloatFrequencyData(fbuf); for (let q = 0; q < fbuf.length; q++) { const e = Math.pow(10, fbuf[q] / 10), f = q * hz; if (f < 500) lo += e; else if (f < 2000) mid += e; else hi += e; } await sleep(30); }
+      row.push(`${k} ${(10 * Math.log10(sum / n + 1e-20)).toFixed(1)}dB(pk ${(20 * Math.log10(pk + 1e-9)).toFixed(1)}; lo/mid/hi ${(10 * Math.log10(lo + 1e-20)).toFixed(0)}/${(10 * Math.log10(mid + 1e-20)).toFixed(0)}/${(10 * Math.log10(hi + 1e-20)).toFixed(0)})`);
+      for (const [k2, n2] of Object.entries(layers)) if (n2 && k2 !== k) n2.connect(dest(k2));
+    }
+    log(`DIAG thr=${thrDiag} ab=${engineAB}: ` + row.join(' | '));
+  }
+  log('SFX_DIAG_DONE');
+  throw new Error('diag mode: stop');
+}
+// cruise engine level (throttle 0.6, no afterburner), then a gun burst over it
+engineThr = 0.6; engineAB = false; engineSpd = 0.5;
+await sleep(450);
+resetMeter(); metering = true; await sleep(400); metering = false;
+const cruiseRms = 10 * Math.log10(meter.sum / Math.max(1, meter.n) + 1e-20), cruisePk = 20 * Math.log10(meter.peak + 1e-9);
+resetMeter(); metering = true;
+for (let k = 0; k < 12; k++) setTimeout(() => audio.gunFire(), k * 40);
+await sleep(560); metering = false;
+log(`levels: cruise engine rms ${cruiseRms.toFixed(1)} dBFS peak ${cruisePk.toFixed(1)} dBFS | gun burst over cruise: peak ${(20 * Math.log10(meter.peak + 1e-9)).toFixed(1)} dBFS rms ${(10 * Math.log10(meter.sum / Math.max(1, meter.n) + 1e-20)).toFixed(1)} dBFS`);
+// engine-only spectrum at full throttle + afterburner + full speed (wind)
+engineThr = 1; engineAB = true; engineSpd = 1;
+await sleep(650);
+resetMeter(); metering = true; specOn = true;
+await sleep(700);
+metering = false; specOn = false;
+const lowDb = bandDb(30, 500), midDb = bandDb(500, 2000), hiDb = bandDb(2000, 12000);
+const engRms = 10 * Math.log10(meter.sum / Math.max(1, meter.n) + 1e-20);
+log(`engine full AB: out rms ${engRms.toFixed(1)} dBFS peak ${(20 * Math.log10(meter.peak + 1e-9)).toFixed(1)} dBFS | band energy <500 Hz ${lowDb.toFixed(1)} dB, 0.5-2k ${midDb.toFixed(1)} dB, >2k ${hiDb.toFixed(1)} dB (meter frames ${meter.n})`);
+if (meter.n > 3) {
+  check('engine produces sound', engRms > -60, engRms);
+  check('engine bass-dominated (<500 Hz at least 12 dB over >2 kHz)', lowDb - hiDb > 12, { lowDb, hiDb });
+  check('engine: >2 kHz band at least 8 dB under 0.5-2 kHz', midDb - hiDb > 8, { midDb, hiDb });
+} else log('analyser produced no frames (audio thread not running?): spectral checks skipped', 'bad');
+
+// stress: full AB engine + gun burst + near explosion + missile + flare — must never clip
+resetMeter(); metering = true;
+for (let k = 0; k < 14; k++) setTimeout(() => audio.gunFire(), k * 40);
+audio.explosion(60); audio.missileLaunch(); audio.flare(); audio.hit();
+await sleep(650);
+metering = false;
+log(`stress mix: out peak ${(20 * Math.log10(meter.peak + 1e-9)).toFixed(2)} dBFS rms ${(10 * Math.log10(meter.sum / Math.max(1, meter.n) + 1e-20)).toFixed(1)} dBFS voices=${audio.activeVoices}`);
+if (meter.n > 3) check('no clipping at the output (peak < 0 dBFS)', meter.peak < 1.0, meter.peak);
+
+// throttle jumps brake/cruise/boost: params glide (setTargetAtTime), no exceptions
+engineAB = false; engineThr = 0.2; await sleep(120); engineThr = 1.0; await sleep(120); engineThr = 0.6; engineSpd = 0.5;
+
+// ---- 6) every one-shot through the public API ------------------------------------------------------------------------
+const before = audio.activeVoices;
+audio.explosion(500); audio.explosion(1500); audio.impact(); audio.impact();
+const w1 = audio.wilhelm(120), w2 = audio.wilhelm(120);
+check('wilhelm() plays', w1 === true); check('wilhelm() cooldown', w2 === false);
+log(`one-shots queued: voices ${before} -> ${audio.activeVoices} (budget 24)`);
+check('voice budget respected', audio.activeVoices <= 24, audio.activeVoices);
+for (let k = 0; k < 40; k++) audio.explosion(2500 + k * 10);
+check('voice budget after 40 far explosions', audio.activeVoices <= 24, audio.activeVoices);
+
+// ---- 7) pause: game buses ramp to silence in ~100 ms, one-shots ignored, UI still audible ----------------------------------
+await sleep(150);
+audio.setPaused(true); audio.setPaused(true);
+const gate = N.pauseGate.gain;
+await sleep(130);
+check('pause gate closed within ~100 ms', gate.value < 0.02, gate.value);
+check('paused getter', audio.paused === true);
+const vPaused = audio.activeVoices;
+audio.gunFire(); audio.explosion(50); audio.hit(); audio.flare(); audio.missileLaunch();
+check('one-shots ignored while paused', audio.activeVoices <= vPaused, [vPaused, audio.activeVoices]);
+audio.ui('select');
+check('ui cue still plays while paused', audio.activeVoices === Math.min(24, vPaused + 1) || audio.activeVoices === vPaused + 1, [vPaused, audio.activeVoices]);
+audio.setPaused(false);
+await sleep(160);
+check('pause gate reopened', gate.value > 0.98, gate.value);
+
+log(`SFX_DONE${SYNTH ? '(synth)' : ''} fails=${fails} state=${ctx.state} voices=${audio.activeVoices}`, fails ? 'bad' : 'ok');
+outEl.textContent = `SFX_OK decoded=${st.decoded} failed=${st.failed}   checks failed: ${fails}`;
+drawThumbs(`decoded ${st.decoded}/${total}, failed ${st.failed}, checks failed ${fails}`);
+
+function drawThumbs(status = '') {
+  const W = cv.width, H = cv.height, cols = 4, rows = Math.ceil(Math.max(1, thumbs.length) / cols), cw = W / cols, ch = (H - 26) / rows;
+  g2.fillStyle = '#0b0f14'; g2.fillRect(0, 0, W, H);
+  g2.fillStyle = '#d8f0d8'; g2.font = '14px monospace'; g2.fillText(`sampled SFX — ${status}`, 8, 18);
+  thumbs.forEach((t, i) => {
+    const x0 = (i % cols) * cw + 6, y0 = 26 + Math.floor(i / cols) * ch + 4, w = cw - 12, h = ch - 8;
+    g2.fillStyle = '#111c26'; g2.fillRect(x0, y0, w, h);
+    if (t.loop) { g2.fillStyle = 'rgba(80,140,255,0.18)'; g2.fillRect(x0 + w * t.loop[0] / t.dur, y0, w * (t.loop[1] - t.loop[0]) / t.dur, h); }
+    g2.strokeStyle = '#5be35b'; g2.beginPath();
+    const step = t.d.length / w;
+    for (let px = 0; px < w; px++) {
+      let mn = 1, mx = -1; for (let k = Math.floor(px * step); k < Math.floor((px + 1) * step); k++) { const v = t.d[k]; if (v < mn) mn = v; if (v > mx) mx = v; }
+      g2.moveTo(x0 + px + 0.5, y0 + h / 2 - mx * h / 2); g2.lineTo(x0 + px + 0.5, y0 + h / 2 - mn * h / 2);
+    }
+    g2.stroke();
+    g2.fillStyle = '#cfe'; g2.font = '12px monospace'; g2.fillText(`${t.label} ${t.dur.toFixed(2)}s`, x0 + 4, y0 + 13);
+  });
+}
+
+// ---- manual buttons ----------------------------------------------------------------------------------------------------
+let thrIdx = 1;
+for (const b of document.querySelectorAll('button[data-fx]')) {
+  b.addEventListener('click', () => {
+    audio.unlock();
+    const k = b.dataset.fx;
+    if (k === 'gun') { let n = 0; const iv = setInterval(() => { audio.gunFire(); if (++n >= 25) clearInterval(iv); }, 40); }
+    else if (k === 'missile') audio.missileLaunch();
+    else if (k === 'near') audio.explosion(80); else if (k === 'mid') audio.explosion(500); else if (k === 'far') audio.explosion(1500);
+    else if (k === 'hit') audio.hit(); else if (k === 'impact') audio.impact(); else if (k === 'flare') audio.flare();
+    else if (k === 'wilhelm') log('wilhelm -> ' + audio.wilhelm(100));
+    else if (k === 'ab') engineAB = !engineAB;
+    else if (k === 'thr') { thrIdx = (thrIdx + 1) % 3; engineThr = [0.2, 0.6, 1.0][thrIdx]; log('throttle ' + engineThr); }
+    else if (k === 'pause') { audio.setPaused(!audio.paused); log('paused ' + audio.paused); }
+    else if (k === 'run') location.reload();
+  });
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,3 @@
+# large, reproducible artefacts (re-create with fetch_samples.mjs --download, analyze.mjs, render.mjs)
+downloads/
+out/

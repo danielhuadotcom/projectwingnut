@@ -1,0 +1,289 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<link rel="icon" href="data:,">
+<title>wingnut — menu test</title>
+<style>
+/* the same skeleton tools/build.mjs wraps around the artifact */
+:root{color-scheme:light;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}html{scroll-padding-top:env(safe-area-inset-top,0px)}body{margin:0;padding:0;font:14px -apple-system,BlinkMacSystemFont,sans-serif;background:#fff;color:#000}img{max-width:100%}[hidden]:not([hidden=until-found i]){display:none!important}
+/* stand-in for the 3D scene: dusk sky with a low sun, ridgelines, a jet */
+.fake-scene { position: absolute; inset: 0; overflow: hidden;
+  background: radial-gradient(circle at 72% 60%, rgba(255, 236, 190, 0.95) 0 1.2%, rgba(255, 190, 110, 0.55) 3%, rgba(255, 150, 70, 0) 24%),
+              linear-gradient(180deg, #08162a 0%, #1d3e63 34%, #5f6f86 52%, #d49461 63%, #f2b373 66%, #6b5a4a 67%, #2b2a2a 100%); }
+.fake-scene i { position: absolute; left: -5%; right: -5%; bottom: 0; }
+.fake-scene .r1 { height: 42%; background: #39465a; clip-path: polygon(0 40%, 8% 22%, 15% 34%, 24% 10%, 33% 30%, 41% 18%, 52% 36%, 61% 14%, 70% 32%, 79% 20%, 88% 38%, 100% 16%, 100% 100%, 0 100%); opacity: 0.9; }
+.fake-scene .r2 { height: 30%; background: #1b2230; clip-path: polygon(0 30%, 10% 50%, 19% 26%, 30% 46%, 43% 20%, 55% 44%, 66% 28%, 77% 52%, 89% 30%, 100% 46%, 100% 100%, 0 100%); }
+.fake-scene svg { position: absolute; left: 62%; top: 38%; width: 14%; min-width: 90px; fill: #1a1f27; filter: drop-shadow(0 6px 10px rgba(0,0,0,.35)); }
+#banner { position: fixed; z-index: 20; left: 50%; top: 12px; transform: translateX(-50%); padding: 6px 12px; font: 12px/1.4 monospace; color: #9cebff; background: rgba(0,0,0,.6); border: 1px solid rgba(156,235,255,.3); pointer-events: none; }
+</style>
+</head>
+<body>
+<div id="banner" hidden></div>
+<script type="module">
+import { Menu, loadSettings, saveSettings, DEFAULT_SETTINGS, CREDITS, SETTING_DEFS } from './js/menu.js';
+import { MISSIONS } from './js/missions.js';
+import { Input } from './js/input.js';
+
+window.addEventListener('error', (e) => console.log('MENU_ERR ' + (e.message || e)));
+window.addEventListener('unhandledrejection', (e) => console.log('MENU_ERR rejection ' + (e.reason && e.reason.message || e.reason)));
+const params = new URLSearchParams(location.search);
+
+// ---- the real page shell (CSS + #game/#ui markup) from src/page.html, minus the game script ----------------------
+const src = await (await fetch('./src/page.html', { cache: 'no-store' })).text();
+document.body.insertAdjacentHTML('afterbegin', src.replace('<!--SCRIPT-->', ''));
+document.querySelector('#gl').innerHTML = '<div class="fake-scene"><i class="r1"></i><i class="r2"></i>' +
+  '<svg viewBox="0 0 120 40" aria-hidden="true"><path d="M2 21 L46 17 L60 4 L67 4 L62 17 L96 16 L112 7 L117 8 L111 19 L118 21 L111 23 L117 32 L112 33 L96 25 L62 24 L67 37 L60 37 L46 24 L2 21 Z"/></svg></div>';
+document.querySelector('#loading').hidden = true;
+
+// ---- menu under test ------------------------------------------------------------------------------------------
+const calls = [], sounds = {};
+let selfTest = true, playing = -1;
+const banner = document.querySelector('#banner');
+const fly = (i) => { playing = i; banner.hidden = false; banner.textContent = `FLYING M${String(i + 1).padStart(2, '0')} ${MISSIONS[i] ? MISSIONS[i].name : ''} · P/Esc pause · K crash · L complete`; };
+const ground = () => { banner.hidden = true; };
+const settings = loadSettings();
+const menu = new Menu(document.querySelector('#ui'), {
+  settings, missions: MISSIONS,
+  onStart: (i) => { calls.push(['start', i]); if (!selfTest) fly(i); },
+  onResume: () => { calls.push(['resume']); },
+  onRestart: () => { calls.push(['restart']); if (!selfTest) fly(Math.max(0, playing)); },
+  onNext: () => { calls.push(['next']); if (!selfTest) fly(Math.min(MISSIONS.length - 1, playing + 1)); },
+  onQuit: () => { calls.push(['quit']); if (!selfTest) ground(); },
+  onSetting: (k, v) => { calls.push(['set', k, v]); if (!selfTest) console.log(`onSetting ${k} = ${v}`); },
+  onSound: (kind) => { sounds[kind] = (sounds[kind] || 0) + 1; },
+});
+window.__menu = menu;
+
+// ---- scripted self-test: fake input edges, deterministic dt ------------------------------------------------------
+const results = [];
+const check = (name, ok, info) => { results.push({ name, ok: !!ok }); if (!ok) console.log('MENU_FAIL ' + name + (info !== undefined ? ' :: ' + JSON.stringify(info) : '')); };
+const near = (a, b, e = 1e-6) => Math.abs(a - b) <= e;
+const EDGES = ['menuUp', 'menuDown', 'menuLeft', 'menuRight', 'menuConfirm', 'menuBack', 'pausePressed'];
+const NAMES = { up: 'menuUp', down: 'menuDown', left: 'menuLeft', right: 'menuRight', ok: 'menuConfirm', back: 'menuBack', pause: 'pausePressed' };
+const fake = { usingGamepad: params.get('dev') !== 'kb' };
+const visited = new Set();
+const note = () => { if (menu.screen) visited.add(menu.screen); };
+const step = (dt, keys = []) => { for (const k of EDGES) fake[k] = false; for (const k of keys) fake[k] = true; menu.update(dt, fake); note(); };
+const press = (...names) => { step(1 / 60, names.map((n) => NAMES[n])); step(1 / 60); };
+const settle = () => step(1.0);
+const focused = () => { const f = menu.el.querySelector('.is-focus'); if (!f) return null; const d = f.dataset; return d.act || d.key || d.tab || (d.mission !== undefined ? 'm' + d.mission : '?'); };
+const last = () => calls[calls.length - 1] || [];
+// layout-agnostic: press each direction (up to 4 times) until `target` has focus
+const reach = (target, ...dirs) => { for (const d of dirs) for (let i = 0; i < 4 && focused() !== target; i++) press(d); return focused() === target; };
+const scr = (n) => menu.el.querySelector(`[data-screen="${n}"]`);
+const backup = (() => { try { return localStorage.getItem('wingnut.settings'); } catch { return null; } })();
+const before = { ...settings };
+
+async function runSelfTest() {
+  // Title
+  menu.show('title'); note();
+  check('opens on title', menu.open && menu.screen === 'title');
+  press('ok'); check('input locked right after opening', menu.open && calls.length === 0);
+  settle();
+  check('title focus starts on Start Campaign', focused() === 'start', focused());
+  press('up'); check('title wraps up to Credits', focused() === 'credits', focused());
+  press('down'); check('title wraps down to Start', focused() === 'start', focused());
+  press('down'); check('down reaches Mission Select', focused() === 'missions', focused());
+
+  // Mission select
+  press('ok'); check('Mission Select opens', menu.screen === 'missions');
+  check('first mission selected', focused() === 'm0', focused());
+  check('21 missions listed', menu.el.querySelectorAll('.m-mis').length === MISSIONS.length && MISSIONS.length === 21, MISSIONS.length);
+  press('down'); press('down'); press('down');
+  check('down moves through the list', focused() === 'm3', focused());
+  check('detail follows the selection', menu.el.querySelector('.m-dname').textContent === MISSIONS[3].name);
+  check('detail shows phase count', menu.el.querySelector('.m-stats b').textContent === String(MISSIONS[3].phases.length));
+  press('right'); check('right jumps to Launch', focused() === 'launch', focused());
+  press('left'); check('left returns to the selected mission', focused() === 'm3', focused());
+  press('ok'); check('confirm on a mission launches it', last()[0] === 'start' && last()[1] === 3 && !menu.open, last());
+
+  // Settings from the title
+  menu.show('title'); settle(); press('down'); press('down');
+  check('title focus on Settings', focused() === 'settings', focused());
+  press('ok'); check('Settings opens', menu.screen === 'settings');
+  check('settings focus on the active tab', focused() === 'graphics', focused());
+  press('down'); check('down enters the first row', focused() === 'quality', focused());
+  const q0 = settings.quality;
+  press('right'); check('right cycles Quality', settings.quality !== q0 && last()[0] === 'set' && last()[1] === 'quality', [q0, settings.quality]);
+  press('left'); check('left cycles back', settings.quality === q0, settings.quality);
+  press('up'); check('up returns to the tab bar', focused() === 'graphics', focused());
+  press('right'); check('right on the tab bar switches tab', focused() === 'controls' && !scr('settings').querySelector('[data-tabpanel="controls"]').hidden, focused());
+  press('down'); check('first Controls row is Invert pitch', focused() === 'invertPitch', focused());
+  const ip = settings.invertPitch;
+  press('right'); check('right flips a toggle', settings.invertPitch === !ip);
+  press('ok'); check('confirm flips it back', settings.invertPitch === ip);
+  press('down'); check('next row is Mouse sensitivity', focused() === 'mouseSens', focused());
+  const ms = settings.mouseSens;
+  press('right'); check('slider steps by 0.05', near(settings.mouseSens, Math.min(3, Math.round((ms + 0.05) * 100) / 100)), settings.mouseSens);
+  press('down'); check('next row is Mouse keys', focused() === 'mouseKeys', focused());
+  const mk = settings.mouseKeys;
+  press('right'); check('Mouse keys cycles', settings.mouseKeys !== mk, settings.mouseKeys);
+  const desc = menu.el.querySelector('.m-row[data-key="mouseKeys"] .m-desc').textContent;
+  check('Mouse keys help follows the preset', desc.toLowerCase().startsWith(settings.mouseKeys), desc);
+  press('back'); check('Back returns to the title', menu.screen === 'title' && focused() === 'settings', [menu.screen, focused()]);
+  let saved = null; try { saved = JSON.parse(localStorage.getItem('wingnut.settings')); } catch { /* blocked */ }
+  check('settings persisted on Back', saved && saved.mouseKeys === settings.mouseKeys && saved.mouseSens === settings.mouseSens, saved);
+  check('loadSettings reads them back', loadSettings().mouseKeys === settings.mouseKeys);
+
+  // Audio tab via show() (stacks on the title)
+  menu.show('settings', { tab: 'audio' }); step(1 / 60);
+  check('show(settings, {tab}) opens that tab', focused() === 'audio' && !scr('settings').querySelector('[data-tabpanel="audio"]').hidden, focused());
+  press('down'); check('first Audio row is Master', focused() === 'master', focused());
+  const mv = settings.master;
+  press('left'); check('Master -5%', near(settings.master, Math.max(0, Math.round((mv - 0.05) * 100) / 100)), settings.master);
+  press('right'); check('Master back', near(settings.master, mv), settings.master);
+  check('slider value label', menu.el.querySelector('.m-row[data-key="master"] .m-val').textContent === Math.round(settings.master * 100) + '%');
+  press('back'); check('Back from stacked Settings returns to title', menu.screen === 'title', menu.screen);
+
+  // Controls and credits
+  press('down'); check('focus on Controls', focused() === 'controls', focused());
+  press('ok'); check('Controls opens', menu.screen === 'controls' && focused() === 'back', [menu.screen, focused()]);
+  check('three control cards', scr('controls').querySelectorAll('.m-card').length === 3);
+  check('keyboard card shows the preset', scr('controls').querySelector('.m-card--kb h3 small').textContent.toLowerCase().startsWith(settings.mouseKeys));
+  const body = scr('controls').querySelector('.m-body');
+  press('down');
+  await new Promise((r) => setTimeout(r, 700));
+  check('down scrolls the controls', body.scrollTop > 0 || body.scrollHeight <= body.clientHeight + 1, [body.scrollTop, body.scrollHeight, body.clientHeight]);
+  press('back'); press('down'); check('focus on Credits', focused() === 'credits', focused());
+  press('ok'); check('Credits opens', menu.screen === 'credits');
+  check('credits rendered from CREDITS', scr('credits').querySelectorAll('.m-credit').length === CREDITS.length);
+  press('back'); check('back to title from credits', menu.screen === 'title');
+
+  // Pause
+  menu.hide(); check('hide closes', !menu.open && menu.screen === null);
+  menu.show('pause', { missionIndex: 2 });
+  press('back'); check('Esc that opened pause is ignored', menu.open && menu.screen === 'pause');
+  settle();
+  check('pause focus on Resume', focused() === 'resume', focused());
+  check('pause names the mission', menu.el.querySelector('.m-pause-sub').textContent.includes(MISSIONS[2].name));
+  press('down'); check('focus Restart Mission', focused() === 'restart', focused());
+  press('ok'); check('restart asks for confirmation', menu.screen === 'confirm' && focused() === 'back', [menu.screen, focused()]);
+  check('pause stays visible under the dialog', !scr('pause').hidden && scr('pause').classList.contains('m-under'));
+  press('back'); check('Cancel returns to pause on Restart', menu.screen === 'pause' && focused() === 'restart', [menu.screen, focused()]);
+  press('ok'); check('the confirm button is reachable', reach('confirm-yes', 'left', 'up'), focused());
+  press('ok'); check('confirm fires onRestart and closes', last()[0] === 'restart' && !menu.open, last());
+  menu.show('pause'); settle(); press('up'); check('pause wraps to Quit', focused() === 'quit', focused());
+  press('ok'); reach('confirm-yes', 'left', 'up'); press('ok');
+  check('quit fires onQuit and shows the title', last()[0] === 'quit' && menu.screen === 'title', [last(), menu.screen]);
+  menu.hide(); menu.show('pause'); settle(); press('down'); press('down'); press('ok');
+  check('Settings from pause', menu.screen === 'settings');
+  press('pause'); check('Start/P resumes from a pause sub-screen', last()[0] === 'resume' && !menu.open, last());
+  menu.show('pause'); settle(); press('back'); check('Back at the pause root resumes', last()[0] === 'resume' && !menu.open, last());
+  menu.show('pause'); settle(); press('ok'); check('Resume item resumes', last()[0] === 'resume' && !menu.open, last());
+  menu.show('settings'); settle(); press('back');
+  check('a sub-screen opened on its own closes on Back', !menu.open && last()[0] === 'resume', last());
+
+  // Debrief
+  menu.show('debrief', { title: 'Mission accomplished', stats: 'SCORE 12,400 · KILLS 14 · TIME 06:21', canNext: true, missionIndex: 4 });
+  press('ok'); check('debrief ignores early presses', menu.open && menu.screen === 'debrief');
+  settle();
+  check('debrief focus on Next Mission', focused() === 'next', focused());
+  check('stats string split into chips', menu.el.querySelectorAll('.m-deb-stats .m-stat').length === 3 && menu.el.querySelector('.m-deb-stats .m-stat b').textContent === '12,400');
+  press('ok'); check('Next fires onNext', last()[0] === 'next' && !menu.open, last());
+  menu.show('debrief', { title: 'Shot down', stats: [['Score', '900'], ['Kills', 2]], canNext: false, missionIndex: 4 }); settle();
+  check('no Next button after a failure', menu.el.querySelector('[data-screen="debrief"] [data-act="next"]').hidden);
+  check('failure focus on Retry', focused() === 'retry', focused());
+  press('down'); check('down reaches Mission Select', focused() === 'missions', focused());
+  press('ok'); check('debrief opens Mission Select on the current mission', menu.screen === 'missions' && focused() === 'm4', [menu.screen, focused()]);
+  press('back'); check('Back returns to the debrief', menu.screen === 'debrief' && focused() === 'missions', [menu.screen, focused()]);
+  check('Quit is reachable', reach('quit', 'right', 'down'), focused());
+  press('ok'); check('debrief Quit fires onQuit (no confirm)', last()[0] === 'quit' && menu.screen === 'title', [last(), menu.screen]);
+  menu.show('debrief', { canNext: false }); settle(); press('ok');
+  check('Retry fires onRestart', last()[0] === 'restart' && !menu.open, last());
+
+  // API
+  menu.show('title'); settle();
+  menu.setControllerStatus('Controller ready: Test Pad', true);
+  const st = menu.el.querySelector('[data-screen="title"] .m-status');
+  check('controller status text + ok', st.textContent.includes('Test Pad') && st.classList.contains('ok'));
+  menu.setQualityLabel('AUTO · MEDIUM');
+  check('quality label', menu.el.querySelector('.m-qlabel').textContent === 'AUTO · MEDIUM' && !menu.el.querySelector('.m-qlabel').hidden);
+  const n0 = calls.length, po = settings.perfOverlay;
+  menu.setSetting('perfOverlay', !po);
+  check('setSetting syncs without onSetting', settings.perfOverlay === !po && calls.length === n0 &&
+    menu.el.querySelector(`.m-row[data-key="perfOverlay"] [data-val="${!po}"]`).classList.contains('is-on'));
+  check('setSetting rejects bad values', menu.setSetting('quality', 'potato') === false && menu.setSetting('mouseSens', 99) === true && settings.mouseSens === 3);
+
+  // Pointer: clicks stay inside, segments and sliders work
+  let leaked = 0; const leak = () => leaked++;
+  window.addEventListener('pointerdown', leak); window.addEventListener('mousedown', leak); window.addEventListener('click', leak);
+  menu.show('settings', { tab: 'gameplay' }); step(1 / 60);
+  const diff = settings.difficulty === 'hard' ? 'easy' : 'hard';
+  const hard = menu.el.querySelector(`.m-row[data-key="difficulty"] [data-val="${diff}"]`);
+  hard.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerType: 'mouse', button: 0 }));
+  hard.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+  hard.click();
+  check('clicking a segment sets the value', settings.difficulty === diff && last()[0] === 'set' && last()[1] === 'difficulty', settings.difficulty);
+  menu.el.querySelector('.m-tab[data-tab="audio"]').click();
+  check('clicking a tab switches it', !scr('settings').querySelector('[data-tabpanel="audio"]').hidden);
+  const sl = menu.el.querySelector('.m-row[data-key="music"] .m-slider'), r = sl.getBoundingClientRect();
+  const pe = (type, fx) => sl.dispatchEvent(new PointerEvent(type, { bubbles: true, pointerType: 'mouse', button: 0, pointerId: 7, clientX: r.left + r.width * fx, clientY: r.top + r.height / 2 }));
+  pe('pointerdown', 0.5); pe('pointermove', 0.25); pe('pointerup', 0.25);
+  check('dragging a slider sets it', near(settings.music, 0.25, 0.011), settings.music);
+  const swRow = menu.el.querySelector('.m-row[data-key="subtitles"]'), sub0 = settings.subtitles;
+  swRow.querySelector('.m-label').click();
+  check('clicking a toggle row flips it', settings.subtitles === !sub0);
+  menu.el.querySelector('.m-row[data-key="subtitles"]').closest('.m-tabpanel').querySelector('[data-act="reset-tab"]').click();
+  check('Restore defaults resets the tab', settings.music === DEFAULT_SETTINGS.music && settings.subtitles === DEFAULT_SETTINGS.subtitles && settings.master === DEFAULT_SETTINGS.master);
+  check('pointer events never leak to window', leaked === 0, leaked);
+  window.removeEventListener('pointerdown', leak); window.removeEventListener('mousedown', leak); window.removeEventListener('click', leak);
+  menu.show('missions', { selected: 6 }); step(1 / 60);
+  check('show(missions, {selected})', focused() === 'm6' && menu.el.querySelector('.m-dname').textContent === MISSIONS[6].name, focused());
+  menu.el.querySelector('.m-mis[data-mission="9"]').click();
+  check('clicking a mission selects without launching', menu.open && focused() === 'm9' && last()[0] !== 'start');
+  menu.el.querySelector('[data-screen="missions"] [data-act="launch"]').click();
+  check('Launch button starts the selected mission', last()[0] === 'start' && last()[1] === 9 && !menu.open, last());
+  check('every screen visited', ['title', 'missions', 'pause', 'debrief', 'settings', 'controls', 'credits', 'confirm'].every((s) => visited.has(s)), [...visited]);
+  check('navigation sounds fired', sounds.move > 0 && sounds.select > 0 && sounds.back > 0 && sounds.adjust > 0, sounds);
+
+  // Restore the stored settings (the game shares this origin)
+  for (const key of Object.keys(DEFAULT_SETTINGS)) menu.setSetting(key, before[key]);
+  menu.hide();
+  try { if (backup === null) localStorage.removeItem('wingnut.settings'); else localStorage.setItem('wingnut.settings', backup); } catch { /* blocked */ }
+  calls.length = 0;
+  const fails = results.filter((x) => !x.ok).length;
+  console.log(fails ? `MENU_FAIL ${fails}/${results.length} checks failed` : `MENU_OK ${results.length} checks · screens ${[...visited].join(',')} · sounds ${JSON.stringify(sounds)}`);
+}
+
+await runSelfTest().catch((e) => console.log('MENU_FAIL exception ' + (e && e.stack || e)));
+selfTest = false;
+
+// ---- screenshot / manual mode: ?screen=title|missions|pause|debrief|settings|controls|credits|confirm ------------
+const want = params.get('screen') || 'title';
+menu.setControllerStatus(params.get('pad') === '0' ? 'No controller detected. Press a button on it, or fly with the keyboard.' : 'Controller ready: Xbox Wireless Controller', params.get('pad') !== '0');
+menu.setQualityLabel('AUTO · MEDIUM');
+if (params.get('dev')) menu.setDevice(params.get('dev'));
+if (want === 'pause' || want === 'confirm') menu.show('pause', { missionIndex: 2 });
+else if (want === 'debrief') {
+  const win = params.get('win') !== '0';
+  menu.show('debrief', win ? { title: 'Mission accomplished', stats: 'SCORE 48,250 · KILLS 23 · TIME 07:42', canNext: true, missionIndex: 2 }
+    : { title: 'Shot down', stats: 'SCORE 12,400 · PHASE 2/3 · KILLS 9', canNext: false, missionIndex: 2 });
+} else if (want === 'title') menu.show('title');
+else { menu.show('title'); menu.show(want, { tab: params.get('tab') || undefined, selected: params.has('sel') ? Number(params.get('sel')) : undefined }); }
+settle();
+if (want === 'confirm') { press('up'); press('ok'); }
+for (const n of (params.get('nav') || '').split(',').filter(Boolean)) press(n);
+if (params.get('dev')) menu.setDevice(params.get('dev'));
+console.log(`MENU_SCREEN ${menu.screen} focus=${focused()}`);
+
+// ---- live loop with the real input module (keyboard + gamepad) -------------------------------------------------
+const input = new Input(window);
+window.addEventListener('keydown', (e) => {
+  if (menu.open || playing < 0) return;
+  if (e.code === 'KeyK') { ground(); menu.show('debrief', { title: 'Shot down', stats: 'SCORE 3,150 · KILLS 4', canNext: false, missionIndex: playing }); }
+  if (e.code === 'KeyL') { ground(); menu.show('debrief', { title: 'Mission accomplished', stats: 'SCORE 21,900 · KILLS 17', canNext: playing < MISSIONS.length - 1, missionIndex: playing }); }
+});
+let t0 = performance.now();
+function loop(now) {
+  const dt = Math.min(0.05, (now - t0) / 1000); t0 = now;
+  input.update(dt);
+  if (menu.open) menu.update(dt, input);
+  else if (playing >= 0 && input.pausePressed) { banner.hidden = true; menu.show('pause', { missionIndex: playing }); }
+  else if (playing >= 0) banner.hidden = false;
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
