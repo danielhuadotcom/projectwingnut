@@ -30,6 +30,12 @@ import * as THREE from 'https://cdnjs.cloudflare.com/ajax/libs/three.js/0.170.0/
 // target). Aircraft with `holdFire === true` never fire (fireGun / fireMissile refuse: the game's attack slots). An
 // optional damageFilter(target, damage, shooter, kind, missile) lets the game adjust damage before it is applied.
 //
+// Missiles carry per-shot kinematics and fuse (maxSpeed, boostTime, drag, life, fuse; like turnScale), reset to the missile*
+// settings on every launch: the onMissileLaunch callback may give a shot its own profile (the game's player-team missiles).
+// At low frame rates (dt > 1/50 s) missiles fly in up to 3 substeps of <= 1/60 s (guidance, motion and the swept fuse per
+// substep, targets placed back along their velocity to where they were at each substep's end), so steering and hit rates
+// match 60 fps.
+//
 // flakPuff(position) is the light AA burst (brief flash, a few sparks, a lingering dark smoke puff: ~17 particles,
 // explode(p, 0.3) is ~80). delayEffect(kind, position, ...) runs an explosion / aircraft death / terrain impact a frame
 // or more later, to spread a big effect bundle over frames.
@@ -785,6 +791,12 @@ export class Missile {
     this.unguided = false;                       // fired without a target: flies straight for its whole life
     this.groundLaunch = false;                   // fired by an `isGround` launcher (pops up, no rail drop)
     this.turnScale = 1;                          // per-shot multiplier on the turn limit (game balance hook)
+    // per-shot kinematics (game balance hook like turnScale): reset to the Weapons missile* values on every launch
+    this.maxSpeed = 620;                         // m/s at burnout
+    this.boostTime = 2.2;                        // s of motor burn after the rail drop
+    this.drag = 1.1e-4;                          // coast drag: dv/dt = -k v^2
+    this.life = 6;                               // s before the self-destruct
+    this.fuse = 14;                              // m proximity fuse radius
     this.dud = false;                            // scripted miss: homes on a point missBy m beside its target, never fuses
     this.missBy = 0;
     this.missSide = 1;                           // which side of the target the dud passes (+1 / -1)
@@ -977,6 +989,7 @@ export class Weapons {
     this._camPos = new THREE.Vector3();
     this._hasCam = false;
     this._dt = 0;
+    this._tOff = 0;                               // s a missile substep ends before the frame's end (targets interpolated back)
     this._missileSerial = 0;
     this._stats = { bullets: 0, missiles: 0, debris: 0, emitters: 0, flares: 0, drawCalls: 0 };
   }
@@ -1548,6 +1561,8 @@ export class Weapons {
     m.smokeAcc = rnd(); m.flameAcc = rnd();
     m.seed = rnd(); m.id = ++this._missileSerial;
     m.turnScale = 1;                       // per-shot multiplier on the turn limit (game balance hook)
+    m.maxSpeed = this.missileMaxSpeed; m.boostTime = this.missileBoostTime; m.drag = this.missileDrag; m.life = this.missileLife;   // per-shot kinematics
+    m.fuse = this.missileFuse;             //   and fuse (likewise)
     m.dud = false; m.missBy = 0; m.missSide = 1; m.lethal = false;   // pooled: the launch callback may set these
     m.ax = 0; m.ay = 0; m.az = 0;          // pooled: guidance lag state (_guide's own reset never fires: it starts after the rail drop)
     m.mesh.updateMatrix(); m.mesh.matrixWorld.copy(m.mesh.matrix);
@@ -1567,9 +1582,18 @@ export class Weapons {
     const arr = this.missiles;
     let w = 0, nb = 0, nf = 0;
     const fa = this._flameAttr.array;
+    // low frame rate (dt > 1/50 s): up to 3 substeps of <= 1/60 s per missile (60 fps and above: one step, as before)
+    const nSub = dt > 1 / 50 ? Math.min(3, Math.ceil(dt * 60 - 1e-6)) : 1, sub = dt / nSub;
     for (let i = 0; i < arr.length; i++) {
       const m = arr[i];
-      if (m.alive) this._stepMissile(m, list);
+      if (m.alive) {
+        if (nSub === 1) this._stepMissile(m, list);
+        else {
+          this._dt = sub;
+          for (let k = 0; k < nSub && m.alive; k++) { this._tOff = (nSub - 1 - k) * sub; this._stepMissile(m, list); }
+          this._dt = dt; this._tOff = 0;
+        }
+      }
       if (!m.alive) { m.owner = null; m.target = null; m.decoyedFrom = null; this._missilePool.push(m); continue; }
       arr[w++] = m;
       m.mesh.updateMatrix();
@@ -1604,12 +1628,12 @@ export class Weapons {
       if (!m.groundLaunch) m.velocity.y -= G * dt;               // free fall off the rail, motor not lit yet
     } else {
       if (!m.ignited) this._ignite(m);
-      const boostEnd = this.missileDropTime + this.missileBoostTime;
+      const boostEnd = this.missileDropTime + m.boostTime;
       m.boosting = m.age < boostEnd;
       _v1.copy(m.forward);                                       // old nose direction
       if (m.target) this._guide(m);
-      if (m.boosting) m.speed = Math.min(this.missileMaxSpeed, m.speed + m.boostAccel * dt);
-      else m.speed = Math.max(this.missileMinSpeed, m.speed - this.missileDrag * m.speed * m.speed * dt);
+      if (m.boosting) m.speed = Math.min(m.maxSpeed, m.speed + m.boostAccel * dt);
+      else m.speed = Math.max(this.missileMinSpeed, m.speed - m.drag * m.speed * m.speed * dt);
       m.speed = Math.max(this.missileMinSpeed * 0.5, m.speed - G * m.forward.y * dt * 0.5);   // climbing costs speed
       const fw = m.forward, sp = m.speed;
       m.velocity.x = fw.x * sp; m.velocity.y = fw.y * sp; m.velocity.z = fw.z * sp;
@@ -1630,17 +1654,17 @@ export class Weapons {
     //      the target's frame); radius = max(missileFuse, 0.8 * target.hitRadius) so big ground targets (ships) fuse at
     //      their hull. A dud only airbursts, harmlessly, and only if something comes within dudBurstRadius (it aims wide).
     if (m.age > this.missileArmTime) {
-      const F = m.dud ? this.dudBurstRadius : this.missileFuse;
+      const F = m.dud ? this.dudBurstRadius : m.fuse;
       const ax = m.prev.x, ay = m.prev.y, az = m.prev.z, bx = m.position.x, by = m.position.y, bz = m.position.z;
-      const own = m.owner, tl = this._listFor(own, list);
+      const own = m.owner, tl = this._listFor(own, list), o = this._tOff, od = o + dt;   // (substep: target positions o s back)
       let best = null, bestU = 2, px = 0, py = 0, pz = 0;
       for (let j = 0; j < tl.length; j++) {
         const T = tl[j];
         if (T === own || Weapons._isDead(T)) continue;
         const tr = T.hitRadius, fr = typeof tr === 'number' && tr * 0.8 > F ? tr * 0.8 : F, R2 = fr * fr;
         const tp = T.position, tv = T.velocity || _zero;
-        const sx = ax - (tp.x - tv.x * dt), sy = ay - (tp.y - tv.y * dt), sz = az - (tp.z - tv.z * dt);
-        const ex = bx - tp.x, ey = by - tp.y, ez = bz - tp.z;
+        const sx = ax - (tp.x - tv.x * od), sy = ay - (tp.y - tv.y * od), sz = az - (tp.z - tv.z * od);
+        const ex = bx - (tp.x - tv.x * o), ey = by - (tp.y - tv.y * o), ez = bz - (tp.z - tv.z * o);
         const dx = ex - sx, dy = ey - sy, dz = ez - sz;
         const len2 = dx * dx + dy * dy + dz * dz;
         let u = len2 > 1e-9 ? -(sx * dx + sy * dy + sz * dz) / len2 : 0;
@@ -1659,8 +1683,8 @@ export class Weapons {
       const I = m.target;
       if (I !== null && I.immortal === true && !Weapons._isDead(I)) {
         const tp = I.position, tv = I.velocity || _zero;
-        const sx = ax - (tp.x - tv.x * dt), sy = ay - (tp.y - tv.y * dt), sz = az - (tp.z - tv.z * dt);
-        const dx = bx - tp.x - sx, dy = by - tp.y - sy, dz = bz - tp.z - sz;
+        const sx = ax - (tp.x - tv.x * od), sy = ay - (tp.y - tv.y * od), sz = az - (tp.z - tv.z * od);
+        const dx = bx - (tp.x - tv.x * o) - sx, dy = by - (tp.y - tv.y * o) - sy, dz = bz - (tp.z - tv.z * o) - sz;
         const len2 = dx * dx + dy * dy + dz * dz;
         let u = len2 > 1e-9 ? -(sx * dx + sy * dy + sz * dz) / len2 : 0;
         u = u < 0 ? 0 : u > 1 ? 1 : u;
@@ -1671,8 +1695,8 @@ export class Weapons {
       const D = m.target;
       if (D && D.isDecoy && D.alive) {
         const tp = D.position, tv = D.velocity, F2 = this.flareFuse * this.flareFuse;
-        const sx = ax - (tp.x - tv.x * dt), sy = ay - (tp.y - tv.y * dt), sz = az - (tp.z - tv.z * dt);
-        const ex = bx - tp.x, ey = by - tp.y, ez = bz - tp.z;
+        const sx = ax - (tp.x - tv.x * od), sy = ay - (tp.y - tv.y * od), sz = az - (tp.z - tv.z * od);
+        const ex = bx - (tp.x - tv.x * o), ey = by - (tp.y - tv.y * o), ez = bz - (tp.z - tv.z * o);
         const dx = ex - sx, dy = ey - sy, dz = ez - sz;
         const len2 = dx * dx + dy * dy + dz * dz;
         let u = len2 > 1e-9 ? -(sx * dx + sy * dy + sz * dz) / len2 : 0;
@@ -1692,7 +1716,7 @@ export class Weapons {
       if (p.y < h || p.y < 0) { this._detonate(m, null, p.x, Math.max(h, 0), p.z); return; }
     }
     // ---- end of life: self-destruct airburst
-    if (m.age >= this.missileLife) this._detonate(m, null, p.x, p.y, p.z);
+    if (m.age >= m.life) this._detonate(m, null, p.x, p.y, p.z);
   }
 
   /** True while m is guiding onto a live `isGround` target and is within ~60 m (+ its hitRadius) of it. */
@@ -1708,8 +1732,8 @@ export class Weapons {
     m.boosting = true;
     m.forward.normalize();
     m.speed = Math.max(m.velocity.length(), 60);
-    m.boostAccel = Math.max(60, (this.missileMaxSpeed - m.speed) / this.missileBoostTime);
-    const f = m.forward, v = m.velocity, t = this.time;
+    m.boostAccel = Math.max(60, (m.maxSpeed - m.speed) / Math.max(0.1, m.boostTime));   // per-shot profile
+    const f = m.forward, v = m.velocity, t = this.time - this._tOff;
     const nx = m.position.x - f.x * NOZZLE_OFFSET, ny = m.position.y - f.y * NOZZLE_OFFSET, nz = m.position.z - f.z * NOZZLE_OFFSET;
     this._glow(nx, ny, nz, v.x, v.y, v.z, 0.1, 6, 3, 16, 10, 5, 0.1, 0, 0.6, 0.5, t);
     for (let k = 0; k < 6; k++) {
@@ -1720,10 +1744,10 @@ export class Weapons {
 
   /** True proportional navigation with a turn-rate cap; the seeker drops the track beyond ~90° off boresight. */
   _guide(m) {
-    const T = m.target, dt = this._dt, boostEnd = this.missileDropTime + this.missileBoostTime;
+    const T = m.target, dt = this._dt, boostEnd = this.missileDropTime + m.boostTime;
     if (Weapons._isDead(T)) { m.target = null; return; }
-    const dir = m.forward, tp = T.position, tv = T.velocity || _zero;
-    let rx = tp.x - m.position.x, ry = tp.y - m.position.y, rz = tp.z - m.position.z;
+    const dir = m.forward, tp = T.position, tv = T.velocity || _zero, o = this._tOff;   // (substep: target o s back)
+    let rx = tp.x - tv.x * o - m.position.x, ry = tp.y - tv.y * o - m.position.y, rz = tp.z - tv.z * o - m.position.z;
     if (m.missBy > 0 && !T.isDecoy) {
       // scripted near miss: home on a point beside the target, across the line of sight (and a little above it)
       const h = Math.sqrt(rx * rx + rz * rz);
@@ -1770,7 +1794,7 @@ export class Weapons {
   }
 
   _missileTrail(m) {
-    const dt = this._dt, t = this.time, f = m.forward, v = m.velocity;
+    const dt = this._dt, t = this.time - this._tOff, f = m.forward, v = m.velocity;
     const cx = m.position.x - f.x * NOZZLE_OFFSET, cy = m.position.y - f.y * NOZZLE_OFFSET, cz = m.position.z - f.z * NOZZLE_OFFSET;
     const px = m.prev.x - f.x * NOZZLE_OFFSET, py = m.prev.y - f.y * NOZZLE_OFFSET, pz = m.prev.z - f.z * NOZZLE_OFFSET;
     const ddx = cx - px, ddy = cy - py, ddz = cz - pz;
@@ -1838,7 +1862,7 @@ export class Weapons {
         if (this.onKill) this.onKill(victim, owner);
         this.aircraftDeath(victim);
       }
-    } else if (air || (m.age >= this.missileLife && y > this._ground(x, z) + 1)) {
+    } else if (air || (m.age >= m.life && y > this._ground(x, z) + 1)) {
       this._tmpPos.set(x, y, z);
       this._tmpVel.copy(m.velocity).multiplyScalar(air ? 0.15 : 0.3);
       this.explode(this._tmpPos, air ? 0.7 : 0.45, this._tmpVel);     // airburst on a flare / self-destruct

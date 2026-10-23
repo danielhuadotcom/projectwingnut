@@ -64,6 +64,13 @@ const DIFFICULTY = {
   mercenary: { armor: 1.0,  enemyHp: 1.3,  skill: 0.2,   aggressors: Infinity, missileTurn: 0.8, groups: ['hard', 'mercenary'], playerShare: 0.6 },
 };
 const ENEMY_MISSILE_TURN = 0.6;  // enemy shots turn at 60% of the player's rate (difficulty adjusts it)
+// Player-team missiles (the player's and the squadmates'): a lock means the target is reachable. Faster and longer-legged
+// than the global (enemy, dodgeable) profile: from the 2.8 km lock range they run down a bandit fleeing straight at full
+// speed in ~6 s. turnScale 1.3 keeps the old turn radius at the higher speed (1000 / 760 m/s), so close crossing shots
+// don't get worse; a 13 m fuse (enemy missiles are cut to 11 m to stay dodgeable) catches hard-turning targets again
+// while evading veterans and aces still mostly get away (14 m+ makes them markedly easier to hit). Per-shot values on
+// the Missile, set in onMissileLaunch.
+const PLAYER_MISSILE = { maxSpeed: 1000, boostTime: 2.4, drag: 0.7e-4, life: 8.5, turnScale: 1.3, fuse: 13 };
 const WORLD_UP = new THREE.Vector3(0, 1, 0);
 const PARAMS = new URLSearchParams(location.search);
 
@@ -959,6 +966,10 @@ class Game {
     this.audio.explosion(d * 0.3);
   }
   onMissileLaunch(m) {
+    if (m.owner && m.owner.team === 'player') {   // the player's and the squadmates' shots: the fast profile
+      const P = PLAYER_MISSILE;
+      m.maxSpeed = P.maxSpeed; m.boostTime = P.boostTime; m.drag = P.drag; m.life = P.life; m.turnScale = P.turnScale; m.fuse = P.fuse;
+    }
     if (this.squad && this.squad.onMissileLaunch(m, this.weapons)) return;   // a squadmate's shot: lethal or a dud
     if (m.owner !== this.player) m.turnScale = this.enemyMissileTurn || ENEMY_MISSILE_TURN;
     if (m.owner !== this.player && m.target === this.player) { this.message('MISSILE LAUNCH', false, 2); this.say('missileIncoming', 3); }

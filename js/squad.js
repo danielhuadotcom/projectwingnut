@@ -166,8 +166,9 @@ export class Squadron {
     const ms = weapons.missiles;
     for (let i = 0; i < ms.length; i++) { const o = ms[i]; if (o !== m && o.alive && o.lethal) pending++; }
     const T = m.target;
-    if (T && !T.isGround && !(T.bossBars > 0) && this.killAllowed(pending)) { m.lethal = true; m.turnScale = 1.2; this.stats.lethal++; }
-    else { m.dud = true; m.missBy = 35 + Math.random() * 30; m.missSide = Math.random() < 0.5 ? -1 : 1; m.turnScale = 0.75; this.stats.duds++; }
+    // turn scales relative to the player-team missile profile the game already gave this shot (Game.onMissileLaunch)
+    if (T && !T.isGround && !(T.bossBars > 0) && this.killAllowed(pending)) { m.lethal = true; m.turnScale *= 1.2; this.stats.lethal++; }
+    else { m.dud = true; m.missBy = 35 + Math.random() * 30; m.missSide = Math.random() < 0.5 ? -1 : 1; m.turnScale *= 0.75; this.stats.duds++; }
     return true;
   }
   /** Weapons damageFilter hook: a lethal squadmate missile finishes its victim; squadmate cannon rounds do light damage
