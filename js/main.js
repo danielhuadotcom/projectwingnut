@@ -22,6 +22,7 @@ import { TouchControls } from './touch.js';
 import { Music } from './music.js';
 import { Flights, SLOTS as FLIGHT_SLOTS, mulberry32, isHolding, orbitRadius, HOLD_MAX, SCRAMBLE_MAX } from './flights.js';
 import { InfinityRun } from './infinity.js';
+import { applyTimeOfDay } from './timeofday.js';
 
 // Fallback campaign (replaced by js/missions.js data once it exists): PW-style missions made of phases of groups.
 const FALLBACK_AIR_TYPES = {
@@ -60,31 +61,36 @@ const PLAYER_ARMOR = 0.5;      // incoming damage multiplier for the player
 const ENEMY_HEALTH = 100;      // two missiles (65 each) kill, as for most fighters in PW; ~25 cannon hits
 const MAX_ENEMIES = 6;
 // Difficulty: player damage taken, enemy hit points and skill, how many bandits may attack at once (the rest hold
-// off; the same cap applies to the bandits hunting each squadmate, whose extras keep pursuing with weapons held), enemy
-// missile agility, which difficulty-specific mission groups spawn, and the player's share of the armed bandits while
+// off; the same cap applies to the bandits hunting each squadmate, whose extras keep pursuing with weapons held), which
+// difficulty-specific mission groups spawn, and the player's share of the armed bandits while
 // squadmates fly (the rest go after the squadmates; js/squad.js). Bandit flights (js/flights.js): flightCap = most
 // flights the commit timer lets be committed at once, stagger = s between its releases (a phase's own stagger, in
 // Normal seconds, scales by the same ratio), playerMissiles = most enemy missiles after the player at once (a bandit
 // holds its shot beyond that, or within 1.5 s of the last launch at the same target: EnemyBrain.canLaunchAt). Flak
 // (js/targets.js, header: Flak): aaGuns = most AA guns firing at the player at once (the nearest in sight; the others
-// throw an occasional harmless barrage), aaError = their aim error (x the bursts' spread; 1 = the old aim).
+// throw an occasional harmless barrage), aaError = their aim error (x the bursts' spread; 1 = the old aim). Missiles fly
+// the same on every difficulty (ENEMY_MISSILE_TURN, PLAYER_MISSILE): harder ones only put more of them in the air.
 const DIFFICULTY = {
-  easy:      { armor: 0.35, enemyHp: 0.8,  skill: -0.15, aggressors: 1,        missileTurn: 0.5, groups: [],                      playerShare: 0.3, flightCap: 1, stagger: 30, playerMissiles: 1, aaGuns: 2,  aaError: 1.6 },
-  normal:    { armor: 0.5,  enemyHp: 1.0,  skill: 0,     aggressors: 2,        missileTurn: 0.6, groups: [],                      playerShare: 0.4, flightCap: 2, stagger: 20, playerMissiles: 2, aaGuns: 4,  aaError: 1.3 },
-  hard:      { armor: 0.7,  enemyHp: 1.15, skill: 0.1,   aggressors: 4,        missileTurn: 0.7, groups: ['hard'],                playerShare: 0.5, flightCap: 2, stagger: 15, playerMissiles: 3, aaGuns: 6,  aaError: 1.1 },
-  mercenary: { armor: 1.0,  enemyHp: 1.3,  skill: 0.2,   aggressors: Infinity, missileTurn: 0.8, groups: ['hard', 'mercenary'], playerShare: 0.6, flightCap: 3, stagger: 10, playerMissiles: 4, aaGuns: 14, aaError: 1.0 },
+  easy:      { armor: 0.35, enemyHp: 0.8,  skill: -0.15, aggressors: 1,        groups: [],                      playerShare: 0.3, flightCap: 1, stagger: 30, playerMissiles: 1, aaGuns: 2,  aaError: 1.6 },
+  normal:    { armor: 0.5,  enemyHp: 1.0,  skill: 0,     aggressors: 2,        groups: [],                      playerShare: 0.4, flightCap: 2, stagger: 20, playerMissiles: 2, aaGuns: 4,  aaError: 1.3 },
+  hard:      { armor: 0.7,  enemyHp: 1.15, skill: 0.1,   aggressors: 4,        groups: ['hard'],                playerShare: 0.5, flightCap: 2, stagger: 15, playerMissiles: 3, aaGuns: 6,  aaError: 1.1 },
+  mercenary: { armor: 1.0,  enemyHp: 1.3,  skill: 0.2,   aggressors: Infinity, groups: ['hard', 'mercenary'], playerShare: 0.6, flightCap: 3, stagger: 10, playerMissiles: 4, aaGuns: 14, aaError: 1.0 },
 };
-const ENEMY_MISSILE_TURN = 0.6;  // enemy shots turn at 60% of the player's rate (difficulty adjusts it)
+const ENEMY_MISSILE_TURN = 0.6;  // enemy shots: turn-limit scale, the same on every difficulty (harder ones only fire more)
 // Player-team missiles (the player's and the squadmates'): a lock means the target is reachable. Faster and longer-legged
 // than the global (enemy, dodgeable) profile: from the 2.8 km lock range they run down a bandit fleeing straight at full
 // speed in ~6 s. turnScale 1.3 keeps the old turn radius at the higher speed (1000 / 760 m/s), so close crossing shots
-// don't get worse; a 13 m fuse (enemy missiles are cut to 11 m to stay dodgeable) catches hard-turning targets again
-// while evading veterans and aces still mostly get away (14 m+ makes them markedly easier to hit). Per-shot values on
-// the Missile, set in onMissileLaunch.
+// don't get worse; a 13 m fuse (enemy missiles are cut to 11 m to stay dodgeable). With the pursuit-style guidance
+// (js/weapons.js _guide) tail chases, gentle turns and head-ons inside ~1.5 km connect, while high crossing angles,
+// max-range shots at a hard turner and evading veterans and aces mostly miss. Per-shot values on the Missile, set in
+// onMissileLaunch.
 const PLAYER_MISSILE = { maxSpeed: 1000, boostTime: 2.4, drag: 0.7e-4, life: 8.5, turnScale: 1.3, fuse: 13 };
 const WORLD_UP = new THREE.Vector3(0, 1, 0);
 const PARAMS = new URLSearchParams(location.search);
 
+const AIR_SLACK = 6000;    // m: a later phase's air groups, or a wave entering mid-phase, re-centre on a player this far
+                           //   from the phase's anchor (else the authored, identical layout)
+const START_BACK = 2500;   // m: the player starts this far behind the sortie frame (missions[].startBack overrides)
 const RIDGE_MARGIN = 20;   // m of clear ground kept between a land unit's footprint and the tunnel ridge's rock
 // Allied story units (missions[].allies; js/allies.js): placement
 const ALLY_SITE_GAP = 600;      // m: an allied group's site stays this clear of live enemy units,
@@ -273,7 +279,6 @@ class Game {
     W.missileTurnRateBoost = 2.4; W.missileTurnRateCoast = 1.3; W.missileSeekerCos = Math.cos(THREE.MathUtils.degToRad(60));
     W.missileFuse = 11; W.missileLag = 0.18; W.missileBlindRange = 90;
     W.missileLife = 8.5; W.missileMaxSpeed = 760; W.missileBoostTime = 2.6;
-    this.enemyMissileTurn = ENEMY_MISSILE_TURN;
     this.weapons.missileCooldown = 0.2;          // hardpoints pace the player; this only stops double-taps in one frame
     this.applyQuality(this.quality);
     window.addEventListener('resize', () => this.resize());
@@ -492,9 +497,17 @@ class Game {
     const list = this.missions, n = list.length;
     this.missionIndex = i;
     const M = this.mission = list[((i % n) + n) % n];
+    this.applyTime(M.time);                // lighting preset (js/timeofday.js), before anything spawns
     this.resetPlayer();
     this.setSortieFrame();                 // the frame every phase of the mission is placed in (spawnGroup)
     this._nextAnchor = null;               // (nextPhase: later phases are anchored where the previous one's targets stood)
+    // a quiet lead-in: the player starts mission.startBack m behind the sortie frame (default START_BACK); the layout
+    // stays where the frame puts it
+    { const p = this.player, F = this.sortieFrame, back = M.startBack ?? START_BACK, w = this.world;
+      const x = F.x - Math.sin(F.bearing) * back, z = F.z + Math.cos(F.bearing) * back;
+      let y = F.y;   // over the terrain along the first 3 km of the heading, and out of the tunnel ridge
+      for (let d = 0; d <= 3000; d += 250) y = Math.max(y, w.getHeight(x + Math.sin(F.bearing) * d, z - Math.cos(F.bearing) * d) + 450);
+      p.position.set(x, this.clearSpawnY(x, y, z), z); }
     if (this.flights) this.flights.clear();
     (this._pending || (this._pending = [])).length = 0; this._sites = {};
     this.chase.snap(this.player);
@@ -515,6 +528,14 @@ class Game {
     this.say('sortieStart', 3);
     this.nextPhase();
   }
+  /** Lighting preset `name` (js/timeofday.js; ?tod=<name> overrides it): values only, rebuilds the sky, shadow and
+   *  environment only when the preset changes. */
+  applyTime(name) {
+    const want = PARAMS.has('tod') ? PARAMS.get('tod') : this.bench ? 'day' : name;   // benchmarks stay comparable: day
+    if (want === this.timeOfDay && this._todApplied) return;
+    this.timeOfDay = applyTimeOfDay(want, { world: this.world, post: this.post, weapons: this.weapons });
+    this._todApplied = true;
+  }
   /** Spawn the next phase of the current mission, or complete the mission after the last one. */
   nextPhase() {
     const M = this.mission;
@@ -531,7 +552,12 @@ class Game {
     // phase is laid out around where the fight is, the same way on every attempt
     const F = this.sortieFrame || this.setSortieFrame();
     if (this._nextAnchor) { F.x = this._nextAnchor.x; F.z = this._nextAnchor.z; }
+    // air groups go around the anchor too, unless a later phase finds the player more than AIR_SLACK from it: then
+    // around the player (time to engagement; surface groups and the layout's shape stay as authored)
+    const pp = this.player.position;
+    this._airFrame = this.phaseIndex > 0 && Math.hypot(pp.x - F.x, pp.z - F.z) > AIR_SLACK ? { x: pp.x, y: F.y, z: pp.z, bearing: F.bearing } : null;
     this.seeded(this.placementSeed(-1), () => this.spawnAllies(false));   // allied units first: enemy groups keep clear
+    this._line = null; this._lineGroups = P.groups.filter((g) => g.area === 'line' && spawns(g)).length;   // (spawnSurfaceGroup)
     const place = (pass) => P.groups.forEach((g, gi) => {   // pass 1: groups placed from others (near)
       if (!spawns(g) || !!g.near !== (pass === 1)) return;
       if (g.after > 0) { Q.push({ g, gi, at: this.time + g.after, site: null }); return; }   // enters later (spawnPending)
@@ -547,8 +573,10 @@ class Game {
     let ax = 0, az = 0, an = 0;   // the next phase's anchor: the centre of this phase's required surface sites, if any
     for (const g of P.groups) if (g.kind !== 'air' && spawns(g) && !g.optional && !(g.after > 0) && S[g.type]) { ax += S[g.type].x; az += S[g.type].z; an++; }
     if (an) this._nextAnchor = { x: ax / an, z: az / an };
+    this._fight = an ? this._nextAnchor : { x: F.x, z: F.z };   // where this phase's fight is (spawnPending, fleetApproach)
     this.seeded(this.placementSeed(-2), () => this.spawnAllies(true));    // allied units placed beside this phase's enemies
     if (this.flights) this.flights.restart(this.time);
+    this._phaseLive = false;               // (updateGame: a phase that opens empty waits for its delayed groups)
     this.rebuildCombatList();
     this.directBandits();                  // the new bandits take whichever hunting role is short
     this._slotT = 0;                       // and attack slots (who may fire) are handed out on the next frame
@@ -609,6 +637,7 @@ class Game {
    *  starts (spawnGroup), every draw from the round's seed. */
   nextRound() {
     const plan = this.infinity.nextRound();
+    this.applyTime(plan.time);             // INFINITY rotates the lighting every few rounds (js/infinity.js timeForRound)
     this.applyRamp(plan.ramp);
     this.infT = -1; this.waveTimer = 0;
     this.wave = plan.round; this.phaseIndex = plan.round - 1;
@@ -670,7 +699,7 @@ class Game {
   /** A round's ramp (js/infinity.js rampAt) as the difficulty: the fields applySetting('difficulty') sets. */
   applyRamp(R) {
     const d = this.diff = R.diff;
-    this.armor = d.armor; this.skillOffset = d.skill; this.enemyMissileTurn = d.missileTurn;
+    this.armor = d.armor; this.skillOffset = d.skill;
     if (this.player) this.player.missileCap = d.playerMissiles;
   }
   /** Out of INFINITY (campaign sortie, quit to title): a run still going ends (it counts toward the local best), and the
@@ -760,7 +789,8 @@ class Game {
       : { ahead: 0, high: 0, low: 0, left: -Math.PI / 2, right: Math.PI / 2, behind: Math.PI }[g.position];
     const bearing = F.bearing + (rel !== undefined ? rel : (rand() - 0.5) * 1.6) + (rand() - 0.5) * 0.35;
     const anchor = g.kind === 'air' && g.near && !this.airTypes[g.near] ? site || (this._sites && this._sites[g.near]) || this.enemyCentroid(g.near, _site) : null;
-    const ox = anchor ? anchor.x : F.x, oz = anchor ? anchor.z : F.z;
+    const A = g.kind === 'air' && this._airFrame ? this._airFrame : F;
+    const ox = anchor ? anchor.x : A.x, oz = anchor ? anchor.z : A.z;
     const dist = anchor ? g.distance || 0 : g.distance || (g.kind === 'air' ? 5000 : 7000);
     let cx = THREE.MathUtils.clamp(ox + Math.sin(bearing) * dist, -WORLD_HALF * 0.85, WORLD_HALF * 0.85);
     let cz = THREE.MathUtils.clamp(oz - Math.cos(bearing) * dist, -WORLD_HALF * 0.85, WORLD_HALF * 0.85);
@@ -776,6 +806,7 @@ class Game {
    *  placed in it (spawnGroup), so their layout never depends on where the player has flown since. */
   setSortieFrame() {
     const p = this.player; p.getForward(_fwd);
+    this._airFrame = null;
     return (this.sortieFrame = { x: p.position.x, y: p.position.y, z: p.position.z, bearing: Math.atan2(_fwd.x, -_fwd.z) });
   }
   /** Seed of a campaign placement stream: fixed per mission, phase and group index gi (allies use negative ones). */
@@ -799,6 +830,9 @@ class Game {
       const q = Q[i];
       if (!all && this.time < q.at) continue;
       Q.splice(i--, 1);
+      // a wave entering while the player is far from the phase's anchor enters around the player (time to engagement)
+      const F = this.sortieFrame, C = this._fight || F, pp = this.player.position;
+      if (q.g.kind === 'air' && F && Math.hypot(pp.x - C.x, pp.z - C.z) > AIR_SLACK) this._airFrame = { x: pp.x, y: F.y, z: pp.z, bearing: F.bearing };
       const k = this.spawnGroup(q.g, q.gi, q.site);
       n += k; if (q.g.kind === 'air') air += k;
     }
@@ -816,7 +850,9 @@ class Game {
    * 182 m/s = 38 s), else the bearing on the map farthest from the fleet. Writes out (x, z).
    */
   fleetApproach(g, dist, out, rand = Math.random) {
-    const O = this.sortieFrame || this.setSortieFrame(), p = _v.set(O.x, 0, O.z), F = this.allied.fleetCenter, lim = WORLD_HALF * 0.85;
+    const O = this.sortieFrame || this.setSortieFrame(), F = this.allied.fleetCenter, lim = WORLD_HALF * 0.85, pp = this.player.position;
+    // past the sortie frame's origin, or past the player when they are far from the phase's fight (time to engagement)
+    const C = this._fight || O, p = Math.hypot(pp.x - C.x, pp.z - C.z) > AIR_SLACK ? _v.set(pp.x, 0, pp.z) : _v.set(O.x, 0, O.z);
     let ux = p.x - F.x, uz = p.z - F.z;
     const d = Math.hypot(ux, uz);
     if (d < 300) { ux = Math.cos(O.bearing); uz = Math.sin(O.bearing); }   // over the fleet: from the frame's right
@@ -851,7 +887,7 @@ class Game {
     const typeName = g.type || 'SLEET-2';
     const type = this.airTypes[typeName] || FALLBACK_AIR_TYPES['SLEET-2'];
     const n = Math.max(1, Math.min(g.count || 1, 8));
-    const O = this.sortieFrame || this.setSortieFrame();
+    const O = this._airFrame || this.sortieFrame || this.setSortieFrame();
     const groundH = Math.max(this.world.getHeight(cx, cz), 0);
     const altOff = g.position === 'high' ? 900 : g.position === 'low' ? -350 : (rand() - 0.4) * 600;
     const alt = THREE.MathUtils.clamp(O.y + altOff, groundH + 450, 4500);
@@ -1125,7 +1161,14 @@ class Game {
       for (let tries = 0; tries < 8 && !ok; tries++) {
         if (area === 'convoy') { const d = (i - n / 2) * 45; x = site.x + Math.cos(dirA) * d; z = site.z + Math.sin(dirA) * d; }
         else if (area === 'fleet') { const row = Math.floor(i / 3), col = (i % 3) - 1; x = site.x + Math.cos(dirA) * row * 320 + Math.sin(dirA) * col * 260; z = site.z + Math.sin(dirA) * row * 320 - Math.cos(dirA) * col * 260; }
-        else { const r = (area === 'scattered' ? 1200 : area === 'base' ? 320 : 600) * Math.sqrt(Math.random()), a = Math.random() * Math.PI * 2; x = site.x + Math.cos(a) * r; z = site.z + Math.sin(a) * r; }
+        else if (area === 'line') {
+          // one staggered line ahead along the sortie heading for all of a phase's 'line' groups, their units taking
+          // turns: 900 m apart, 250 m either side, from the first line group's site
+          const L = this._line || (this._line = { x: site.x, z: site.z, groups: 0, n: Math.max(1, this._lineGroups || 1) });
+          if (i === 0 && tries === 0) L.k = L.groups++;
+          const b = this.sortieFrame ? this.sortieFrame.bearing : 0, j = i * L.n + L.k, d = j * 900, lat = (j % 2 ? 1 : -1) * 250;
+          x = L.x + Math.sin(b) * d + Math.cos(b) * lat; z = L.z - Math.cos(b) * d + Math.sin(b) * lat;
+        } else { const r = (area === 'scattered' ? 1200 : area === 'base' ? 320 : 600) * Math.sqrt(Math.random()), a = Math.random() * Math.PI * 2; x = site.x + Math.cos(a) * r; z = site.z + Math.sin(a) * r; }
         if (tries > 0) { x += (Math.random() - 0.5) * 120 * tries; z += (Math.random() - 0.5) * 120 * tries; }
         ok = fits(x, z, hdg);
       }
@@ -1320,7 +1363,7 @@ class Game {
     }
     if (this.flights && m.target && m.target.brain && m.owner && m.owner.team === 'player') this.flights.attacked(m.target, this.time);
     if (this.squad && this.squad.onMissileLaunch(m, this.weapons)) return;   // a squadmate's shot: lethal or a dud
-    if (m.owner !== this.player) m.turnScale = this.enemyMissileTurn || ENEMY_MISSILE_TURN;
+    if (m.owner !== this.player) m.turnScale = ENEMY_MISSILE_TURN;
     if (m.owner !== this.player && m.target === this.player) { this.message('MISSILE LAUNCH', false, 2); this.say('missileIncoming', 3); }
   }
 
@@ -1560,13 +1603,13 @@ class Game {
     } else if (this.infinity) {
       this.updateRounds(dt, aliveEnemies + surfaceAlive);   // INFINITY: rounds, not phases
     } else if (aliveEnemies + surfaceAlive === 0 && p.alive && this._pending && this._pending.length) {
-      this.spawnPending(true);             // the field is clear before a delayed group was due: it enters now
+      if (this._phaseLive) this.spawnPending(true);   // the phase's field was cleared before a delayed group was due: it enters now
     } else if (aliveEnemies + surfaceAlive === 0 && p.alive) {
       this.waveTimer += dt;
       const last = this.phaseIndex >= this.mission.phases.length - 1;
       if (this.waveTimer > 0.1 && this.waveTimer - dt <= 0.1 && !last) { this.score += 1000; this.message('AREA CLEAR', true, 2.5); this.say('waveClear', 2); }
       if (this.waveTimer > (last ? 1.2 : 3.5)) { this.waveTimer = 0; this.nextPhase(); }
-    } else this.waveTimer = 0;
+    } else { this.waveTimer = 0; this._phaseLive = true; }
     // Warnings & audio
     let inbound = 0;
     const ms = weapons.missiles;
@@ -1796,7 +1839,7 @@ class Game {
       case 'difficulty': {
         if (this.infinity) break;          // a run follows its own ramp; the setting applies again when it ends (leaveInfinity)
         const d = this.diff = DIFFICULTY[v] || DIFFICULTY.normal;
-        this.armor = d.armor; this.skillOffset = d.skill; this.enemyMissileTurn = d.missileTurn;
+        this.armor = d.armor; this.skillOffset = d.skill;
         if (this.player) this.player.missileCap = d.playerMissiles;   // enemy missiles after the player at once
         break;
       }

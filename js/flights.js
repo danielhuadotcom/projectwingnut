@@ -12,7 +12,7 @@ import * as THREE from 'https://cdnjs.cloudflare.com/ajax/libs/three.js/0.170.0/
 //   - a scramble's climb-out ends,
 //   - or the commit timer releases it. The timer releases one flight per stagger interval while fewer than the
 //     difficulty's cap of flights are committed, after QUIET_GAP when none is, and past LOITER_MAX stagger intervals
-//     of holding, regardless of the cap.
+//     of holding, regardless of the cap. Slow flights (helicopters) are never released: they defend their site.
 // Triggers are local: committing one flight never commits another. Checks run at 3 Hz, and nothing allocates per frame.
 //
 // Placement keeps time to engagement short (behavior, not distance, makes the variety): holding flights sit within
@@ -64,6 +64,7 @@ class Flight {
     this.loiter = false;               // holding: no role, no attack slot, no fire
     this.mode = 'orbit';               // while holding: 'orbit' | 'escort' | 'climb'
     this.passive = false;              // unarmed: an orbit holds for good, a climb-out ends in transit; never counted
+    this.slow = false;                 // slow types (helicopters): the commit timer never releases it
     this.station = new THREE.Vector3();   // orbit centre, y = holding altitude
     this.radius = 1000; this.dir = 1;  // orbit radius (m) and direction (+1 / -1)
     this.charges = null;               // escort: the aircraft it escorts (array shared by that group's escort flights)
@@ -102,7 +103,7 @@ export class Flights {
     for (const f of this.list) if (!f.live) { F = f; break; }
     if (!F) { F = new Flight(); this.list.push(F); }
     F.live = true; F.mode = mode === 'engage' ? 'orbit' : mode; F.loiter = mode !== 'engage';
-    F.passive = false; F.charges = null; F.since = now; F.committedAt = F.loiter ? -1 : now; F.why = F.loiter ? '' : 'spawn';
+    F.passive = false; F.slow = false; F.charges = null; F.since = now; F.committedAt = F.loiter ? -1 : now; F.why = F.loiter ? '' : 'spawn';
     F.until = mode === 'climb' ? now + CLIMB_TIME : 0;
     F.members.length = 0;
     for (let i = 0; i < n && i < SLOTS.length; i++) {
@@ -111,6 +112,7 @@ export class Flights {
       b.flight = F; b.slotOff.set(s[0] * side, s[1], s[2]);
       if (F.loiter) ac.holdFire = true;
       if (ac.brain.passive) F.passive = true;
+      F.slow = (ac.speedScale || 1) < 0.5;   // too slow to come to the fight in time: the commit timer leaves it be
     }
     F.lead = F.members[0] || null;
     if (F.lead) F.station.copy(F.lead.position);   // fallback orbit (pooled: never a stale one); 'orbit' callers set theirs
@@ -187,7 +189,7 @@ export class Flights {
       if (F.mode === 'climb' && now >= F.until) { this.commit(F, now, 'climb'); committed++; continue; }
       if (F.charges !== null && !this._anyAlive(F.charges)) { this.commit(F, now, 'lost'); committed++; continue; }
       if (p.alive && this._contact(F, p, allies)) { this.commit(F, now, 'contact'); committed++; continue; }
-      if (F.mode === 'climb') continue;
+      if (F.mode === 'climb' || F.slow) continue;   // slow types (helicopters) hold their site until approached or attacked
       holding++;
       const d = lead.position.distanceToSquared(p.position);
       if (d < bestD) { bestD = d; best = F; }

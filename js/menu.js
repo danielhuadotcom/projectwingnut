@@ -730,7 +730,7 @@ export class Menu {
   _renderDetail(i) {
     const m = this.missions[i], D = this._detail;
     if (!m) return;
-    D.eye.textContent = `Mission ${missionNo(m, i)}` + (m.time ? ` · ${m.time} local` : '');
+    D.eye.textContent = `Mission ${missionNo(m, i)}` + (m.clock ? ` · ${m.clock} local` : '');
     D.name.textContent = m.name || `Mission ${i + 1}`;
     D.loc.textContent = m.location || '';
     D.chip.textContent = m.setting || ''; D.chip.hidden = !m.setting;

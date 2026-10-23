@@ -895,8 +895,19 @@ export class Weapons {
     this.missileMaxSpeed = 620;              // m/s at burnout
     this.missileMinSpeed = 140;              // m/s floor while coasting
     this.missileDrag = 1.1e-4;               // coast drag: dv/dt = -k v^2
-    this.missileNavGain = 4;                 // proportional navigation constant N
-    this.missilePursuitGain = 1.2;           // 1/s, small pure-pursuit bias (fixes heading error after the drop)
+    // Air-launched guidance is pursuit-dominant (Ace Combat / Project Wingman feel): midcourse the nose chases a point
+    // only a fraction of the way along the target's flight path (lagged lead pursuit), so missiles arc in behind the
+    // target and a hard turn across their path makes them overshoot; over the last missileTermTime s before the blind
+    // range the lead ramps to full and PN fades in, so good shots (tail chases, gentle turns, head-on) still connect.
+    // Ground launches (SAMs) keep classic proportional navigation + a small pursuit bias.
+    //   a = N Vc (Omega x lambda) + kp v (pursuit dir - nose dir)     (tuned with the headless missile harness)
+    this.missileNavGain = 0;                 // PN constant N for air launches midcourse (0: pure lead pursuit)
+    this.missilePursuitGain = 3.2;           // 1/s, pursuit gain: nose turn rate per radian of aim error
+    this.missileLeadFrac = 0.2;              // midcourse: fraction of the full time-to-go lead the pursuit point uses
+    this.missileTermTime = 1.0;              // s to the blind range: over this the lead ramps up to full (terminal homing)
+    this.missileTermNavGain = 4;             //   and N ramps up to this (set course by the blind range; the turn cap rules it)
+    this.samNavGain = 4;                     // ground launches: true PN
+    this.samPursuitGain = 1.2;               //   plus a small pursuit bias toward the full lead point
     this.missileTurnRateBoost = 7;           // rad/s max while the motor burns
     this.missileTurnRateCoast = 2.5;         // rad/s asymptotic max while coasting
     this.missileSeekerCos = 0;               // cos(max off-boresight angle) = cos(90°)
@@ -1744,7 +1755,8 @@ export class Weapons {
     }
   }
 
-  /** True proportional navigation with a turn-rate cap; the seeker drops the track beyond ~90° off boresight. */
+  /** Lagged lead pursuit (air launches) or proportional navigation (ground launches) with airframe lag and a turn-rate
+   *  cap; the seeker drops the track beyond missileSeekerCos off boresight. */
   _guide(m) {
     const T = m.target, dt = this._dt, boostEnd = this.missileDropTime + m.boostTime;
     if (Weapons._isDead(T)) { m.target = null; return; }
@@ -1765,14 +1777,18 @@ export class Weapons {
     // LOS rotation rate  Ω = (r × v_rel) / |r|²,   closing speed Vc = -(r · v_rel) / |r|
     const ox = (ry * vrz - rz * vry) / r2, oy = (rz * vrx - rx * vrz) / r2, oz = (rx * vry - ry * vrx) / r2;
     const vc = Math.max(-(rx * vrx + ry * vry + rz * vrz) / dist, 150);
-    const k = this.missileNavGain * vc;
-    // lead point: where the target will be after the estimated time-to-go (used by the pursuit bias)
-    const tgo = Math.min(dist / vc, 2.5);
+    // air launches: lagged lead pursuit (N, lead fraction) blending into terminal PN over the missileTermTime s before
+    // the blind range (so the endgame course is set by the time the seeker stops steering)
+    const sam = m.groundLaunch === true, tg = dist / vc, tb = (dist - this.missileBlindRange) / vc;
+    const w = sam ? 1 : tb >= this.missileTermTime ? 0 : 1 - tb / this.missileTermTime;   // 0 midcourse .. 1 at blind range
+    const k = (sam ? this.samNavGain : this.missileNavGain + (this.missileTermNavGain - this.missileNavGain) * w) * vc;
+    // pursuit point: the target's position plus a fraction of its travel over the estimated time-to-go (SAMs: all of it)
+    const tgo = Math.min(tg, 2.5) * (sam ? 1 : this.missileLeadFrac + (1 - this.missileLeadFrac) * w);
     let qx = rx + tv.x * tgo, qy = ry + tv.y * tgo, qz = rz + tv.z * tgo;
     const ql = 1 / (Math.sqrt(qx * qx + qy * qy + qz * qz) || 1);
     qx *= ql; qy *= ql; qz *= ql;
-    // commanded acceleration a = N Vc (Ω × λ)  + a small pursuit term toward the predicted position
-    const kp = this.missilePursuitGain * m.speed;
+    // commanded acceleration a = N Vc (Ω × λ)  + a pursuit term toward that point
+    const kp = (sam ? this.samPursuitGain : this.missilePursuitGain) * m.speed;
     let ax = k * (oy * lz - oz * ly) + (qx - dir.x) * kp;
     let ay = k * (oz * lx - ox * lz) + (qy - dir.y) * kp;
     let az = k * (ox * ly - oy * lx) + (qz - dir.z) * kp;

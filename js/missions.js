@@ -43,8 +43,16 @@
 //     and boats, 2 for armor, bunkers and hangars, 3 for railgun turrets. Ships pool hull and weapon mounts into one hitbox
 //     so capital ships stay playable. refHp = the reference durability figure, kept for information only.
 //   MISSIONS: main.js shows the name, up to three briefing sentences and each phase label (upper-cased). location, setting
-//     and time (local, 24 h) are flavor. groups[].optional = not needed to clear the phase.
+//     and clock (local, 24 h; the source mission's listed time) are flavor.
+//     time (optional) = the lighting preset (js/timeofday.js): one of TIMES below, default 'day'. From the source
+//     campaign's splash screens (local time, weather) and the fan wiki: the night raids M9 (22:00, "under cover of
+//     night") and M12 (00:30, full moon) are 'night'; M7 (12:30, storm, enemies diving from above the cloud cover) is
+//     'overcast' (dark, low-contrast dusk under heavy cloud); M18 (18:00, storm) and M19 (17:30, an ocean dusk battle)
+//     'dusk'; the late-afternoon M2, M4 and M6 (17:30-17:45) 'golden', and M1, M13, M14, M16 and M17 'golden' by the user's call; the final duel M21 (18:00, at sundown) 'evening'. groups[].optional = not needed to clear the phase.
 //     groups[].difficulty = 'hard' (spawns on Hard and Mercenary) or 'mercenary' (Mercenary only); counted in the caps.
+//     startBack (optional) = m the player starts behind the sortie frame along its heading (default 2500; negative =
+//     ahead), for a quiet lead-in of ~8-15 s before first contact (~4-6 s where the source mission opens mid-fight).
+//     The layout stays where the frame puts it.
 //     wingmen (optional) = which Loose Screws squadmates fly with the player: '2' = Cotter, '3' = Rivet. Absent means
 //     ['2', '3'] (both); [] = solo, e.g. a one-on-one duel.
 //     allies (optional) = friendly story units (js/allies.js): immortal props in a friendly tint that never fire, are never
@@ -155,6 +163,7 @@ export const GROUND_TYPES = {
   truck:             { shape: 'box',   size: [3, 3, 8],      hp: 40,              shoots: false, naval: false, note: 'Truck (not used by the missions below).' },
   'siege crawler':   { shape: 'box',   size: [30, 22, 70],   hp: 650, refHp: 50,  shoots: 'missile', range: 5000, naval: false, note: 'Concord superheavy tracked fortress: 4 railguns, 10 SAMs, 12 AA guns (mounts pooled into one HP bar). Size estimated.' },
   // ---- naval ----
+  buoy:              { shape: 'prism', size: [3, 4, 3],      hp: 25,              shoots: false,                  naval: true, note: 'Channel marker buoy on the approaches (M1 opening): a static warm-up target, one missile or a short burst. HP estimated.' },
   boat:              { shape: 'prism', size: [5, 3, 22],     hp: 40,  refHp: 20,  shoots: 'gun',     range: 800,  naval: true, note: 'Fast patrol boat, one machine gun; hard to hit, low threat.' },
   frigate:           { shape: 'prism', size: [32, 16, 127],  hp: 160, refHp: 50,  shoots: 'missile', range: 4000, naval: true, note: 'Littoral frigate (127 m trimaran): 1 SAM + 1 AA gun.' },
   'railgun frigate': { shape: 'prism', size: [32, 18, 127],  hp: 220, refHp: 50,  shoots: 'missile', range: 5000, naval: true, note: 'Frigate refitted with a cannon, a railgun and a SAM. Deadly in numbers.' },
@@ -176,12 +185,17 @@ export const MISSIONS = [
   {
     id: 1, name: 'Salvage Rights',
     briefing: 'The Saltjaw Corsairs stole a crate of League thunderglass and holed up with it at Gullrock. Flatten their sea fort: patrol boats, flak guns and those kelp-green floatplanes.',
-    setting: 'sea stacks', location: 'Gullrock Stacks (Saltjaw sea fort)', time: '16:05',
+    setting: 'sea stacks', location: 'Gullrock Stacks (Saltjaw sea fort)', clock: '16:05', time: 'golden',
+    startBack: 1500,   // m behind the sortie frame: a quiet lead-in before first contact
     // Layout (PW Black Flag): floatplanes circle the fort; the buyers come in from due north and two parked jets
     //   scramble off its strip.
     phases: [
+      { label: 'Gullrock approaches', groups: [   // PW's warm-up: boats and buoys alone in a staggered line ahead
+        { kind: 'naval', type: 'buoy', count: 3, area: 'line', position: 'ahead', distance: 1000 },
+        { kind: 'naval', type: 'boat', count: 3, area: 'line', position: 'ahead', distance: 1600 },
+      ] },
       { label: 'Gullrock sea fort', groups: [
-        { kind: 'naval', type: 'boat', count: 12, area: 'scattered', distance: 4000 },
+        { kind: 'naval', type: 'boat', count: 9, area: 'scattered', distance: 4000 },
         { kind: 'ground', type: 'aa', count: 9, area: 'base', distance: 4400 },
         { kind: 'air', type: 'SCAUP II', count: 3, formation: 'loose', position: 'low', distance: 2000, near: 'aa', task: 'patrol' },
         { kind: 'ground', type: 'c-ram', count: 3, area: 'base', distance: 4400, difficulty: 'mercenary' },
@@ -207,16 +221,17 @@ export const MISSIONS = [
   {
     id: 2, name: 'Burned Bridges',
     briefing: 'The Concord wanted that crate, and now it wants us. Its border patrol is waiting at Hollowgap Pass; punch through to League airspace.',
-    setting: 'mountains', location: 'Anvil Range (Hollowgap Pass)', time: '17:45',
+    setting: 'mountains', location: 'Anvil Range (Hollowgap Pass)', clock: '17:45', time: 'golden',
+    startBack: 2000,   // m behind the sortie frame: a quiet lead-in before first contact
     // Layout (PW Frontiers): three waves; interceptors close from behind and the west in separate pairs, AWACS
     //   orbit, Squalls screen the last one.
     phases: [
       { label: 'Border patrol', groups: [
-        { kind: 'air', type: 'NV-62', count: 6, formation: 'vee', position: 'behind', distance: 5000, task: 'engage' },
-        { kind: 'air', type: 'NV-62', count: 6, formation: 'vee', position: 'left', distance: 5200, task: 'engage' },
-        { kind: 'air', type: 'NV-73', count: 1, formation: 'pair', position: 'right', distance: 5000, task: 'engage', difficulty: 'mercenary' },  // extras 6 -> 4 (phase air cap): 2/2/2 -> 1/1/2
-        { kind: 'air', type: 'SQUALL-7T', count: 1, formation: 'pair', position: 'behind', distance: 5400, task: 'engage', difficulty: 'mercenary' },
-        { kind: 'air', type: 'Q07', count: 2, formation: 'pair', position: 'behind', distance: 5600, task: 'engage', difficulty: 'mercenary' },
+        { kind: 'air', type: 'NV-62', count: 6, formation: 'vee', position: 'behind', distance: 5000, after: 5, task: 'engage' },
+        { kind: 'air', type: 'NV-62', count: 6, formation: 'vee', position: 'left', distance: 5200, after: 5, task: 'engage' },
+        { kind: 'air', type: 'NV-73', count: 1, formation: 'pair', position: 'right', distance: 5000, after: 5, task: 'engage', difficulty: 'mercenary' },  // extras 6 -> 4 (phase air cap): 2/2/2 -> 1/1/2
+        { kind: 'air', type: 'SQUALL-7T', count: 1, formation: 'pair', position: 'behind', distance: 5400, after: 5, task: 'engage', difficulty: 'mercenary' },
+        { kind: 'air', type: 'Q07', count: 2, formation: 'pair', position: 'behind', distance: 5600, after: 5, task: 'engage', difficulty: 'mercenary' },
       ] },
       { label: 'They brought an AWACS', groups: [
         { kind: 'air', type: 'KD-480E', count: 1, formation: 'line', position: 'high', distance: 3500, task: 'patrol' },
@@ -237,7 +252,8 @@ export const MISSIONS = [
   {
     id: 3, name: 'Housewarming',
     briefing: "The League can't afford a base for us, so we're taking the Concord's air station at Tarnfell. Its harbor covers the approach: sink the warships and silence the shore guns.",
-    setting: 'snow coast', location: 'Tarnfell Air Station (soon the Toolshed)', time: '08:12',
+    setting: 'snow coast', location: 'Tarnfell Air Station (soon the Toolshed)', clock: '08:12',
+    startBack: 4000,   // m behind the sortie frame: a quiet lead-in before first contact
     // Layout (PW Homestead): a CAP over the coast guns, drones circling; base jets then transports scramble as you
     //   close in; Cuckoo Flight intercepts.
     phases: [
@@ -257,8 +273,8 @@ export const MISSIONS = [
       { label: 'Tarnfell Air Station', groups: [
         { kind: 'ground', type: 'aa', count: 12, area: 'base', distance: 4000 },
         { kind: 'ground', type: 'sam', count: 8, area: 'base', distance: 4400 },
-        { kind: 'air', type: 'NV-48', count: 5, formation: 'pair', distance: 800, near: 'sam', after: 6, task: 'scramble' },         // scrambling from the runway
-        { kind: 'air', type: 'KD-260', count: 4, formation: 'line', distance: 900, near: 'sam', after: 16, task: 'scramble' },       // scrambling from the runway
+        { kind: 'air', type: 'NV-48', count: 5, formation: 'pair', distance: 800, near: 'sam', after: 2, task: 'scramble' },         // scrambling from the runway
+        { kind: 'air', type: 'KD-260', count: 4, formation: 'line', distance: 900, near: 'sam', after: 10, task: 'scramble' },       // scrambling from the runway
         { kind: 'ground', type: 'l-sam', count: 1, area: 'base', distance: 4800, difficulty: 'mercenary' },
         { kind: 'ground', type: 'c-ram', count: 3, area: 'base', distance: 4000, difficulty: 'mercenary' },
         { kind: 'ground', type: 'railgun', count: 2, area: 'base', distance: 4400, difficulty: 'mercenary' },
@@ -273,11 +289,12 @@ export const MISSIONS = [
   {
     id: 4, name: 'Bad Apples',
     briefing: 'The Herring Guard is pinned down in the Brekka orchards by Concord armor and artillery, with bombers overhead. Break the guns around them and give them room to breathe.',
-    setting: 'hills', location: 'Brekka Valley orchards', time: '17:40',
+    setting: 'hills', location: 'Brekka Valley orchards', clock: '17:40', time: 'golden',
     allies: [   // the Herring Guard, dug in among the orchards just past the Concord armor that has them pinned down
       { name: 'Herring Guard', kind: 'ground', near: 'tank', distance: 1000, after: true,
         units: [{ type: 'tank', count: 8 }, { type: 'truck', count: 5 }, { type: 'aa', count: 3 }] },
     ],
+    startBack: 5000,   // m behind the sortie frame: a quiet lead-in before first contact
     // Layout (PW Uphill, Every Way): bombers and fighters circle the siege, helicopters and attackers work it, more
     //   bombers coast in late.
     phases: [
@@ -317,7 +334,8 @@ export const MISSIONS = [
   {
     id: 5, name: 'Lights Out',
     briefing: 'Lanternport is falling, and the League government is leaving on the morning ferries. A Concord dawn raid is inbound; keep it off the boats.',
-    setting: 'city coast', location: 'Lanternport harbor', time: '07:30',
+    setting: 'city coast', location: 'Lanternport harbor', clock: '07:30',
+    startBack: 4000,   // m behind the sortie frame: a quiet lead-in before first contact
     // Layout (PW Sirens of Defeat): each wave holds over its own distress call (north, east, west) until you come;
     //   the last wave pushes in.
     phases: [
@@ -352,7 +370,8 @@ export const MISSIONS = [
   {
     id: 6, name: 'Lightning Rod',
     briefing: 'The Concord refines its thunderglass in Glasswater Gorge and has parked a SAM on every ledge. Burn the refineries and mind the walls.',
-    setting: 'gorge', location: 'Glasswater Gorge, Anvil Range', time: '17:30',
+    setting: 'gorge', location: 'Glasswater Gorge, Anvil Range', clock: '17:30', time: 'golden',
+    startBack: 5000,   // m behind the sortie frame: a quiet lead-in before first contact
     // Layout (PW Machine of the Mantle): the scrambled QRF arrives mid-raid in waves; Chime Squadron runs you down
     //   from behind.
     phases: [
@@ -366,22 +385,22 @@ export const MISSIONS = [
         { kind: 'ground', type: 'oil tank', count: 3, area: 'base', distance: 4000, optional: true },
         { kind: 'ground', type: 'radar', count: 2, area: 'ridge', distance: 4800, optional: true },
         { kind: 'ground', type: 'comm tower', count: 2, area: 'ridge', distance: 4800, optional: true },
-        { kind: 'air', type: 'NV-48', count: 6, formation: 'vee', position: 'ahead', distance: 6400, after: 30, task: 'engage' },
-        { kind: 'air', type: 'NV-11', count: 6, formation: 'vee', position: 'left', distance: 6200, after: 40, task: 'engage' },
+        { kind: 'air', type: 'NV-48', count: 6, formation: 'vee', position: 'ahead', distance: 5500, after: 8, task: 'engage' },
+        { kind: 'air', type: 'NV-11', count: 6, formation: 'vee', position: 'left', distance: 5000, after: 40, task: 'engage' },
         { kind: 'ground', type: 'c-ram', count: 6, area: 'base', distance: 4400, difficulty: 'mercenary' },  // extras split across phases 1-2 like the SAMs and AA
         { kind: 'ground', type: 'l-sam', count: 1, area: 'ridge', distance: 4800, difficulty: 'mercenary' },
-        { kind: 'air', type: 'NV-11', count: 1, formation: 'pair', position: 'right', distance: 6200, after: 40, task: 'engage', difficulty: 'mercenary' },
-        { kind: 'air', type: 'Q09', count: 1, formation: 'pair', position: 'right', distance: 6300, after: 50, task: 'engage', difficulty: 'mercenary' },
-        { kind: 'air', type: 'FLURRY-4', count: 1, formation: 'pair', position: 'high', distance: 6400, after: 50, task: 'engage', difficulty: 'mercenary' },
+        { kind: 'air', type: 'NV-11', count: 1, formation: 'pair', position: 'right', distance: 5000, after: 40, task: 'engage', difficulty: 'mercenary' },
+        { kind: 'air', type: 'Q09', count: 1, formation: 'pair', position: 'right', distance: 5000, after: 50, task: 'engage', difficulty: 'mercenary' },
+        { kind: 'air', type: 'FLURRY-4', count: 1, formation: 'pair', position: 'high', distance: 5000, after: 50, task: 'engage', difficulty: 'mercenary' },
       ] },
       { label: 'Summit rigs', groups: [
         { kind: 'ground', type: 'extractor', count: 3, area: 'base', distance: 4800 },
         { kind: 'ground', type: 'sam', count: 10, area: 'base', distance: 4800 },
         { kind: 'ground', type: 'aa', count: 6, area: 'base', distance: 4800 },
-        { kind: 'air', type: 'SQUALL-7', count: 6, formation: 'vee', position: 'ahead', distance: 6600, after: 15, task: 'engage' },
+        { kind: 'air', type: 'SQUALL-7', count: 6, formation: 'vee', position: 'ahead', distance: 5000, after: 15, task: 'engage' },
         { kind: 'ground', type: 'c-ram', count: 5, area: 'base', distance: 4800, difficulty: 'mercenary' },
         { kind: 'ground', type: 'railgun', count: 2, area: 'base', distance: 4800, difficulty: 'mercenary' },
-        { kind: 'air', type: 'Q07', count: 3, formation: 'vee', position: 'left', distance: 6400, after: 25, task: 'engage', difficulty: 'mercenary' },
+        { kind: 'air', type: 'Q07', count: 3, formation: 'vee', position: 'left', distance: 5000, after: 25, task: 'engage', difficulty: 'mercenary' },
       ] },
       { label: 'Chime Squadron', groups: [
         { kind: 'air', type: 'Q07 CHIME', count: 1, formation: 'pair', position: 'behind', distance: 2000, task: 'engage' },
@@ -392,12 +411,13 @@ export const MISSIONS = [
   {
     id: 7, name: 'Finders Keepers',
     briefing: "League sailors just stole the Concord's newest battleship and renamed her the Hand-Me-Down. Concord pickets are combing the Galestrait for her: sink the ships and splash their air cover.",
-    setting: 'sea', location: 'The Galestrait', time: '12:30',
+    setting: 'sea', location: 'The Galestrait', clock: '12:30', time: 'overcast',
     wingmen: ['3'],   // Cotter sits this one out
     allies: [   // the Hand-Me-Down shows up as the pursuit closes in, with four cruisers and a supply ship
       { name: 'Hand-Me-Down', kind: 'naval', phase: 1, position: 'ahead', distance: 3000,
         units: [{ type: 'battleship', count: 1 }, { type: 'cruiser', count: 4, escort: true }, { type: 'cargo ship', count: 1, escort: true }] },
     ],
+    startBack: 5000,   // m behind the sortie frame: a quiet lead-in before first contact
     // Layout (PW Eminent Domain): a CAP over the enemy ships with AWACS high; attackers swarm in; MG-31 stand-ins
     //   escort the Bodkin run.
     phases: [
@@ -413,8 +433,8 @@ export const MISSIONS = [
         { kind: 'naval', type: 'spy ship', count: 1, area: 'fleet', distance: 4800 },
       ] },
       { label: 'Shield the Hand-Me-Down', groups: [
-        { kind: 'air', type: 'SQUALL-7T', count: 4, formation: 'vee', position: 'right', distance: 6200, task: 'engage' },
-        { kind: 'air', type: 'HAILSTONE-3', count: 8, formation: 'loose', position: 'left', distance: 6200, task: 'engage' },
+        { kind: 'air', type: 'SQUALL-7T', count: 4, formation: 'vee', position: 'right', distance: 5500, task: 'engage' },
+        { kind: 'air', type: 'HAILSTONE-3', count: 8, formation: 'loose', position: 'left', distance: 5500, task: 'engage' },
         { kind: 'naval', type: 'cruiser', count: 4, area: 'fleet', distance: 5100 },
         { kind: 'naval', type: 'frigate', count: 3, area: 'fleet', distance: 4800 },
         { kind: 'naval', type: 'railgun frigate', count: 2, area: 'fleet', distance: 5500 },
@@ -434,8 +454,9 @@ export const MISSIONS = [
   {
     id: 8, name: 'Rush Hour',
     briefing: 'The Concord is flying supplies to its mountain garrisons along the Saddleback corridor. Down the transports; the escorts will object.',
-    setting: 'mountains', location: 'Anvil Range (Saddleback corridor)', time: '09:30',
+    setting: 'mountains', location: 'Anvil Range (Saddleback corridor)', clock: '09:30',
     wingmen: ['2'],   // just Cotter on this one
+    startBack: 1000,   // m behind the sortie frame: a quiet lead-in before first contact
     // Layout (PW Clear Skies): escorted convoys transit; escorts vector in and more scramble later; an escorted
     //   AWACS; the aces merge head-on.
     phases: [
@@ -465,8 +486,9 @@ export const MISSIONS = [
   {
     id: 9, name: 'Threading the Needle',
     briefing: "Solo run tonight, Wingnut: Vesper Fjord, the back door to the Concord's array. SAM sites Hammer and Tongs guard the fjord: hug the rock and kill them. The planners named them after tools so you'd feel at home.",
-    setting: 'night fjord', location: 'Vesper Fjord', time: '22:00',
+    setting: 'night fjord', location: 'Vesper Fjord', clock: '22:00', time: 'night',
     wingmen: [],   // a lone sortie
+    startBack: 3000,   // m behind the sortie frame: a quiet lead-in before first contact
     // Layout (PW Stepping Stone): a patrol over Bravo, helicopters at the clusters, recalled fighters inbound, Echo
     //   scrambles, a late hive.
     phases: [
@@ -512,7 +534,8 @@ export const MISSIONS = [
   {
     id: 10, name: 'Dead Air',
     briefing: "The League is dropping paratroopers on the Choir, the Concord's listening array on Kaldmoor. Clear the landing zone, ground and sky, before the first chute opens.",
-    setting: 'plateau', location: 'Kaldmoor plateau (the Choir array)', time: '16:30',
+    setting: 'plateau', location: 'Kaldmoor plateau (the Choir array)', clock: '16:30',
+    startBack: 3000,   // m behind the sortie frame: a quiet lead-in before first contact
     // Layout (PW Pillars of Communications): interceptors from the north, recalled squadrons behind them; jets and
     //   transports scramble at the base.
     phases: [
@@ -522,10 +545,10 @@ export const MISSIONS = [
         { kind: 'ground', type: 'l-sam', count: 3, area: 'base', distance: 5100 },
         { kind: 'ground', type: 'comm tower', count: 1, area: 'base', distance: 5100, optional: true },
         { kind: 'air', type: 'NV-73', count: 4, formation: 'vee', position: 'ahead', distance: 6200, task: 'engage' },
-        { kind: 'air', type: 'NV-73', count: 3, formation: 'vee', position: 'left', distance: 6400, after: 40, task: 'engage' },
+        { kind: 'air', type: 'NV-73', count: 3, formation: 'vee', position: 'left', distance: 4500, after: 40, task: 'engage' },
         { kind: 'air', type: 'NV-56N', count: 2, formation: 'pair', position: 'right', distance: 6200, task: 'engage' },
         { kind: 'air', type: 'NV-62', count: 2, formation: 'pair', position: 'high', distance: 6300, task: 'engage' },
-        { kind: 'air', type: 'SQUALL-7', count: 3, formation: 'vee', position: 'ahead', distance: 6600, after: 20, task: 'engage' },
+        { kind: 'air', type: 'SQUALL-7', count: 3, formation: 'vee', position: 'ahead', distance: 4500, after: 20, task: 'engage' },
       ] },
       { label: 'The Choir', groups: [
         { kind: 'ground', type: 'radar', count: 4, area: 'base', distance: 4400 },
@@ -555,7 +578,8 @@ export const MISSIONS = [
   {
     id: 11, name: 'Icebreaker',
     briefing: "A Concord supply run over the Ice Gate has turned into the war's biggest dogfight. Pick a bandit, any bandit, and start thinning the crowd.",
-    setting: 'pack ice', location: 'The Ice Gate, northern strait', time: '13:05',
+    setting: 'pack ice', location: 'The Ice Gate, northern strait', clock: '13:05',
+    startBack: 2000,   // m behind the sortie frame: a quiet lead-in before first contact
     // Layout (PW Cold War): the furball is on when you arrive: flights fight across the strait and join fast;
     //   reinforcement pairs arrive from all sides at intervals; Chime and its escorts push from bearing 230.
     phases: [
@@ -595,8 +619,9 @@ export const MISSIONS = [
   {
     id: 12, name: 'Graveyard Shift',
     briefing: 'The Concord is working a night shift on its Morrow Deep rigs, test-firing railguns. Tear down the batteries and everything guarding them.',
-    setting: 'night sea', location: 'Morrow Deep rigs', time: '00:30',
-    // Layout (PW Midnight Light): helicopters patrol the rigs; after the alarm more choppers and jump jets scramble;
+    setting: 'night sea', location: 'Morrow Deep rigs', clock: '00:30', time: 'night',
+    startBack: 4000,   // m behind the sortie frame: a quiet lead-in before first contact
+    // Layout (PW Midnight Light): jump jets and helicopters patrol the rigs; after the alarm more choppers scramble;
     //   Pendulum takes off from a rig.
     phases: [
       { label: 'Morrow Deep rigs', groups: [
@@ -612,7 +637,7 @@ export const MISSIONS = [
         { kind: 'naval', type: 'cargo ship', count: 4, area: 'fleet', distance: 5500, optional: true },
         { kind: 'air', type: 'KD-38H', count: 5, formation: 'loose', position: 'low', distance: 1500, near: 'railgun', task: 'patrol' },
         { kind: 'air', type: 'KD-38H', count: 4, formation: 'loose', distance: 800, near: 'sam', after: 20, task: 'scramble' },
-        { kind: 'air', type: 'EIDER IV', count: 6, formation: 'vee', distance: 800, near: 'c-ram', after: 25, task: 'scramble' },
+        { kind: 'air', type: 'EIDER IV', count: 6, formation: 'vee', position: 'ahead', distance: 1500, near: 'c-ram', task: 'patrol' },
       ] },
       { label: 'Pendulum', groups: [
         { kind: 'air', type: 'Q04 PENDULUM', count: 1, formation: 'pair', position: 'low', distance: 600, near: 'railgun', task: 'engage' },
@@ -623,7 +648,8 @@ export const MISSIONS = [
   {
     id: 13, name: 'Shore Leave',
     briefing: 'The Concord Home Fleet is tied up at Vantmouth with half its crews ashore. Wreck the harbor defenses and depots before anyone finds their boots.',
-    setting: 'harbor', location: 'Vantmouth naval yard', time: '07:00',
+    setting: 'harbor', location: 'Vantmouth naval yard', clock: '07:00', time: 'golden',
+    startBack: 4000,   // m behind the sortie frame: a quiet lead-in before first contact
     // Layout (PW Valkyrie's Call): the port CAP is caught by surprise; the returning escorts arrive from two
     //   bearings.
     phases: [
@@ -656,11 +682,12 @@ export const MISSIONS = [
   {
     id: 14, name: 'Clearance Sale',
     briefing: 'The Concord is pulling out of Blackfir Forest and torching it on the way out. Sink the flotilla covering the retreat: everything must go.',
-    setting: 'forest', location: 'Blackfir Forest', time: '16:00',
+    setting: 'forest', location: 'Blackfir Forest', clock: '16:00', time: 'golden',
     allies: [   // the Herring Guard, pushing through the forest behind the retreat
       { name: 'Herring Guard', kind: 'ground', position: 'left', distance: 3500,
         units: [{ type: 'tank', count: 7 }, { type: 'truck', count: 5 }, { type: 'aa', count: 3 }] },
     ],
+    startBack: 6000,   // m behind the sortie frame: a quiet lead-in before first contact
     // Layout (PW Open Season): fighters hunt over the fire line, F/C-15 stand-ins escort the evacuation helicopters;
     //   more fighters with the update.
     phases: [
@@ -689,7 +716,8 @@ export const MISSIONS = [
   {
     id: 15, name: 'Glass Houses',
     briefing: 'The League is retaking Kelderwick, and you have the sky over the glassworks. Clear out the Concord fighters and SAMs, and try not to break anything.',
-    setting: 'city', location: 'Kelderwick', time: '10:35',
+    setting: 'city', location: 'Kelderwick', clock: '10:35',
+    startBack: 0,   // m behind the sortie frame: a quiet lead-in before first contact
     // Layout (PW Consequence of Power): instant furball, jets scramble from the city, reinforcements from due north;
     //   Thunderhead salvos 40 s apart.
     phases: [
@@ -697,7 +725,7 @@ export const MISSIONS = [
         { kind: 'air', type: 'NV-48', count: 6, formation: 'vee', position: 'ahead', distance: 5500, task: 'engage' },
         { kind: 'air', type: 'NV-56N', count: 3, formation: 'vee', position: 'left', distance: 5600, task: 'engage' },
         { kind: 'air', type: 'NV-56N', count: 3, formation: 'pair', distance: 800, near: 'l-sam', after: 15, task: 'scramble' },      // scrambling from hardened city shelters
-        { kind: 'air', type: 'FLURRY-4', count: 4, formation: 'vee', position: 'ahead', distance: 6800, after: 40, task: 'engage' },
+        { kind: 'air', type: 'FLURRY-4', count: 4, formation: 'vee', position: 'ahead', distance: 5000, after: 40, task: 'engage' },
         { kind: 'ground', type: 'l-sam', count: 6, area: 'scattered', distance: 4800 },
       ] },
       { label: 'Thunderheads inbound', groups: [
@@ -710,7 +738,8 @@ export const MISSIONS = [
   {
     id: 16, name: 'Backswing',
     briefing: "Pendulum swung back and is circling the ruins of Tarnfell, our old Toolshed, in a new Orrery jet. Shearpin Squadron flies escort, and shearpins are built to snap under load: drop Pendulum and they'll bail.",
-    setting: 'snow coast', location: 'Tarnfell (ruins of the Toolshed)', time: '14:00',
+    setting: 'snow coast', location: 'Tarnfell (ruins of the Toolshed)', clock: '14:00', time: 'golden',
+    startBack: 1000,   // m behind the sortie frame: a quiet lead-in before first contact
     // Layout (PW Wayback): Pendulum and Shearpin Squadron meet you head-on together.
     phases: [
       { label: 'Pendulum swings back', groups: [
@@ -722,7 +751,8 @@ export const MISSIONS = [
   {
     id: 17, name: 'Heavy Machinery',
     briefing: 'Two months after the Glassfall, the Concord is dug in at Brassgate Fortress. Blind its radar net and break the gun batteries.',
-    setting: 'valley', location: 'Brassgate Fortress, Ravel Valley', time: '15:50',
+    setting: 'valley', location: 'Brassgate Fortress, Ravel Valley', clock: '15:50', time: 'golden',
+    startBack: 6000,   // m behind the sortie frame: a quiet lead-in before first contact
     // Layout (PW No Respite): a pair holds over the radar net and the fortress scrambles its four-ship.
     phases: [
       { label: 'Brassgate Fortress', groups: [
@@ -742,7 +772,8 @@ export const MISSIONS = [
   {
     id: 18, name: 'Sweeping Up',
     briefing: 'Back to Kelderwick to sweep the last Concord holdouts out of the broken glass. Flak guns and gunships are hiding in the ruins, with a few jets overhead.',
-    setting: 'ruins', location: 'Kelderwick (Glassfall ruins)', time: '18:00',
+    setting: 'ruins', location: 'Kelderwick (Glassfall ruins)', clock: '18:00', time: 'dusk',
+    startBack: 6000,   // m behind the sortie frame: a quiet lead-in before first contact
     // Layout (PW Return): patrols and helicopters hold over the ruins (slow release); Chime pushes in from bearing
     //   000.
     phases: [
@@ -763,10 +794,11 @@ export const MISSIONS = [
   {
     id: 19, name: 'Hostile Takeover',
     briefing: 'The Hand-Me-Down is sailing for Lanternport, and the Concord battle fleet means to stop her. Cruisers and supply ships are moving to cut her off under fighter cover: sink them.',
-    setting: 'sea', location: 'The Galestrait, off Lanternport', time: '17:30',
+    setting: 'sea', location: 'The Galestrait, off Lanternport', clock: '17:30', time: 'dusk',
     allies: [   // the Hand-Me-Down leads the League line straight at the Concord fleet
       { name: 'Hand-Me-Down', kind: 'naval', position: 'ahead', distance: 3000, units: [{ type: 'battleship', count: 1 }] },
     ],
+    startBack: 3000,   // m behind the sortie frame: a quiet lead-in before first contact
     // Layout (PW Red Sea): a CAP over the convoy; one Q11 flight engages, the other guards the carrier, which
     //   launches jets.
     phases: [
@@ -789,14 +821,15 @@ export const MISSIONS = [
         { kind: 'naval', type: 'cruiser', count: 3, area: 'fleet', distance: 5100 },
         { kind: 'naval', type: 'railgun frigate', count: 3, area: 'fleet', distance: 4800 },
         { kind: 'naval', type: 'boat', count: 16, area: 'scattered', distance: 4000 },
-        { kind: 'air', type: 'NV-56N', count: 4, formation: 'pair', distance: 800, near: 'carrier', after: 15, task: 'scramble' },      // carrier launches
+        { kind: 'air', type: 'NV-56N', count: 4, formation: 'pair', distance: 800, near: 'carrier', after: 5, task: 'scramble' },       // carrier launches
       ] },
     ],
   },
   {
     id: 20, name: 'Lights On',
     briefing: "Today we take Lanternport back. Concord guns are dug into the hills above the city: smash them, and let's turn the lights back on.",
-    setting: 'city', location: 'Lanternport', time: '16:00',
+    setting: 'city', location: 'Lanternport', clock: '16:00',
+    startBack: 5000,   // m behind the sortie frame: a quiet lead-in before first contact
     // Layout (PW Presidia): fighters hold over the batteries; the air war is on over the city with AWACS orbiting;
     //   carrier launches; helicopters guard the towers.
     phases: [
@@ -811,8 +844,8 @@ export const MISSIONS = [
         { kind: 'air', type: 'Q09', count: 6, formation: 'vee', position: 'left', distance: 2500, near: 'bunker', task: 'patrol' },
       ] },
       { label: 'Sky over Lanternport', groups: [
-        { kind: 'air', type: 'NV-62', count: 8, formation: 'vee', position: 'ahead', distance: 6400, task: 'engage' },
-        { kind: 'air', type: 'NV-56N', count: 5, formation: 'vee', position: 'right', distance: 6400, task: 'engage' },
+        { kind: 'air', type: 'NV-62', count: 8, formation: 'vee', position: 'ahead', distance: 5500, task: 'engage' },
+        { kind: 'air', type: 'NV-56N', count: 5, formation: 'vee', position: 'right', distance: 5500, task: 'engage' },
         { kind: 'air', type: 'KD-480E', count: 2, formation: 'pair', position: 'high', distance: 4000, task: 'patrol' },
         { kind: 'ground', type: 'sam', count: 3, area: 'base', distance: 4000, optional: true },
         { kind: 'ground', type: 'aa', count: 6, area: 'scattered', distance: 4000, optional: true },
@@ -838,8 +871,9 @@ export const MISSIONS = [
   {
     id: 21, name: 'Unwound',
     briefing: 'Mainspring is up in the Q12 over Lanternport, alone, waiting for you. One last duel, Wingnut: unwind the spring.',
-    setting: 'city dusk', location: 'Lanternport at sundown', time: '18:00',
+    setting: 'city dusk', location: 'Lanternport at sundown', clock: '18:00', time: 'evening',
     wingmen: [],   // the duel is flown alone
+    startBack: 2000,   // m behind the sortie frame: a quiet lead-in before first contact
     // Layout (PW Kings): Mainspring meets you head-on (on Mercenary, with four wingmen).
     phases: [
       { label: 'Mainspring', groups: [
@@ -868,6 +902,8 @@ export function countUnits(missionOrPhase, difficulty = 'normal') {
   return n;
 }
 
+/** Lighting presets a mission may name in `time` (js/timeofday.js TIME_PRESETS keys; default 'day'). */
+export const TIMES = ['day', 'golden', 'dusk', 'overcast', 'evening', 'night'];
 const TASKS = ['engage', 'patrol', 'escort', 'scramble'];
 const SIDES = ['ahead', 'left', 'right', 'behind', 'high', 'low'];
 /** The placement fields of air group g in phase i of mission m (see MISSIONS above): a list of problems. */
@@ -896,6 +932,7 @@ function airPlacementProblems(m, i, g) {
 export function validateMissions(missions = MISSIONS) {
   const out = [];
   for (const m of missions) {
+    if ('time' in m && !TIMES.includes(m.time)) out.push(`M${m.id}: time must be one of ${TIMES.join(', ')}`);
     if ('wingmen' in m) {
       const w = m.wingmen;
       if (!Array.isArray(w) || w.some((n) => n !== '2' && n !== '3') || new Set(w).size !== w.length) out.push(`M${m.id}: wingmen must be a list of distinct '2' / '3'`);

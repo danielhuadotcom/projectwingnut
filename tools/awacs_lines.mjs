@@ -17,6 +17,7 @@ export const AWACS_STYLES = {
   positive: 'Professional military AWACS radar controller on the radio, approving and upbeat but still professional; clear, slightly warm, brisk radio cadence.',
   urgent: 'Professional military AWACS radar controller warning a fighter pilot over the radio: urgent but controlled, fast and clipped.',
   somber: 'Professional military AWACS radar controller on the radio, grave and somber but steady; clear and controlled.',
+  callout: 'Military AWACS radar controller calling over a noisy radio to a fighter pilot in combat: a sharp, loud, almost shouted call-out, every syllable crisply enunciated, high energy and emphatic. Not amused, not smug, no laughter, chuckle or breath before speaking; start talking immediately.',
   dry: 'Professional military AWACS radar controller on the radio, dry and deadpan with wry, mildly exasperated humor; still composed, clear and brisk.',
 };
 
@@ -32,7 +33,7 @@ export const AWACS_LINES = {
   waveClear: { style: 'positive', lines: ['Airspace clear. Nice work.', 'All bandits destroyed. Picture clean.'] },
   missionComplete: { style: 'positive', lines: ['All targets destroyed. Mission complete. Return to base.', 'Mission accomplished. Outstanding flying, Wingnut.'] },
   missileIncoming: { style: 'urgent', lines: ['Missile inbound! Break, break!', 'Enemy missile tracking you. Pop flares!', 'Missile launch on your position!'] },
-  missileDefeated: { style: 'calm', lines: ['Missile defeated.', 'It missed. Stay sharp.'] },
+  missileDefeated: { style: 'calm', lines: [{ text: 'Missile defeated!', style: 'callout' }, 'It missed. Stay sharp.'] },
   playerHit: { style: 'urgent', lines: ["You're hit! Check your status.", 'Damage reported. Keep it together.'] },
   lowHealth: { style: 'urgent', lines: ['Hull integrity critical. Get out of there!'] },
   pullUp: { style: 'urgent', lines: ['Terrain! Pull up, pull up!'] },

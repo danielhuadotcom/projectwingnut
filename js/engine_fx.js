@@ -1,4 +1,5 @@
 import * as THREE from 'https://cdnjs.cloudflare.com/ajax/libs/three.js/0.170.0/three.module.min.js';
+import { NIGHT_FX } from './timeofday.js';
 
 // =====================================================================================================
 // AfterburnerFX — jet exhaust: hot nozzle interior, military-power core flame, afterburner plume with
@@ -571,7 +572,7 @@ export class AfterburnerFX {
     U.uAB.value = ab;
     U.uMil.value = mil;
     U.uMilLen.value = milLen;
-    U.uIntensity.value = 1 + 0.9 * kick;
+    U.uIntensity.value = (1 + 0.9 * kick) * NIGHT_FX.engine;   // brighter exhaust glow in the dark presets (js/timeofday.js)
     U.uLen.value = lerp(0.25 + milVis * 1.9 * milLen, AB_HULL_LEN * (1 + 0.08 * sf), ab) * grow;
     U.uEnv.value.set(lerp(milLen * 0.8, abLen, ab), grow, 4.4, 1.3);
     U.uHull.value.set(

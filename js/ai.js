@@ -6,13 +6,19 @@ import { FLIGHT } from './aircraft.js';
 //   target aircraft: the player, or one of the player's squadmates. While its flight holds (js/flights.js) it flies
 //   the holding pattern instead: orbit, escort or climb-out as the flight lead, formation on the lead otherwise.
 // WingmanBrain (the player's immortal squadmates): loose formation on a lead, engages the bandit the game assigns with
-//   EnemyBrain's pursuit, defeats incoming missiles with flares, keeps 1-6 km from the lead while fighting.
+//   EnemyBrain's pursuit, defeats incoming missiles with flares, keeps within 3 km of the lead while fighting.
 const _local = new THREE.Vector3(), _toP = new THREE.Vector3(), _fwd = new THREE.Vector3(), _pFwd = new THREE.Vector3();
 const _q = new THREE.Quaternion(), _pt = new THREE.Vector3(), _up = new THREE.Vector3(), _tmp = new THREE.Vector3();
 const _rel = new THREE.Vector3(), _vr = new THREE.Vector3(), _hf = new THREE.Vector3(), _slot = new THREE.Vector3(), _away = new THREE.Vector3();
 const WORLD_UP = new THREE.Vector3(0, 1, 0);
 const controls = { pitch: 0, roll: 0, yaw: 0, throttleDelta: 0 };
 const LAUNCH_GAP = 1.5;   // s: the AI never launches at one target within this of its previous launch at it
+// Altitude game (bandits only, EnemyBrain.altGame): out of a close turning fight a bandit wants 300-800 m (by skill) over
+// its target; holding flights orbit there, slot-waiters stack above it, attackers dive in from it and zoom back up.
+export const ALT_CEILING = 4500;  // m ASL: hard cap, enforced in the steering. Highest terrain is ~2.6 km; matches the
+                                  //   holding / spawn ceiling (js/flights.js MAX_ALT, Game.spawnAirGroup)
+const ALT_FLOOR_AGL = 350;        // m: altitude-game aim points stay this far over the ground under the jet (the hard
+                                  //   floor is _senseTerrain's pull-up: 200 m + 2.5 s of sink, 180 m along the path)
 
 /** Missile rationing for every enemy launcher (bandits, SAM sites, ships; O(1)): no launch at a target within max(its
  *  `missileGap`, LAUNCH_GAP) s of the last enemy launch at it (`_missileAt`), and a target with `missileCap` (the player
@@ -60,6 +66,11 @@ export class EnemyBrain {
     this.flight = null;             // bandit flight (js/flights.js); while it holds (flight.loiter) this brain flies _hold
     this.slotOff = new THREE.Vector3();   // formation slot on the flight lead: right, up, back (m) in its heading frame
     this.terrainMargin = 1;         // scales the terrain-avoidance floors (squadmates fly more cautiously)
+    this.altGame = true;            // altitude game (perch above the target, dive-and-zoom attacks); off for squadmates
+    this.altCap = true;             // hard ALT_CEILING; off for squadmates
+    this._altOn = true; this._altT = 0;   // altitude game active this spell (rerolled every 6-12 s, odds by skill)
+    this._flatT = 0;                // s spent in a flat close chase (no height over the target): a long one ends in a zoom
+    this._stackOff = Math.random() * 400; // m: extra height of this bandit's slot-waiting stack (spreads the stack)
     this.burstGap = 0;              // s added between gun bursts
     this.shotAngle = 0.15; this.shotMin = 700; this.shotMax = 2500;   // missile envelope: rad off the nose, range (m)
     this.gunAngle = 0.045; this.gunRange = 650;     // gun burst starts when lined up this well (rad) this close (m)...
@@ -153,13 +164,14 @@ export class EnemyBrain {
   /** Holding pattern of an uncommitted flight (js/flights.js): the lead orbits the station at cruise speed, keeps its
    *  escort station beside the aircraft it escorts, or climbs out after a scramble; the others fly their formation slots
    *  on the lead. No target, no weapons, missile cooldown paused; terrain, ceiling and map-edge avoidance come first. */
-  _hold(dt, world) {
+  _hold(dt, world, target) {
     const ac = this.ac, F = this.flight, L = F.lead;
     this.stateTime += dt;
     ac.getForward(_fwd);
     let C = null;
     if (F.mode === 'escort' && F.charges !== null) for (let i = 0; i < F.charges.length; i++) if (F.charges[i].alive) { C = F.charges[i]; break; }
-    if (this._senseTerrain(world)) {
+    const low = this._senseTerrain(world);
+    if (low) {
       _pt.copy(ac.position).addScaledVector(_fwd, 300).addScaledVector(WORLD_UP, 900);
       this.steerToward(_pt, 1); this.throttleTarget = 0.2;
     } else if (ac.position.y > 7500) {
@@ -185,9 +197,13 @@ export class EnemyBrain {
       _tmp.set(ac.position.x - S.x, 0, ac.position.z - S.z);
       const dh = _tmp.length() || 1; _tmp.multiplyScalar(1 / dh);
       const pull = THREE.MathUtils.clamp((F.radius - dh) / look, -3, 1), d = F.dir;
-      _pt.set(ac.position.x + (_tmp.x * pull - _tmp.z * d) * look, S.y, ac.position.z + (_tmp.z * pull + _tmp.x * d) * look);
-      this.steerToward(_pt, 0.5); this.throttleTarget = 0;
+      // holding altitude: the station's, raised to the perch over the target (altitude game), climbing at most ~8 deg
+      let y = S.y;
+      if (this.altGame && target && target.alive) y = Math.max(y, Math.min(this._wantAlt(target), ac.position.y + look * 0.15));
+      _pt.set(ac.position.x + (_tmp.x * pull - _tmp.z * d) * look, y, ac.position.z + (_tmp.z * pull + _tmp.x * d) * look);
+      this.steerToward(_pt, 0.5); this.throttleTarget = y > ac.position.y + 100 ? 0.4 : 0;
     }
+    if (!low && this.altCap) this._capAlt();
     controls.throttleDelta = THREE.MathUtils.clamp(this.throttleTarget, -1, 1);
     ac.setControls(controls);
   }
@@ -220,13 +236,38 @@ export class EnemyBrain {
     this.throttleTarget = THREE.MathUtils.clamp(ff + (vWant - ac.speed) / 30, -1, 1);
   }
 
+  /** Perch altitude over target T (altitude game): 300-800 m above it by skill, at least ALT_FLOOR_AGL over the ground
+   *  under the jet (this frame's terrain sense), at most 200 m under ALT_CEILING. */
+  _wantAlt(T) {
+    const y = Math.max(T.position.y + 300 + 500 * this.skill, this.ac.position.y - this._agl + ALT_FLOOR_AGL);
+    return Math.min(y, ALT_CEILING - 200);
+  }
+
+  /** Hard ceiling: when the jet would pass within 100 m of ALT_CEILING in the next 3 s of climb, overrides the steering
+   *  (not the throttle) with a push toward a level point 300 m under it. Call after the steering, never while terrain
+   *  avoidance flies (the ground wins). */
+  _capAlt() {
+    const ac = this.ac;
+    if (ac.position.y + Math.max(0, ac.velocity.y) * 3 < ALT_CEILING - 100) return;
+    _hf.set(ac.velocity.x, 0, ac.velocity.z);
+    if (_hf.lengthSq() < 1) { ac.getForward(_hf); _hf.y = 0; }
+    if (_hf.lengthSq() < 1e-6) _hf.set(0, 0, -1);
+    _hf.normalize();
+    _pt.copy(ac.position).addScaledVector(_hf, 1500); _pt.y = ALT_CEILING - 300;
+    this.steerToward(_pt, 1);
+  }
+
   update(dt, target, world, weapons, time) {
     const ac = this.ac;
     if (!ac.alive) return;
-    if (this.flight !== null && this.flight.loiter) { this._hold(dt, world); return; }
+    if (this.flight !== null && this.flight.loiter) { this._hold(dt, world, target); return; }
     this.stateTime += dt;
     this.missileCooldown -= dt;
     this.noiseTimer -= dt;
+    if (this.altGame) {   // altitude game spells: aces almost always play it, rookies about half the time
+      this._altT -= dt;
+      if (this._altT <= 0) { this._altT = 6 + Math.random() * 6; this._altOn = !this.passive && Math.random() < 0.3 + 0.7 * this.skill; }
+    } else this._altOn = false;
     if (target) this.velEst.lerp(target.velocity, 1 - Math.exp(-dt / 0.7));
     if (this.noiseTimer <= 0) { // aim wobble: shrinks with skill, grows when the target is maneuvering hard
       this.noiseTimer = 0.5 + Math.random() * 0.7;
@@ -293,8 +334,16 @@ export class EnemyBrain {
         this.state = 'evade'; this.stateTime = 0; this.evadeDir = Math.random() < 0.5 ? -1 : 1; this.jinkTimer = 0;
       }
       if (!this.passive && this.state === 'evade' && this.stateTime > 2.5 + this.skill * 2 && !missileInbound) { this.state = dist < 500 ? 'extend' : 'pursue'; this.stateTime = 0; }
-      if (this.state === 'pursue' && targetAlive && dist < 260 && angleToTarget > 1.0) { this.state = 'extend'; this.stateTime = 0; }
-      if (this.state === 'extend' && this.stateTime > 4) { this.state = 'pursue'; this.stateTime = 0; }
+      const alt = this._altOn && targetAlive;
+      // slashing attacks: past the target (or with it behind the beam, close in), extend and zoom back to the perch
+      // a flat close chase (within 2 km, under 200 m over the target, out of gun range) that drags on ends the same way:
+      // zoom up and come back down on it (high yo-yo)
+      if (alt && this.state === 'pursue' && dist < 2000 && dist > this.gunRange && ac.position.y - target.position.y < 200) this._flatT += dt;
+      else this._flatT = Math.max(0, this._flatT - dt);
+      if (this.state === 'pursue' && targetAlive
+        && (alt ? this.aggressor !== false && ((dist < 700 && angleToTarget > 1.3) || this._flatT > 5 + (1 - this.skill) * 4) : dist < 260 && angleToTarget > 1.0)) { this.state = 'extend'; this.stateTime = 0; this._flatT = 0; }
+      if (this.state === 'extend' && (alt ? this.stateTime > 8 || (this.stateTime > 2.5 && ac.position.y > this._wantAlt(target) - 100)
+        || (this.stateTime > 3 && ac.speed < 125 * (ac.speedScale || 1)) : this.stateTime > 4)) { this.state = 'pursue'; this.stateTime = 0; }
       if (!targetAlive && !this.passive) this.state = 'patrol';
 
       if (this.state === 'transit') {
@@ -315,6 +364,12 @@ export class EnemyBrain {
         this.throttleTarget = 1;
       } else if (this.state === 'extend') {
         _pt.copy(ac.position).addScaledVector(_fwd, 1500).addScaledVector(WORLD_UP, 300);
+        if (this._altOn && targetAlive) {
+          // zoom climb toward the perch, traded against speed: level off when slow, nose down near the stall
+          _pt.y = Math.max(ac.position.y + 250, this._wantAlt(target) + 150);
+          const vs = ac.speed / (ac.speedScale || 1);
+          if (vs < 150) _pt.y = ac.position.y - (vs < 110 ? 200 : 0);
+        }
         this.steerToward(_pt, 0.8);
         this.throttleTarget = 1;
       } else if (this.state === 'patrol') {
@@ -325,12 +380,15 @@ export class EnemyBrain {
         // from farther out, boost straight in (time to engagement: in the fight within seconds, weapons held)
         _tmp.subVectors(ac.position, target.position); _tmp.y = 0;
         const dh = _tmp.length() || 1; _tmp.multiplyScalar(1 / dh);
+        // the stack: slot-waiters hold above the fight (altitude game), else 300 m over the target
+        const sy = Math.min(this._altOn ? Math.max(this._wantAlt(target) + 150 + this._stackOff, 900) : Math.max(target.position.y + 300, 900), ALT_CEILING - 200);
         if (dh > 3000) {
-          _pt.copy(target.position).addScaledVector(this.velEst, 2); _pt.y = Math.max(target.position.y + 300, 900);
+          // boost in at 300 m over the target or the height we have (up to the stack): no climb before the ring
+          _pt.copy(target.position).addScaledVector(this.velEst, 2); _pt.y = Math.max(target.position.y + 300, 900, Math.min(sy, ac.position.y));
           this.steerToward(_pt, 0.7); this.throttleTarget = 1;
         } else {   // on the ring: keep pace with the target (thrust on the speed difference and the gap to the ring)
           const pull = THREE.MathUtils.clamp((2400 - dh) / 1200, -1, 1);
-          _pt.set(ac.position.x - _tmp.z * 1500 + _tmp.x * pull * 1500, Math.max(target.position.y + 300, 900),
+          _pt.set(ac.position.x - _tmp.z * 1500 + _tmp.x * pull * 1500, sy,
             ac.position.z + _tmp.x * 1500 + _tmp.z * pull * 1500);
           this.steerToward(_pt, 0.5);
           this.throttleTarget = THREE.MathUtils.clamp((target.speed - ac.speed) / 120 + (dh - 2400) / 800, -0.5, 1);
@@ -339,6 +397,17 @@ export class EnemyBrain {
         // Pursue: lead pursuit toward where the target will be when our rounds arrive
         const tLead = Math.min(dist, 1100) / 950;   // lead only matters inside cannon range
         _pt.copy(target.position).addScaledVector(this.velEst, tLead).add(this.aimNoise);
+        let yOff = 0;
+        if (this._altOn) {
+          // altitude game: inside 3 km aim toward the perch (at most ~6 deg over the target), fading out from 2.4 km in so
+          // the attack is a dive onto it; beyond 3 km keep the height we have but don't climb (time to engagement:
+          // climbing bleeds speed). A fast dive never aims under 150 m + 2 s of sink over the ground
+          const wy = this._wantAlt(target);
+          yOff = dist > 3000 ? THREE.MathUtils.clamp(Math.min(wy, ac.position.y) - _pt.y, 0, dist * 0.08)
+            : THREE.MathUtils.clamp(wy - _pt.y, 0, dist * 0.1) * THREE.MathUtils.smoothstep(dist, 900, 2400);
+          _pt.y += yOff;
+          if (this._sink > 40) _pt.y = Math.max(_pt.y, ac.position.y - this._agl + 150 + this._sink * 2);
+        }
         const angleOff = this.steerToward(_pt, 0.55 + this.skill * 0.45);
         this.throttleTarget = dist > 3000 ? 1 : dist > 800 ? this.pursuitThrottle : THREE.MathUtils.clamp((target.speed - ac.speed) / 120, -0.8, 0.45);
         // Guns: short bursts when lined up
@@ -347,7 +416,7 @@ export class EnemyBrain {
           if (this.burstPause <= 0) { this.burst = 0.2 + this.skill * 0.25; this.burstPause = 1.8 + (1 - this.skill) * 2.2 + this.burstGap; }
         }
         // Missile: in the envelope, off cooldown, and the target isn't already rationed out
-        if (angleOff < this.shotAngle && dist > this.shotMin && dist < this.shotMax && this.missileCooldown <= 0 && ac.missiles > 0 && this.canLaunchAt(target, weapons)) {
+        if (angleOff + yOff / Math.max(dist, 1) < this.shotAngle && dist > this.shotMin && dist < this.shotMax && this.missileCooldown <= 0 && ac.missiles > 0 && this.canLaunchAt(target, weapons)) {
           if (weapons.fireMissile(ac, target)) {
             this.missileCooldown = this.missileReload || (14 + (1 - this.skill) * 10);
             noteLaunch(target, weapons);
@@ -357,6 +426,7 @@ export class EnemyBrain {
     }
     if (this.burst > 0) { this.burst -= dt; fireGun = ac.alive && targetAlive && angleToTarget < this.gunHold && dist < this.gunHoldRange; }
     if (fireGun && !this.passive && this.gunsOnly !== 'none') weapons.fireGun(ac);
+    if (!lowTerrain && this.altCap) this._capAlt();
 
     // Throttle toward target
     controls.throttleDelta = THREE.MathUtils.clamp(this.throttleTarget, -1, 1);
@@ -382,9 +452,10 @@ export class WingmanBrain extends EnemyBrain {
     this.side = 1;                                 // formation side: +1 right of the lead, -1 left
     this.slot = new THREE.Vector3(170, 20, 70);    // formation slot: right (times side), up, back from the lead (m)
     this.standoff = false;                         // wide cover position (bandits about, none for us, e.g. a boss duel)
-    this.leash = 6000;                             // m from the lead: break off and head back beyond this
+    this.leash = 3000;                             // m from the lead: break off and head back beyond this (fights stay near the player)
     this.personal = 800;                           // m from the lead: spread out inside this while engaging
     this.terrainMargin = 1.7;                      // stronger terrain avoidance than the bandits
+    this.altGame = false; this.altCap = false;     // no altitude game or bandit ceiling (squadmates fly as before)
     this.burstGap = 3;                             // squadmates fire rarely: extra s between gun bursts (snapshots
     this.gunAngle = 0.07; this.gunRange = 900; this.gunHold = 0.12; this.gunHoldRange = 1000;   // from a bit farther out)
     this.missileReload = 45;                       // s between missile shots, and only from a good position:

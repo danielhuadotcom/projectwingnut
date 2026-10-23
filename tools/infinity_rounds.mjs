@@ -51,7 +51,7 @@ const rules = [
 const runOpts = { difficulty: DIFFICULTY, missileLoad, missileDamage, seed: runSeed };
 const fmt = (v, d = 2) => (v === Infinity ? '∞' : typeof v === 'number' ? (Number.isInteger(v) ? String(v) : v.toFixed(d)) : String(v));
 const pct = (v) => `${Math.round(v * 100)}%`;
-const SHORT = { aggressors: 'atk', playerShare: 'share', flightCap: 'flt', stagger: 'stag', playerMissiles: 'pmsl', armor: 'armor', missileTurn: 'mslTurn' };
+const SHORT = { aggressors: 'atk', playerShare: 'share', flightCap: 'flt', stagger: 'stag', playerMissiles: 'pmsl', armor: 'armor' };
 const LEVELS = ['easy', 'normal', 'hard', 'mercenary'];
 const numeric = Object.keys(DIFFICULTY.normal).filter((k) => typeof DIFFICULTY.easy[k] === 'number');
 // fields whose ramp ends on a lower row than Mercenary (js/infinity.js TOPS): { field: row }
@@ -133,10 +133,11 @@ function check() {
     ok(first[k] === DIFFICULTY.easy[k], `ramp: ${k} starts at Easy (${first[k]} vs ${DIFFICULTY.easy[k]})`);
     ok(top[k] === end && late[k] === end, `ramp: ${k} reaches ${tops[k] || 'mercenary'} (${top[k]} vs ${end})`);
   }
-  ok(tops.armor === 'hard' && tops.missileTurn === 'hard', `ramp: armor and missileTurn top out at Hard ${JSON.stringify(tops)}`);
+  ok(tops.armor === 'hard' && Object.keys(tops).length === 1, `ramp: only armor tops out at Hard ${JSON.stringify(tops)}`);
+  ok(!('missileTurn' in DIFFICULTY.normal), 'ramp: missiles fly the same on every difficulty (no missileTurn field)');
   for (let r = 2; r <= 40; r++) {
     const a = I.rampAt(r - 1, DIFFICULTY).diff, b = I.rampAt(r, DIFFICULTY).diff;
-    ok(b.armor >= a.armor && b.missileTurn >= a.missileTurn && b.enemyHp >= a.enemyHp, `ramp: armor / missileTurn / enemyHp fall at round ${r}`);
+    ok(b.armor >= a.armor && b.enemyHp >= a.enemyHp, `ramp: armor / enemyHp fall at round ${r}`);
   }
   ok(I.rampAt(1, DIFFICULTY).enemySkill === Math.max(0.2, 0.38 + DIFFICULTY.easy.skill), 'ramp: skill starts at the campaign opener on Easy');
   ok(Math.abs(I.rampAt(I.MERC_ROUND, DIFFICULTY).enemySkill - 0.95) < 1e-9, 'ramp: skill reaches the 0.95 ceiling');

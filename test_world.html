@@ -22,6 +22,7 @@ import { World, WORLD_HALF, SEA_LEVEL } from './js/world.js';
 //   prof=scene  GPU timer query around the whole scene render every frame (pass-style, no per-object queries)
 //   sun=az,el   degrees; calls world.setSunDirection (az measured from -Z toward -X)
 //   cycle=1     switch world quality every 45 frames (low -> medium -> high -> ultra), logs WORLD_Q lines
+//   cam=x,y,z,yaw,pitch   fixed camera pose (degrees; overrides view, no camera motion)
 window.addEventListener('error', (e) => console.error('WORLD_ERROR ' + (e.message || e)));
 window.addEventListener('unhandledrejection', (e) => console.error('WORLD_ERROR ' + (e.reason && e.reason.message || e.reason)));
 
@@ -48,7 +49,7 @@ try {
   // quality preset + optional overrides (levels=128,128,96,..  cell0=8  detail=3  water=3  foam=1  puffG=8), cull=0 disables terrain culling
   const ov = {};
   if (params.has('levels')) ov.levels = params.get('levels').split(',').map(Number);
-  for (const k of ['cell0', 'detail', 'water', 'foam', 'puffG']) if (params.has(k)) ov[k] = Number(params.get(k));
+  for (const k of ['cell0', 'detail', 'water', 'foam', 'refl', 'puffG']) if (params.has(k)) ov[k] = Number(params.get(k));
   if (world.setQuality && (params.has('q') || Object.keys(ov).length)) world.setQuality(params.get('q') || 'high', Object.keys(ov).length ? ov : null);
   if (params.get('cull') === '0') world.cullTerrain = false;
   if (params.has('sun') && world.setSunDirection) {
@@ -135,14 +136,16 @@ try {
     };
   })() : null;
 
-  const V = {
+  const V = Object.assign({}, {
     1: { p: [0, 900, 0], yaw: 0, pitch: -8, move: 1 },
     2: { p: [0, 3500, 0], yaw: 0, pitch: -35, move: 1 },
     3: { p: [0, 700, 0], yaw: 8, pitch: -4, move: 0.6 },
     4: { p: [2500, 1100, 1500], yaw: -80, pitch: -6, move: 0.2 },
     5: { p: [-3000, 250, -4000], yaw: 35, pitch: 2, move: 0.2 },
     6: { p: [1500, 1500, -2500], yaw: 20, pitch: 12, move: 0.2 },
-  }[view] || { p: [0, 900, 0], yaw: 0, pitch: -8, move: 1 };
+  }[view] || { p: [0, 900, 0], yaw: 0, pitch: -8, move: 1 });
+  if (params.has('cam')) { const c = params.get('cam').split(',').map(Number); V.p = [c[0], c[1], c[2]]; V.yaw = c[3]; V.pitch = c[4]; V.move = 0; }
+  window.__world = world;
   const yaw0 = THREE.MathUtils.degToRad(V.yaw), pitch0 = THREE.MathUtils.degToRad(V.pitch);
   const fwdX = -Math.sin(yaw0), fwdZ = -Math.cos(yaw0);
   let last = performance.now() / 1000, frames = 0, worldDraws = 0, worldTris = 0, profReported = false;

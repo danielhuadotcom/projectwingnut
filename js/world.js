@@ -1,4 +1,5 @@
 import * as THREE from 'https://cdnjs.cloudflare.com/ajax/libs/three.js/0.170.0/three.module.min.js';
+import { NIGHT_FX } from './timeofday.js';
 
 // PROJECT WINGNUT — js/world.js
 // Sky (analytic Rayleigh/Mie), sun & lights, clipmap heightfield terrain, animated water,
@@ -18,9 +19,10 @@ import * as THREE from 'https://cdnjs.cloudflare.com/ajax/libs/three.js/0.170.0/
 //  - The analytic sky is evaluated once into a small lookup texture (rebuilt by setSunDirection) and sampled by the sky,
 //    the aerial perspective of every surface, the water reflection, the clouds and the puffs.
 //  - Per-pixel procedural noise is replaced by textures baked once on the GPU at startup (mipmapped, so detail fades
-//    with distance instead of shimmering): a tiling gradient-noise texture with derivatives (terrain micro-relief, water
-//    normal layers, puff shapes), the tiling cloud-coverage FBM (cloud layer, cloud shadows, puffs) and a world-aligned
-//    copy of the original large-scale biome noise (so forest/snow layouts are unchanged).
+//    with distance instead of shimmering): a tiling gradient-noise texture with derivatives (terrain micro-relief, puff
+//    shapes), a tiling wave-spectrum slope texture (sea normal layers), the tiling cloud-coverage FBM (cloud layer, cloud
+//    shadows, puffs) and a world-aligned copy of the original large-scale biome noise (so forest/snow layouts are
+//    unchanged).
 //  - Terrain vertices outside the view frustum are culled cheaply in the vertex shader; fog/haze is per vertex.
 //  - setQuality('low' | 'medium' | 'high' | 'ultra') switches shader variants / grid density / puff count at runtime.
 
@@ -389,7 +391,7 @@ function sunIntensity(sunY) {
   return 1000 * Math.max(0, 1 - Math.exp(-((Math.PI / 1.95 - zen) / 1.5)));
 }
 // JS mirror of the sky radiance model (used for scene.fog color). dir/sunDir: arrays.
-function skyRadianceJS(dir, sunDir, sunE, scale) {
+function skyRadianceJS(dir, sunDir, sunE, scale, grade = null) {
   const cosZen = Math.max(dir[1], 0);
   const zen = Math.acos(cosZen);
   const inv = 1 / (cosZen + 0.15 * Math.pow(93.885 - zen * 180 / Math.PI, -1.253));
@@ -407,7 +409,17 @@ function skyRadianceJS(dir, sunDir, sunE, scale) {
   const lm = Math.max(lin[0], lin[1], lin[2]);
   const comp = SKY_K / (SKY_K + lm);
   const add = [0, 0.0003, 0.00075];
-  return [0, 1, 2].map(k => ((lin[k] * comp + 0.1 * fex[k]) * 0.04 + add[k]) * scale);
+  const out = [0, 1, 2].map(k => ((lin[k] * comp + 0.1 * fex[k]) * 0.04 + add[k]) * scale);
+  if (grade) gradeSky(out, 0, Math.sqrt(cosZen), grade);
+  return out;
+}
+// Time-of-day grade of the analytic sky (js/timeofday.js preset.sky): tint, saturation, then an added glow weighted
+// toward the horizon (twilight / night airglow). Identity for the day preset. c: rgb array at offset o; v = sqrt(cosZen).
+function gradeSky(c, o, v, g) {
+  let r = c[o] * g.tint[0], gg = c[o + 1] * g.tint[1], b = c[o + 2] * g.tint[2];
+  if (g.sat !== 1) { const l = 0.2126 * r + 0.7152 * gg + 0.0722 * b; r = l + (r - l) * g.sat; gg = l + (gg - l) * g.sat; b = l + (b - l) * g.sat; }
+  const w = 0.3 + 0.7 * (1 - v) * (1 - v) * (1 - v);
+  c[o] = r + g.base[0] * w; c[o + 1] = gg + g.base[1] * w; c[o + 2] = b + g.base[2] * w;
 }
 // Atmospheric transmittance toward a direction with the given cos(zenith) (per channel, written to out).
 function skyExtinction(cosZen, out) {
@@ -421,7 +433,7 @@ function skyExtinction(cosZen, out) {
 // is exact up to interpolation: u = sqrt((1 - cosSun) / 2) = sin(angle/2) (dense near the sun's Mie aureole),
 // v = sqrt(cosZenith) (dense near the horizon). Below-horizon directions use the horizon row (same as the old hazeColor).
 const SKY_LUT_W = 256, SKY_LUT_H = 64;
-function buildSkyLut(out, sunE, sunFade, scale) {
+function buildSkyLut(out, sunE, sunFade, scale, grade = null) {
   const g = SKY_MIE_G, g2 = g * g, fex = [0, 0, 0], lin = [0, 0, 0], add = [0, 0.0003, 0.00075];
   for (let j = 0; j < SKY_LUT_H; j++) {
     const v = j / (SKY_LUT_H - 1);
@@ -440,6 +452,7 @@ function buildSkyLut(out, sunE, sunFade, scale) {
       const comp = SKY_K / (SKY_K + lm);
       const o = (j * SKY_LUT_W + i) * 4;
       for (let k = 0; k < 3; k++) out[o + k] = ((lin[k] * comp + 0.1 * fex[k]) * 0.04 + add[k]) * scale;
+      if (grade) gradeSky(out, o, v, grade);
       out[o + 3] = 1;
     }
   }
@@ -453,13 +466,14 @@ function buildSkyLut(out, sunE, sunFade, scale) {
 // peaks:  coarse levels sample the max-filtered height mips so distant ridges keep their height on sparse grids
 //         (false = exact bilinear heights everywhere, i.e. the original terrain geometry)
 // detail: terrain detail layers (1: 48 m relief + biome breakup, 2: + 18 m, 3: + 8 m near the camera, 4: + 3 m micro)
-// water: wave normal layers (2..4); foam: shoreline foam; puffG: billboard puff grid (puffG² puffs)
+// water: wave normal layers (2..4); foam: shoreline foam; refl: reflected-terrain march taps (0 = sky and clouds only)
+// puffG: billboard puff grid (puffG² puffs)
 // ============================================================================
 const QUALITY = {
-  low:    { levels: [48, 48, 48, 48, 48, 48, 48, 48], cell0: 16, peaks: true, detail: 1, water: 2, foam: 1, puffG: 6 },
-  medium: { levels: [64, 64, 64, 64, 64, 64, 64, 64], cell0: 16, peaks: true, detail: 2, water: 2, foam: 1, puffG: 8 },
-  high:   { levels: [128, 128, 128, 128, 128, 128, 128, 128], cell0: 8, peaks: false, detail: 3, water: 3, foam: 1, puffG: 8 },
-  ultra:  { levels: [128, 128, 128, 128, 128, 128, 128, 128], cell0: 8, peaks: false, detail: 4, water: 4, foam: 1, puffG: 10 },
+  low:    { levels: [48, 48, 48, 48, 48, 48, 48, 48], cell0: 16, peaks: true, detail: 1, water: 2, foam: 1, refl: 0, puffG: 6 },
+  medium: { levels: [64, 64, 64, 64, 64, 64, 64, 64], cell0: 16, peaks: true, detail: 2, water: 2, foam: 1, refl: 3, puffG: 8 },
+  high:   { levels: [128, 128, 128, 128, 128, 128, 128, 128], cell0: 8, peaks: false, detail: 3, water: 3, foam: 1, refl: 7, puffG: 8 },
+  ultra:  { levels: [128, 128, 128, 128, 128, 128, 128, 128], cell0: 8, peaks: false, detail: 4, water: 4, foam: 1, refl: 7, puffG: 10 },
 };
 const MAX_LEVELS = 10, MAX_PUFF_G = 10;
 
@@ -536,6 +550,10 @@ uniform vec3 uSkyAmb;
 uniform vec3 uGroundAmb;
 uniform float uCloudAlt;
 uniform float uCloudCut;
+uniform vec3 uCloudTint;           // time-of-day tint of the cloud layer and puffs (1 = day)
+uniform float uPuffK;              // extra brightness scale of the billboard puffs (dark presets keep them in the deck)
+uniform vec3 uWaterTint;           // time-of-day tint of the sea body colour (1 = day)
+uniform float uSpecK;              // strength of the specular sun (moon) path on the sea (1 = day)
 float cloudShadow(vec2 xz, float h) {
   vec2 sp = xz + uSunDir.xz * ((uCloudAlt - h) / max(uSunDir.y, 0.05));
   float c = texture(uCloudTex, sp * CLOUD_INV_TILE + uCloudOff).a;
@@ -632,66 +650,178 @@ void main() {
 }
 `;
 
+// Tiling wave texture for the sea (see GLSL_SEA): a sum of WAVE_COUNT sines with integer wave vectors (so it tiles),
+// 2..32 cycles per tile spread around a wind direction (a few cross-sea waves), height amplitude ~ k^-1.5 tapered
+// below 5 cycles (the next coarser layer covers those scales, and a few strong long waves would make the tile visible).
+// RG = slope / (3 rms), B = height / (3 rms), A = 0.5 |slope|^2 (mipmapped: A - |RG|^2 is the filtered-away variance).
+const WAVE_N = 256, WAVE_COUNT = 96;
+const BAKE_WAVE_FRAG = BAKE_NOISE + /* glsl */`
+void main() {
+  vec2 uv = gl_FragCoord.xy * (1.0 / ${f(WAVE_N)});
+  vec2 s = vec2(0.0);
+  float h = 0.0, s2 = 0.0, h2 = 0.0;
+  for (int i = 0; i < ${WAVE_COUNT}; i++) {
+    float fi = float(i);
+    float r1 = hash2(vec2(fi, 3.0)), r2 = hash2(vec2(fi, 11.0)), r3 = hash2(vec2(fi, 23.0)), r4 = hash2(vec2(fi, 37.0));
+    float kr = 2.0 * exp2(r1 * 4.0);
+    float ang = 0.5 + (r2 - 0.5) * (r4 > 0.8 ? 6.28 : 2.6);
+    vec2 k = floor(vec2(cos(ang), sin(ang)) * kr + 0.5);
+    if (dot(k, k) < 1.0) k = vec2(1.0, 1.0);
+    float amp = pow(dot(k, k), -0.75) * smoothstep(1.5, 5.0, length(k));   // band-pass: few long waves per tile
+    float ph = 6.2831853 * (dot(k, uv) + r3);
+    h += amp * sin(ph);
+    s += (amp * 6.2831853) * k * cos(ph);
+    s2 += 0.5 * amp * amp * 39.478418 * dot(k, k);
+    h2 += 0.5 * amp * amp;
+  }
+  vec2 sn = clamp(s / (3.0 * sqrt(s2)), -1.0, 1.0);
+  gl_FragColor = vec4(0.5 + 0.5 * sn, clamp(0.5 + h / (6.0 * sqrt(h2)), 0.0, 1.0), 0.5 * dot(sn, sn));
+}
+`;
+
 // ---------------------------------------------------------------------------- SEA SURFACE
 // Shared by the terrain draw (which renders the sea surface itself, see TERRAIN_FRAG) and the water mesh (underwater
-// camera only). defines: WATER (2..4 wave normal layers), FOAM (0/1)
+// camera only). defines: WATER (2..4 wave normal layers), FOAM (0/1), REFL (terrain reflection taps, 0 = off)
+//  - Waves: scrolling, rotated layers of the baked wave-slope texture (uWaves, see BAKE_WAVE_FRAG; each layer holds a
+//    4-octave directional spectrum), with the wind roughness varied by the cloud-coverage field (rougher water under
+//    the cloud bands, drifting with them; reuses the cloud-shadow fetch and breaks up the tiling).
+//  - Specular: Beckmann lobe whose roughness is the slope variance the mip chain filtered away (A channel minus the
+//    squared mean slope) plus the variance of the layers this tier does not draw, so distant water turns into a broad
+//    glitter path instead of shimmering, and low tiers keep the same overall sun streak.
+//  - Reflection: sky LUT + the cloud layer along the reflected ray, and (REFL > 0) a short exponential heightfield march
+//    on the max-filtered height mips for reflected terrain (soft hit, hazed by the same height fog as the scene).
+//  - Body: seabed seen through a Beer-Lambert water column (view path refracted), so shallows read turquoise over sand
+//    and deep water blue; shoreline foam bands drift toward the beach.
 const GLSL_SEA = /* glsl */`
-const float W1 = 0.0085 * DINV, W2 = 0.023 * DINV, W3 = 0.071 * DINV, W4 = 0.19 * DINV;
+uniform sampler2D uWaves;          // tiling wave texture: RG = slope / (3 rms), B = height, A = 0.5 |RG|^2
+#if REFL >= 7
+const float REFL_S0 = 60.0, REFL_MUL = 2.6;  // 7 taps: 60 m to 18 km
+#elif REFL >= 5
+const float REFL_S0 = 100.0, REFL_MUL = 3.4; // 5 taps: 100 m to 13 km
+#else
+const float REFL_S0 = 160.0, REFL_MUL = 4.5; // 3 taps: 160 m to 3.2 km (nearby shores and islands)
+#endif
+const float WT1 = 1.0 / 251.0, WT2 = 1.0 / 67.0, WT3 = 1.0 / 19.3, WT4 = 1.0 / 6.1;   // layer tile frequencies (1/m)
+const mat2 WR1 = mat2(0.906, 0.423, -0.423, 0.906), WR2 = mat2(0.276, -0.961, 0.961, 0.276);
+const mat2 WR3 = mat2(-0.588, 0.809, -0.809, -0.588), WR4 = mat2(0.978, 0.208, -0.208, 0.978);
+const float WK1 = 0.30, WK2 = 0.22, WK3 = 0.13, WK4 = 0.07;                        // slope gain per layer
+// slope variance of the layers a tier leaves out (the texture holds about 1/9 mean-square in normalized units)
+#if WATER >= 4
+const float WVAR_REST = 0.0;
+#elif WATER == 3
+const float WVAR_REST = WK4 * WK4 * 0.11;
+#else
+const float WVAR_REST = (WK3 * WK3 + WK4 * WK4) * 0.11;
+#endif
+// one wave layer: adds the world-space slope to g, the sub-texel (filtered-away) slope variance to v; returns height
+float waveLayer(vec2 uv, mat2 M, float k, inout vec2 g, inout float v) {
+  vec4 a = texture(uWaves, uv);
+  vec2 s = a.rg * 2.0 - 1.0;
+  g += (s * M) * k;                          // s * M = transpose(M) * s: texture-space slope back to world axes
+  v += max(2.0 * a.a - dot(s, s), 0.0) * (k * k);
+  return a.b - 0.5;
+}
 // unfogged radiance of the sea surface (y = 0) at p; V = unit vector toward the camera, dist = distance to it
 vec3 seaSurface(vec2 p, float dist, vec3 V) {
   float t = uTime;
   float depth = -heightLin(p);
-  float fade = clamp(1.0 - dist * (1.0 / 9000.0), 0.0, 1.0);
-  // wave normals: scrolling layers of the tiling derivative texture + a directional swell
-  vec4 w1 = texture(uDetail, p * W1 + t * (vec2(0.011, 0.007) * DINV));
-  vec4 w2 = texture(uDetail, p * W2 + vec2(0.41, 0.17) - t * (vec2(0.013, 0.021) * DINV));
-  vec2 g = (w1.gb - 0.5) * (4.0 * 0.0085 * 1.4) + (w2.gb - 0.5) * (4.0 * 0.023 * 0.8);
+  // cloud shadow, and the wind roughness field from the same cloud-coverage fetch (gusty, rougher water under the
+  // cloud bands; drifts with the clouds and breaks up the tiling of the wave layers)
+  vec2 sp = p + uSunDir.xz * (uCloudAlt / max(uSunDir.y, 0.05));
+  float cA = texture(uCloudTex, sp * CLOUD_INV_TILE + uCloudOff).a;
+  float cs = 1.0 - 0.52 * smoothstep(uCloudCut, uCloudCut + 0.3, cA);   // softened: open water scatters light in
+  float rough = 0.6 + 0.8 * smoothstep(0.3, 0.6, cA);
+  vec2 g = vec2(0.0);
+  float var = WVAR_REST;
+  float wh = waveLayer((WR1 * p) * WT1 + t * vec2(0.0060, 0.0011), WR1, WK1, g, var);
+  wh += waveLayer((WR2 * p) * WT2 + g * 0.3 + t * vec2(-0.0102, 0.0182), WR2, WK2, g, var);   // warped by layer 1
 #if WATER >= 3
-  vec4 w3 = texture(uDetail, p * W3 + vec2(0.73, 0.59) + t * (vec2(0.03, -0.019) * DINV));
-  g += (w3.gb - 0.5) * (4.0 * 0.071 * 0.45 * fade);
+  waveLayer((WR3 * p) * WT3 + t * vec2(0.0420, -0.0311), WR3, WK3, g, var);
 #endif
 #if WATER >= 4
-  float fade2 = clamp(1.0 - dist * (1.0 / 2500.0), 0.0, 1.0);
-  vec4 w4 = texture(uDetail, p * W4 + vec2(0.29, 0.83) + t * (vec2(0.08, 0.05) * DINV));
-  g += (w4.gb - 0.5) * (4.0 * 0.19 * 0.2 * fade2);
+  waveLayer((WR4 * p) * WT4 + t * vec2(-0.0905, -0.0604), WR4, WK4, g, var);
 #endif
-  float ph = dot(p, vec2(0.62, 0.78)) * 0.35 + t * 1.9 + (w1.r - 0.5) * 4.2;
-  g += vec2(0.62, 0.78) * (cos(ph) * (0.35 * 0.09) * fade);
+  g *= rough; var *= rough * rough;
+  var += 0.0016 + dist * 8e-7;               // capillary floor + extra blur far out (no glint shimmer at range)
   vec3 N = normalize(vec3(-g.x, 1.0, -g.y));
-  N = normalize(mix(vec3(0.0, 1.0, 0.0), N, 0.3 + 0.7 * fade));
 
+  float cosV = max(dot(V, N), 0.02);
+  float fres = 0.02 + 0.98 * pow(1.0 - cosV, 5.0);
   vec3 R = reflect(-V, N);
-  R.y = max(R.y, 0.02);
-  R = normalize(R);
-  vec3 skyR = skyLut(R);
-  float cosV = max(dot(V, N), 0.0);
-  float fres = 0.025 + 0.975 * pow(1.0 - cosV, 5.0);
+  R.y = abs(R.y);                            // back-facing micro normals at grazing angles: fold the ray up
+  R = normalize(R + vec3(0.0, 0.015, 0.0));
+  vec3 skyR = skyLut(R) * 0.85;              // (a touch under a mirror: keeps sun-side water from washing out)
+  vec3 refl = skyR;
+#if REFL > 0
+  // cloud layer seen in the water (coverage only; the mip chosen from the ray footprint blurs it like real chop)
+  float tC = (uCloudAlt) / max(R.y, 0.04);
+  float cv = texture(uCloudTex, (p + R.xz * tC) * CLOUD_INV_TILE + uCloudOff).r;
+  float cov = smoothstep(uCloudCut - 0.05, uCloudCut + 0.35, cv) * (1.0 - smoothstep(18000.0, 42000.0, tC));
+  vec3 cloudC = (uSkyAmb * 0.55 + uGroundAmb * 0.45 + uSunColor * 0.22) * uCloudTint;   // cloud underside, as in cloudLayer
+  refl = mix(refl, mix(skyR, cloudC, 0.75), cov);
+  // reflected terrain: exponential march on the max-filtered height mips (skipped where the ray climbs too steeply to
+  // meet any terrain, or the Fresnel term makes the reflection negligible). The march runs along the view azimuth with
+  // the wave-perturbed elevation: neighbouring pixels fetch neighbouring texels (cache friendly) and reflections smear
+  // vertically, as they do on real chop.
+  float rs = R.y / max(length(R.xz), 1e-3);
+  if (rs < 0.5 && fres > 0.06) {
+    vec2 rd = -V.xz / max(length(V.xz), 1e-4);
+    float occ = 0.0, hitS = 1.0, hitH = 0.0, s = REFL_S0;
+    for (int i = 0; i < REFL; i++) {
+      float th = textureLod(uHeightLin, hmUV(p + rd * s), clamp(log2(s * (0.06 * HM_INV_STEP)), 0.0, 7.0)).r;
+      float o = clamp((th - s * rs) / (0.04 * s), 0.0, 1.0);
+      if (o > occ) { occ = o; hitS = s; hitH = th; }
+      s *= REFL_MUL;
+    }
+    if (occ > 0.0) {
+      float hh = max(hitH, 0.0);
+      vec3 alb = mix(vec3(0.075, 0.105, 0.045), vec3(0.20, 0.18, 0.15), smoothstep(500.0, 1300.0, hh));
+      alb = mix(alb, vec3(0.75, 0.78, 0.82), smoothstep(1650.0, 1900.0, hh));
+      alb = mix(vec3(0.42, 0.37, 0.26), alb, smoothstep(4.0, 25.0, hh));
+      vec3 land = alb * (uSunColor * 0.35 + uSkyAmb * 0.9 + uGroundAmb * 0.3);
+      float Tr = exp(-(odepth(0.0, hh * 0.5, hitS, 1.0 / 1200.0, uFogMie) + odepth(0.0, hh * 0.5, hitS, 1.0 / 8000.0, uFogRay)));
+      refl = mix(refl, land * Tr + skyR * (1.0 - Tr), occ);
+    }
+  }
+#endif
 
-  float cs = cloudShadow(p, 0.0);
-  float ndl = max(dot(N, uSunDir), 0.0);
-  vec3 light = uSunColor * ((0.15 + 0.35 * ndl) * cs) + uSkyAmb * 0.9;
-  vec3 deep = vec3(0.010, 0.040, 0.075);
-  vec3 shallow = vec3(0.06, 0.26, 0.26);
-  vec3 body = mix(shallow, deep, 1.0 - exp(-max(depth, 0.0) * 0.07));
-  body = mix(vec3(0.36, 0.30, 0.21), body, smoothstep(-1.0, 3.0, depth));
-  body *= light;
-  vec3 col = mix(body, skyR * 0.5, fres);
+  // body: seabed through the water column (light down + view path refracted up), Beer-Lambert per channel
+  vec3 lightIn = uSunColor * (max(uSunDir.y, 0.0) * cs) + uSkyAmb;
+  float cosR = sqrt(1.0 - (1.0 - cosV * cosV) * 0.5625);
+  float dpos = max(depth, 0.0);
+  vec3 Tw = exp(-vec3(0.42, 0.085, 0.05) * (dpos * (1.0 + 1.0 / cosR)));
+  vec3 bed = vec3(0.40, 0.36, 0.25) * (0.85 + 0.3 * wh);
+  vec3 deepC = vec3(0.006, 0.030, 0.056);
+  vec3 body = (bed * Tw + deepC * (1.0 - Tw)) * lightIn * uWaterTint;
+  // light scattered through wave crests toward the camera (back-lit by a low sun)
+  float back = pow(max(dot(-V.xz, uSunDir.xz) * 0.5 + 0.5, 0.0), 3.0);
+  body += vec3(0.02, 0.09, 0.08) * uSunColor * (max(wh + 0.1, 0.0) * back * cs * 0.35);
+  body = mix(vec3(0.36, 0.30, 0.21) * lightIn, body, smoothstep(-1.0, 0.6, depth));
+  vec3 col = mix(body, refl, fres);
 
-  // sun glitter: tight sparkles near, broader lobe far (normals are flattened with distance)
-  float sdot = max(dot(R, uSunDir), 0.0);
-  float shin = mix(60.0, 900.0, fade);
-  float glit = pow(sdot, shin) * mix(0.25, 1.0, fade) * 70.0 + pow(sdot, 40.0) * 0.8;
-  col += uSunColor * glit * (0.3 + 0.7 * fres) * cs;
+  // sun specular: Beckmann (mean-square slope = var), Schlick Fresnel at the half vector, clamped HDR peak
+  vec3 H = normalize(uSunDir + V);
+  float nh = max(dot(N, H), 1e-3);
+  float nh2 = nh * nh;
+  float m2 = var;
+  float D = exp((nh2 - 1.0) / (nh2 * m2)) / (3.14159 * m2 * nh2 * nh2);
+  float fh = 0.02 + 0.98 * pow(1.0 - max(dot(V, H), 0.0), 5.0);
+  float spec = min(D * fh / (4.0 * cosV), 60.0) * smoothstep(0.0, 0.06, uSunDir.y);
+  col += uSunColor * (spec * cs * uSpecK);
 
 #if FOAM
-  // shoreline foam (coherent branch: open water skips it)
-  if (depth < 12.0) {
-    float foamN = w2.a;
-    float depthF = -heightLin(p + (w2.gb - 0.5) * 56.0);
-    float foam = smoothstep(4.0, 0.3, depthF + (foamN - 0.5) * 3.0);
-    foam *= 0.55 + 0.45 * sin(depth * 2.2 - t * 1.5 + foamN * 6.0);
-    foam = clamp(foam, 0.0, 1.0) * smoothstep(-1.5, 0.5, depth) * (0.3 + 0.7 * fade);
-    col = mix(col, vec3(0.85, 0.88, 0.9) * (uSkyAmb + uSunColor * 0.45 * cs), foam * 0.85);
+  // shoreline foam (coherent branch: open water skips it): a soft edge line plus bands drifting toward the beach
+  if (depth < 7.0) {
+    float fade = clamp(1.0 - dist * (1.0 / 9000.0), 0.0, 1.0);
+    float depthF = -heightLin(p + g * 90.0);
+    float n = wh * 2.0;
+    float fd = depthF + n * 1.4;
+    float edge = smoothstep(1.6, 0.1, fd);
+    float band = 0.5 + 0.5 * sin(fd * 1.6 + t * 1.3 + n * 2.0);
+    band = smoothstep(0.55, 0.95, band) * smoothstep(5.5, 1.0, fd);
+    float foam = max(edge, band * 0.75) * smoothstep(0.25, 0.65, 0.5 + n * 0.6 + edge * 0.4);
+    foam *= smoothstep(-1.2, 0.3, depth) * (0.35 + 0.65 * fade);
+    col = mix(col, vec3(0.85, 0.88, 0.9) * (uSkyAmb + uSunColor * (max(uSunDir.y, 0.0) * 1.2 * cs)), foam * 0.8);
   }
 #endif
   return col;
@@ -719,7 +849,7 @@ vec4 cloudLayer(vec2 p, float dist, vec3 V) {
   vec3 top = uSunColor * ((0.3 + 0.7 * max(ndl, 0.0)) * (0.8 + 0.2 * thick) * 0.95) + uSkyAmb * 0.8;
   float fwd = pow(max(dot(-V, uSunDir), 0.0), 6.0);
   vec3 bottom = (uSkyAmb * 0.55 + uGroundAmb * 0.45) * (1.05 - 0.55 * thick) + uSunColor * ((0.22 + 0.35 * fwd) * (1.0 - thick));
-  return vec4(mix(bottom, top, above), alpha);
+  return vec4(mix(bottom, top, above) * uCloudTint, alpha);
 }
 `;
 
@@ -739,10 +869,31 @@ void main() {
 const SKY_FRAG = GLSL_COMMON + GLSL_LIGHT + GLSL_CLOUD + /* glsl */`
 uniform vec3 uSunDiscCol;
 uniform float uSkyClouds;      // 1: camera below the cloud layer, composite the layer here
+uniform float uStars;          // star field strength (night presets; 0 = skipped, a uniform branch)
 varying vec3 vDir;
+// sparse hashed stars on a cube map grid (even density), ~1.3 px soft dots sized from the screen-space derivative
+vec3 starField(vec3 dir) {
+  vec3 a = abs(dir);
+  vec2 q; float face;
+  if (a.x > a.y && a.x > a.z) { q = dir.zy / a.x; face = dir.x > 0.0 ? 0.0 : 1.0; }
+  else if (a.y > a.z) { q = dir.xz / a.y; face = dir.y > 0.0 ? 2.0 : 3.0; }
+  else { q = dir.xy / a.z; face = dir.z > 0.0 ? 4.0 : 5.0; }
+  vec2 g = q * 150.0 + 160.0;
+  vec2 cell = floor(g), o = vec2(face * 400.0, 0.0);
+  float h = hash2(cell + o);
+  if (h < 0.991) return vec3(0.0);
+  vec2 c = vec2(hash2(cell + o + vec2(0.0, 401.0)), hash2(cell + o + vec2(0.0, 977.0))) * 0.7 + 0.15;
+  float px = max(length(fwidth(g)), 1e-4);
+  float d = length(g - cell - c) / (1.1 * px);
+  float m = (h - 0.991) * (1.0 / 0.009);
+  float mag = 0.01 + 0.12 * m * m * m * m;
+  vec3 tint = mix(vec3(0.86, 0.92, 1.0), vec3(1.0, 0.93, 0.84), hash2(cell + o + vec2(0.0, 1601.0)));
+  return tint * (mag * exp(-d * d * 2.2) * min(1.0, 0.5 / px));
+}
 void main() {
   vec3 dir = normalize(vDir);
   vec3 col = skyLut(dir);
+  if (uStars > 0.0 && dir.y > 0.0) col += starField(dir) * (uStars * smoothstep(0.02, 0.3, dir.y));
   col += uSunDiscCol * (smoothstep(SUN_COS, SUN_COS + 0.00003, dot(dir, uSunDir)) * step(0.0, dir.y));
   if (uSkyClouds > 0.5) {
     float tHit = (uCloudAlt - cameraPosition.y) / max(dir.y, 1e-3);
@@ -1015,8 +1166,40 @@ void main() {
   vec3 Nw = normalize(vRight * Nl.x + vUp * Nl.y + vBack * Nl.z);
   float ndl = clamp(dot(Nw, uSunDir) * 0.5 + 0.5, 0.0, 1.0);
   vec3 lit = uSunColor * (0.1 + 0.8 * ndl * ndl) + uSkyAmb * 0.6 + uGroundAmb * 0.2;
-  vec3 col = lit * (0.85 + 0.3 * n);
+  vec3 col = lit * (0.85 + 0.3 * n) * (uCloudTint * uPuffK);
   gl_FragColor = vec4(col * vFogT + vHaze, alpha);
+}
+`;
+
+// ---------------------------------------------------------------------------- GROUND LIGHTS (night presets)
+// Settlement and harbour lights: one Points draw of static sprites on low, gentle land (World._buildGroundLights), only
+// visible while NIGHT_FX.uGround > 0. Hazed by the same height fog as the terrain; additive HDR, depth tested.
+const GLIGHT_VERT = GLSL_COMMON + /* glsl */`
+attribute float aSeed;
+uniform float uGround;
+uniform float uViewportH;
+varying vec3 vCol;
+void main() {
+  vec3 toP = position - cameraPosition;
+  float dist = max(length(toP), 1.0);
+  float raw = uViewportH * 5.0 / dist;                    // a ~5 m glow
+  float sz = clamp(raw, 1.7, 4.5);
+  float warm = step(0.55, fract(aSeed * 7.13));
+  vec3 c = mix(vec3(1.0, 0.82, 0.55), vec3(1.0, 0.5, 0.16), warm);   // warm white / sodium
+  float I = uGround * (0.7 + 0.9 * fract(aSeed * 3.71)) * clamp(raw / 1.7, 0.45, 1.0);
+  I *= fogT(position.y, dist) * (1.0 - smoothstep(15000.0, 24000.0, dist));
+  vCol = c * (2.2 * I);
+  gl_PointSize = sz;
+  gl_Position = projectionMatrix * viewMatrix * vec4(position, 1.0);
+}
+`;
+const GLIGHT_FRAG = /* glsl */`
+varying vec3 vCol;
+void main() {
+  vec2 d = gl_PointCoord - 0.5;
+  float r2 = dot(d, d) * 4.0;
+  if (r2 > 1.0) discard;
+  gl_FragColor = vec4(vCol * exp(-r2 * 3.5), 1.0);
 }
 `;
 
@@ -1128,6 +1311,8 @@ const _projScreen = new THREE.Matrix4();
 const _frustum = new THREE.Frustum();
 const CULL_PLANES = [0, 1, 2, 3, 5];      // THREE.Frustum planes: right, left, bottom, top, (far skipped), near
 const _fex = [0, 0, 0];
+const _vpS = new THREE.Vector2();
+const SUN_DEFAULT_KEY = '22/35';           // setLighting key of SUN_DIR_DEFAULT (elevation / azimuth, degrees)
 
 export class World {
   constructor(scene, renderer) {
@@ -1183,6 +1368,7 @@ export class World {
     this._detailRT = bakeTexture(renderer, DETAIL_N, BAKE_DETAIL_FRAG, 2);
     this._cloudRT = bakeTexture(renderer, CLOUD_TEX_N, BAKE_CLOUD_FRAG, 4);
     this._biomeRT = bakeTexture(renderer, BIOME_N, BAKE_BIOME_FRAG, 1, THREE.ClampToEdgeWrapping);
+    this._waveRT = bakeTexture(renderer, WAVE_N, BAKE_WAVE_FRAG, 1);
 
     // ---- shared uniforms (objects are shared between materials: set once, everyone sees it)
     const U = this.uniforms = {
@@ -1193,6 +1379,7 @@ export class World {
       uDetail: { value: this._detailRT.texture },
       uCloudTex: { value: this._cloudRT.texture },
       uBiome: { value: this._biomeRT.texture },
+      uWaves: { value: this._waveRT.texture },
       uSunDir: { value: this.sunDirection },
       uSunE: { value: 0 },
       uSunFade: { value: 0 },
@@ -1208,6 +1395,13 @@ export class World {
       uWind: { value: new THREE.Vector2(CLOUD_WIND[0], CLOUD_WIND[1]) },
       uCloudAlt: { value: this.cloudAltitude },
       uCloudCut: { value: 0.49 },
+      uCloudTint: { value: new THREE.Vector3(1, 1, 1) },
+      uWaterTint: { value: new THREE.Vector3(1, 1, 1) },
+      uSpecK: { value: 1 },
+      uPuffK: { value: 1 },
+      uStars: { value: 0 },
+      uGround: NIGHT_FX.uGround,
+      uViewportH: { value: 1080 },
       uCloudOff: { value: new THREE.Vector2(0, 0) },
       uCamCell: { value: new THREE.Vector2(0, 0) },
       uPuffG: { value: 8 },
@@ -1221,6 +1415,11 @@ export class World {
     U.uOrigins.value = this._origins;
     for (let i = 0; i < 5; i++) U.uCull.value.push(new THREE.Vector4(0, 0, 0, 1));
     this._envDiscCol = new THREE.Vector3();
+    this._skyGrade = null;                 // time-of-day sky grade (setLighting); null = the analytic day sky as is
+    this._discK = 1; this._discTint = [1, 1, 1];
+    this._envIntensity = 1;
+    this._shadowCache = new Map();         // baked terrain shadow channel per light direction (setLighting)
+    this._lightingKey = '';
     this._updateSky();
 
     // ---- sky dome: drawn LAST among opaque objects, at the far plane with depth test (only uncovered pixels shade)
@@ -1238,7 +1437,7 @@ export class World {
     this._cell0 = 8;
     this._terrainMat = new THREE.ShaderMaterial({
       uniforms: U, vertexShader: TERRAIN_VERT, fragmentShader: TERRAIN_FRAG, fog: false,
-      defines: { NLEV: 1, CELL0: '8.0', LHALF_INIT: '64.0', LLOD_INIT: '0.0', DETAIL: 3, WATER: 3, FOAM: 1 },
+      defines: { NLEV: 1, CELL0: '8.0', LHALF_INIT: '64.0', LLOD_INIT: '0.0', DETAIL: 3, WATER: 3, FOAM: 1, REFL: 7 },
     });
     this._terrainGeo = new THREE.BufferGeometry();
     this.terrain = new THREE.Mesh(this._terrainGeo, this._terrainMat);
@@ -1252,7 +1451,7 @@ export class World {
     this._waterGeo = buildDiscGeometry(24, 1.28, 49000, 96);
     this._waterMat = new THREE.ShaderMaterial({
       uniforms: U, vertexShader: WATER_VERT, fragmentShader: WATER_FRAG, side: THREE.DoubleSide, fog: false,
-      defines: { WATER: 3, FOAM: 1 },
+      defines: { WATER: 3, FOAM: 1, REFL: 7 },
     });
     this.water = new THREE.Mesh(this._waterGeo, this._waterMat);
     this.water.frustumCulled = false; this.water.renderOrder = 2;
@@ -1303,11 +1502,12 @@ export class World {
     const U = this.uniforms, s = this.sunDirection;
     U.uSunE.value = sunIntensity(s.y);
     U.uSunFade.value = Math.min(1, Math.max(0, Math.pow(1 - s.y, 5)));
-    buildSkyLut(this._skyLutData, U.uSunE.value, U.uSunFade.value, U.uSkyScale.value);
+    const sk = this._skyGrade ? this._skyGrade.k : 1, t = this._discTint;
+    buildSkyLut(this._skyLutData, U.uSunE.value, U.uSunFade.value, U.uSkyScale.value * sk, this._skyGrade);
     this._skyLutTex.needsUpdate = true;
     skyExtinction(s.y, _fex);
-    const k = U.uSunDisc.value * U.uSkyScale.value;
-    U.uSunDiscCol.value.set(_fex[0] * k, _fex[1] * k, _fex[2] * k);
+    const k = U.uSunDisc.value * U.uSkyScale.value * this._discK;
+    U.uSunDiscCol.value.set(_fex[0] * k * t[0], _fex[1] * k * t[1], _fex[2] * k * t[2]);
     this._envDiscCol.copy(U.uSunDiscCol.value).multiplyScalar(0.6 / 40);   // tame disc for reflections
   }
 
@@ -1315,29 +1515,32 @@ export class World {
     const U = this.uniforms;
     const sd = [this.sunDirection.x, this.sunDirection.y, this.sunDirection.z];
     const hl = Math.hypot(sd[0], sd[2]) || 1;
-    const hz = skyRadianceJS([-sd[2] / hl, 0.0, sd[0] / hl], sd, U.uSunE.value, U.uSkyScale.value);
+    const hz = skyRadianceJS([-sd[2] / hl, 0.0, sd[0] / hl], sd, U.uSunE.value, U.uSkyScale.value * (this._skyGrade ? this._skyGrade.k : 1), this._skyGrade);
     this.hazeColor.setRGB(hz[0], hz[1], hz[2], THREE.LinearSRGBColorSpace);
     if (this.scene.fog && this.scene.fog.color) this.scene.fog.color.copy(this.hazeColor);
   }
 
   // One-time (per sun change) PMREM environment so the metallic aircraft get sky reflections.
+  // The generator, sky material and scene are kept (built once): a time-of-day change re-renders the environment without
+  // compiling anything; the previous environment target is disposed.
   _buildEnvironment() {
     try {
       const U = this.uniforms;
-      const pmrem = new THREE.PMREMGenerator(this.renderer);
-      const envMat = new THREE.ShaderMaterial({
-        uniforms: { uSkyLut: U.uSkyLut, uSunDir: U.uSunDir, uSunDiscCol: { value: this._envDiscCol }, uSkyClouds: { value: 0 } },
-        vertexShader: SKY_VERT, fragmentShader: SKY_FRAG, side: THREE.BackSide, depthTest: false, depthWrite: false,
-      });
-      const envScene = new THREE.Scene();
-      const envGeo = new THREE.SphereGeometry(50, 24, 12);
-      envScene.add(new THREE.Mesh(envGeo, envMat));
-      const rt = pmrem.fromScene(envScene, 0, 1, 1000);
+      if (!this._pmrem) {
+        this._pmrem = new THREE.PMREMGenerator(this.renderer);
+        this._envMat = new THREE.ShaderMaterial({
+          uniforms: { uSkyLut: U.uSkyLut, uSunDir: U.uSunDir, uSunDiscCol: { value: this._envDiscCol }, uSkyClouds: { value: 0 } },
+          vertexShader: SKY_VERT, fragmentShader: SKY_FRAG, side: THREE.BackSide, depthTest: false, depthWrite: false,
+        });
+        this._envScene = new THREE.Scene();
+        this._envGeo = new THREE.SphereGeometry(50, 24, 12);
+        this._envScene.add(new THREE.Mesh(this._envGeo, this._envMat));
+      }
+      const rt = this._pmrem.fromScene(this._envScene, 0, 1, 1000);
       if (this._envRT) { if (this.scene.environment === this._envRT.texture) this.scene.environment = null; this._envRT.dispose(); }
       this._envRT = rt;
       this.scene.environment = rt.texture;
-      if ('environmentIntensity' in this.scene) this.scene.environmentIntensity = 1.0;
-      pmrem.dispose(); envMat.dispose(); envGeo.dispose();
+      if ('environmentIntensity' in this.scene) this.scene.environmentIntensity = this._envIntensity;
     } catch (e) { /* continue without an environment map */ }
   }
 
@@ -1357,7 +1560,7 @@ export class World {
   /**
    * Rendering quality: 'low' | 'medium' | 'high' | 'ultra'. Callable at any time (shader variants recompile once and
    * are cached by three; the terrain grid is rebuilt when its density changes). `overrides` (optional, for testing)
-   * replaces individual preset fields: { levels, cell0, detail, water, foam, puffG }.
+   * replaces individual preset fields: { levels, cell0, detail, water, foam, refl, puffG }.
    */
   setQuality(q, overrides = null) {
     if (!QUALITY[q] || (q === this.quality && !overrides)) return;
@@ -1375,9 +1578,9 @@ export class World {
     const td = this._terrainMat.defines;
     const lods = cfg.levels.map((m, L) => f(cfg.peaks ? +Math.max(-1, Math.log2(cfg.cell0 * (1 << L) / HM_STEP) + MAXMIP_BIAS).toFixed(3) : -1));
     Object.assign(td, { NLEV: cfg.levels.length, CELL0: f(cfg.cell0), LHALF_INIT: cfg.levels.map((m) => f(m / 2)).join(','),
-      LLOD_INIT: lods.join(','), DETAIL: cfg.detail, WATER: cfg.water, FOAM: cfg.foam });
+      LLOD_INIT: lods.join(','), DETAIL: cfg.detail, WATER: cfg.water, FOAM: cfg.foam, REFL: cfg.refl });
     this._terrainMat.needsUpdate = true;
-    Object.assign(this._waterMat.defines, { WATER: cfg.water, FOAM: cfg.foam });
+    Object.assign(this._waterMat.defines, { WATER: cfg.water, FOAM: cfg.foam, REFL: cfg.refl });
     this._waterMat.needsUpdate = true;
     this.puffs.count = cfg.puffG * cfg.puffG;
     this.uniforms.uPuffG.value = cfg.puffG;
@@ -1439,6 +1642,7 @@ export class World {
       bakeTexture(r, DETAIL_N, BAKE_DETAIL_FRAG, 2, THREE.RepeatWrapping, this._detailRT);
       bakeTexture(r, CLOUD_TEX_N, BAKE_CLOUD_FRAG, 4, THREE.RepeatWrapping, this._cloudRT);
       bakeTexture(r, BIOME_N, BAKE_BIOME_FRAG, 1, THREE.ClampToEdgeWrapping, this._biomeRT);
+      bakeTexture(r, WAVE_N, BAKE_WAVE_FRAG, 1, THREE.RepeatWrapping, this._waveRT);
       this._buildEnvironment();
     } catch (e) { console.warn('world GPU restore failed', e); }
   }
@@ -1454,16 +1658,113 @@ export class World {
     }
   }
 
+  /**
+   * Time-of-day lighting (js/timeofday.js preset): light direction and colours, ambient, sky grade, sun / moon disc,
+   * stars, fog, cloud coverage and tint, sea tint and sun-path strength, aircraft lights and environment intensity,
+   * ground lights. Values only, nothing per frame. When the light direction changes the terrain shadow is re-baked
+   * (cached per direction, so each preset bakes once) and the environment map is rebuilt (the old one is disposed);
+   * when only the sky grade changes, just the sky LUT and the environment. The day preset reproduces the defaults.
+   */
+  setLighting(P) {
+    const U = this.uniforms, v3 = (u, a) => u.value.set(a[0], a[1], a[2]);
+    v3(U.uSunColor, P.sunColor); v3(U.uSkyAmb, P.skyAmb); v3(U.uGroundAmb, P.groundAmb);
+    U.uFogMie.value = 8.0e-5 * P.fog; U.uFogRay.value = 0.7e-5 * P.fog;
+    if (this.scene.fog) this.scene.fog.density = U.uFogMie.value * Math.exp(-800 / 1200) + U.uFogRay.value * Math.exp(-800 / 8000);
+    U.uCloudCut.value = P.clouds.cut; v3(U.uCloudTint, P.clouds.tint); U.uPuffK.value = P.clouds.puff;
+    v3(U.uWaterTint, P.water.tint); U.uSpecK.value = P.water.spec;
+    U.uStars.value = P.stars;
+    this.sunLight.color.setHex(P.light.color); this.sunLight.intensity = P.light.intensity;
+    this.hemiLight.color.setHex(P.hemi.sky); this.hemiLight.groundColor.setHex(P.hemi.ground); this.hemiLight.intensity = P.hemi.intensity;
+    this._envIntensity = P.env;
+    if ('environmentIntensity' in this.scene) this.scene.environmentIntensity = P.env;
+    if (P.lights.ground > 0 && !this.groundLights) this._buildGroundLights();
+    if (this.groundLights) this.groundLights.visible = P.lights.ground > 0;
+
+    const el = P.sun.elev * Math.PI / 180, az = P.sun.az * Math.PI / 180;
+    const dirKey = P.sun.elev + '/' + P.sun.az;
+    const g = P.sky, isDay = g.k === 1 && g.sat === 1 && !g.base[0] && !g.base[1] && !g.base[2] && g.tint.every((v) => v === 1);
+    const key = dirKey + '|' + JSON.stringify(g) + '|' + JSON.stringify(P.disc);
+    if (key === this._lightingKey) return;
+    const prevDir = this._lightingKey ? this._lightingKey.split('|')[0] : SUN_DEFAULT_KEY, dirChanged = prevDir !== dirKey;
+    this._lightingKey = key;
+    this._skyGrade = isDay ? null : g;
+    this._discK = P.disc.k; this._discTint = P.disc.tint;
+    const t0 = performance.now();
+    if (dirChanged) {
+      this.sunDirection.set(-Math.cos(el) * Math.sin(az), Math.sin(el), -Math.cos(el) * Math.cos(az)).normalize();
+      this.sunLight.position.copy(this.sunDirection).multiplyScalar(5000);
+      this._applyShadow(dirKey, prevDir);
+    }
+    const t1 = performance.now();
+    this._updateSky();
+    this._updateFogColor();
+    const t2 = performance.now();
+    this._buildEnvironment();
+    this.lightingMs = { shadow: +(t1 - t0).toFixed(1), sky: +(t2 - t1).toFixed(1), env: +(performance.now() - t2).toFixed(1) };
+  }
+  /** Terrain shadow channel for the current light direction: from the cache, else baked (~100 ms) and cached. */
+  _applyShadow(dirKey, prevDir) {
+    const aux = this._aux, n = HM_N * HM_N, C = this._shadowCache;
+    if (!C.has(prevDir)) { const keep = new Uint8Array(n); for (let i = 0; i < n; i++) keep[i] = aux[i * 4 + 2]; C.set(prevDir, keep); }
+    let ch = C.get(dirKey);
+    if (!ch) {
+      bakeSunShadow(this._height, aux, [this.sunDirection.x, this.sunDirection.y, this.sunDirection.z]);
+      ch = new Uint8Array(n);
+      for (let i = 0; i < n; i++) ch[i] = aux[i * 4 + 2];
+      C.set(dirKey, ch);
+    } else {
+      for (let i = 0; i < n; i++) aux[i * 4 + 2] = ch[i];
+    }
+    this.auxTexture.needsUpdate = true;
+  }
+  /** Settlement / harbour lights (night presets): static sprites on low, gentle land, clustered by a noise field and
+   *  thickest near the coast. Built once on first use, ~2-3k points, one draw call while visible. */
+  _buildGroundLights() {
+    const pts = [], seeds = [], STEP = 80, MAX = 3200;
+    for (let z = -WORLD_HALF; z <= WORLD_HALF && pts.length < MAX * 3; z += STEP) {
+      for (let x = -WORLD_HALF; x <= WORLD_HALF; x += STEP) {
+        const r = ihash(Math.round(x / STEP) + 4000, Math.round(z / STEP) + 9000);
+        const jx = x + (r - 0.5) * STEP * 0.9, jz = z + (((r * 7919) % 1) - 0.5) * STEP * 0.9;
+        const h = this.getHeight(jx, jz);
+        if (h < 2.5 || h > 420) continue;
+        const slope = Math.abs(this.getHeight(jx + 30, jz) - this.getHeight(jx - 30, jz)) + Math.abs(this.getHeight(jx, jz + 30) - this.getHeight(jx, jz - 30));
+        if (slope > 16) continue;
+        const town = gnoise(jx / 2600 + 41.3, jz / 2600 - 17.9) + 0.45 * gnoise(jx / 600 - 3.3, jz / 600 + 8.1);
+        const coast = h < 40 ? 0.3 : 0;
+        const dens = sstep(0.42, 0.85, town + coast);
+        if (((r * 104729) % 1) > dens * 0.8) continue;
+        pts.push(jx, h + 3, jz); seeds.push((r * 31337) % 1);
+      }
+    }
+    let n = pts.length / 3;
+    if (n > MAX) { n = MAX; pts.length = MAX * 3; seeds.length = MAX; }
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(pts, 3));
+    geo.setAttribute('aSeed', new THREE.Float32BufferAttribute(seeds, 1));
+    const mat = new THREE.ShaderMaterial({
+      uniforms: this.uniforms, vertexShader: GLIGHT_VERT, fragmentShader: GLIGHT_FRAG,
+      transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, fog: false,
+    });
+    const pl = new THREE.Points(geo, mat);
+    pl.name = 'groundLights'; pl.frustumCulled = false; pl.renderOrder = 12; pl.matrixAutoUpdate = false;
+    pl.onBeforeRender = (r) => { const rt = r.getRenderTarget(); this.uniforms.uViewportH.value = rt ? rt.height : r.getDrawingBufferSize(_vpS).y; };
+    this.groundLights = pl; this._glGeo = geo; this._glMat = mat;
+    this.groundLightCount = n;
+    this.scene.add(pl);
+  }
+
   dispose() {
     const s = this.scene;
+    if (this.groundLights) { s.remove(this.groundLights); this._glGeo.dispose(); this._glMat.dispose(); this.groundLights = null; }
     for (const m of [this.sky, this.terrain, this.water, this.clouds, this.puffs]) s.remove(m);
     s.remove(this.sunLight); s.remove(this.hemiLight);
     for (const g of [this._skyGeo, this._terrainGeo, this._waterGeo, this._cloudGeo, this._puffGeo]) if (g) g.dispose();
     for (const m of [this._skyMat, this._terrainMat, this._waterMat, this._cloudMat, this._puffMat]) m.dispose();
     this.heightTexture.dispose(); this._heightLinTex.dispose(); this.auxTexture.dispose(); this._skyLutTex.dispose();
-    this._detailRT.dispose(); this._cloudRT.dispose(); this._biomeRT.dispose();
+    this._detailRT.dispose(); this._cloudRT.dispose(); this._biomeRT.dispose(); this._waveRT.dispose();
     if (this.puffs.dispose) this.puffs.dispose();
     if (this._envRT) { if (s.environment === this._envRT.texture) s.environment = null; this._envRT.dispose(); this._envRT = null; }
+    if (this._pmrem) { this._pmrem.dispose(); this._envMat.dispose(); this._envGeo.dispose(); this._pmrem = null; }
     if (s.fog) s.fog = null;
   }
 }

@@ -1,5 +1,6 @@
 import * as THREE from 'https://cdnjs.cloudflare.com/ajax/libs/three.js/0.170.0/three.module.min.js';
 import { launchAllowed, noteLaunch } from './ai.js';
+import { NIGHT_FX } from './timeofday.js';
 
 // Ground and naval targets for missions. Every target is drawn as an instanced box or prism (2 draw calls total) and is
 // duck-typed like an Aircraft (position, velocity, quaternion, alive, team, health, applyDamage, hitRadius, isGround),
@@ -17,6 +18,7 @@ const WRECK = 0x1c1a18;
 const SINK_TIME = 10;             // s for a scripted sinking (sink) to settle under the surface
 const _m = new THREE.Matrix4(), _s = new THREE.Vector3(), _c = new THREE.Color(), _v = new THREE.Vector3(), _q = new THREE.Quaternion(), _q2 = new THREE.Quaternion();
 const ZERO_SCALE = new THREE.Matrix4().makeScale(0, 0, 0);
+const _vp2 = new THREE.Vector2();
 const UP = new THREE.Vector3(0, 1, 0), FWD = new THREE.Vector3(0, 0, -1), X_AXIS = new THREE.Vector3(1, 0, 0), Z_AXIS = new THREE.Vector3(0, 0, 1);
 export const GROUND_SCALE = 1.6, NAVAL_SCALE = 1.3;   // drawn size / life size: land units, ships
 /** Drawn-size multiplier of a unit type (def.size is life size). */
@@ -59,6 +61,31 @@ function tintFor(name, def) {
   if (name === 'building' || name === 'radar') return 0x8c8c84;
   return 0x5f6b45;
 }
+
+// Unit lights for the dark time-of-day presets (js/timeofday.js NIGHT_FX.uGround): one sprite on top of every live unit
+// (masthead white on ships, red on air defenses, amber elsewhere). Written at spawn / kill only; one Points draw, hidden
+// while the preset has no ground lights.
+const ULIGHT_VERT = /* glsl */`
+attribute vec3 aColor;
+uniform float uGround, uViewportH;
+varying vec3 vColor;
+void main() {
+  vec4 mv = modelViewMatrix * vec4(position, 1.0);
+  float dist = max(-mv.z, 1.0);
+  float raw = 2.2 * projectionMatrix[1][1] * uViewportH * 0.5 / dist;   // a ~2 m lamp glow
+  float on = step(0.001, aColor.r + aColor.g + aColor.b) * step(0.001, uGround);
+  gl_PointSize = on * clamp(raw, 2.0, 24.0);
+  vColor = aColor * (uGround * clamp(raw / 2.0, 0.5, 1.0) * (1.0 - smoothstep(14000.0, 22000.0, dist)));
+  gl_Position = on > 0.5 ? projectionMatrix * mv : vec4(2.0, 2.0, 2.0, 1.0);
+}`;
+const ULIGHT_FRAG = /* glsl */`
+varying vec3 vColor;
+void main() {
+  vec2 d = gl_PointCoord - 0.5;
+  float r2 = dot(d, d) * 4.0;
+  if (r2 > 1.0) discard;
+  gl_FragColor = vec4(vColor * exp(-r2 * 3.0), 1.0);
+}`;
 
 function prismGeometry() {
   // Triangular prism, unit size: x in [-0.5, 0.5], y in [0, 1] (ridge on top), z in [-0.5, 0.5]; flat shaded
@@ -199,6 +226,18 @@ export class GroundForces {
       for (let i = 0; i < CAPACITY; i++) { m.setMatrixAt(i, ZERO_SCALE); m.setColorAt(i, _c.set(0xffffff)); }
       scene.add(m);
     }
+    // unit lights (night presets): index = (prism ? CAPACITY : 0) + slot
+    const lg = new THREE.BufferGeometry();
+    lg.setAttribute('position', new THREE.BufferAttribute(new Float32Array(2 * CAPACITY * 3), 3));
+    lg.setAttribute('aColor', new THREE.BufferAttribute(new Float32Array(2 * CAPACITY * 3), 3).setUsage(THREE.DynamicDrawUsage));
+    this._lightMat = new THREE.ShaderMaterial({
+      vertexShader: ULIGHT_VERT, fragmentShader: ULIGHT_FRAG, uniforms: { uGround: NIGHT_FX.uGround, uViewportH: { value: 1080 } },
+      transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, fog: false,
+    });
+    this.lights = new THREE.Points(lg, this._lightMat);
+    this.lights.name = 'groundTargets:lights'; this.lights.frustumCulled = false; this.lights.visible = false; this.lights.renderOrder = 12;
+    this.lights.onBeforeRender = (r) => { const rt = r.getRenderTarget(); this._lightMat.uniforms.uViewportH.value = rt ? rt.height : r.getDrawingBufferSize(_vp2).y; };
+    scene.add(this.lights);
     this.targets = [];
     this.sinking = [];      // targets going down (sink), animated by updateSinking
     this.obstacle = null;   // optional (point) => true if solid structure (tunnel ridge) blocks that point (sight lines, hulls)
@@ -253,6 +292,9 @@ export class GroundForces {
     mesh.count = Math.max(mesh.count, slot + 1);
     mesh.instanceMatrix.needsUpdate = true; if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
     this.targets.push(t);
+    const li = (shape === 'prism' ? CAPACITY : 0) + slot;
+    this._light(li, x, y + S[1] + 1.5, z, def.naval ? 0.95 : def.shoots ? 1.0 : 1.0, def.naval ? 0.9 : def.shoots ? 0.12 : 0.55, def.naval ? 0.8 : def.shoots ? 0.08 : 0.2);
+    this.lights.visible = NIGHT_FX.uGround.value > 0;
     return t;
   }
   /**
@@ -324,8 +366,15 @@ export class GroundForces {
     }
     return true;
   }
+  /** Unit light li: position and colour (0 = off). Rare (spawn / kill), so the whole small buffer is re-sent. */
+  _light(li, x, y, z, r, g, b) {
+    const P = this.lights.geometry.attributes.position, C = this.lights.geometry.attributes.aColor;
+    if (x !== null) { P.array[li * 3] = x; P.array[li * 3 + 1] = y; P.array[li * 3 + 2] = z; P.needsUpdate = true; }
+    C.array[li * 3] = r; C.array[li * 3 + 1] = g; C.array[li * 3 + 2] = b; C.needsUpdate = true;
+  }
   kill(t) {
     if (!t.alive) return;
+    this._light((t.shape === 'prism' ? CAPACITY : 0) + t.slot, null, 0, 0, 0, 0, 0);
     t.alive = false; t.health = Math.min(t.health, 0);
     const mesh = this.meshes[t.shape];
     // leave a scorched, flattened wreck instead of popping out
@@ -339,6 +388,7 @@ export class GroundForces {
    *  the surface over SINK_TIME s, then is removed. updateSinking animates it. */
   sink(t) {
     if (!t.alive) return;
+    this._light((t.shape === 'prism' ? CAPACITY : 0) + t.slot, null, 0, 0, 0, 0, 0);
     t.alive = false; t.health = Math.min(t.health, 0); t.sinkT = 0;
     this.sinking.push(t);
     const mesh = this.meshes[t.shape];
@@ -369,6 +419,7 @@ export class GroundForces {
     }
     for (const t of this.targets) t.alive = false;
     this.targets.length = 0; this.sinking.length = 0;
+    const C = this.lights.geometry.attributes.aColor; C.array.fill(0); C.needsUpdate = true; this.lights.visible = false;
     this._aaSel.fill(null); this._aaCand.fill(null); this._aaN = 0; this._aaT = 0;
   }
   aliveCount() { let n = 0; for (const t of this.targets) if (t.alive) n++; return n; }
@@ -451,5 +502,6 @@ export class GroundForces {
   dispose() {
     for (const k of ['box', 'prism']) { const m = this.meshes[k]; m.removeFromParent(); m.geometry.dispose(); m.dispose(); }
     this.material.dispose();
+    this.lights.removeFromParent(); this.lights.geometry.dispose(); this._lightMat.dispose();
   }
 }

@@ -13,9 +13,9 @@
 //   Ramp    A smooth function of the round number: smoothstep from round 1 (Easy) to MERC_ROUND (Mercenary) across the
 //           rows of the game's DIFFICULTY table. Every numeric field follows it (enemy HP and skill, attacker caps,
 //           committed-flight caps, the enemy missile backstop, playerShare, the flak guns firing at once and their aim
-//           error: aaGuns 2 > 4 > 6 > 14, aaError 1.6 > 1.0), then holds; player armor (damage taken) and enemy missile
-//           agility follow the same curve but top out at the Hard row (TOPS). Past MERC_ROUND only the target count and
-//           the mix keep growing.
+//           error: aaGuns 2 > 4 > 6 > 14, aaError 1.6 > 1.0), then holds; player armor (damage taken) follows the same
+//           curve but tops out at the Hard row (TOPS). Missiles fly the same in every round (no difficulty field): later
+//           rounds only throw more of them. Past MERC_ROUND only the target count and the mix keep growing.
 //   Bounty  Every 5th round adds one named ace with a boss bar (the types with bars, except Q12 MAINSPRING, which stays
 //           the campaign's final boss).
 //   Ammo    Killing everything in a round needs at most AMMO_SHARE of the full missile load: per unit, hits-to-kill at
@@ -47,9 +47,9 @@ export const INTERMISSION = Object.freeze({ seconds: 6, repair: 0.35 });        
 export const WINGMEN = Object.freeze(['2', '3']);   // squadmates every round: COTTER #2 and RIVET #3 (mission.wingmen)
 export const BEST_KEY = 'wingnut.infinity.best';
 const LEVELS = ['easy', 'normal', 'hard', 'mercenary'];
-// DIFFICULTY fields whose ramp tops out below Mercenary: the damage the player takes and enemy missile agility go from
-// Easy in round 1 to Hard at MERC_ROUND (same smooth curve, scaled), then hold. Every other numeric field ends at Mercenary.
-const TOPS = { armor: 'hard', missileTurn: 'hard' };
+// DIFFICULTY fields whose ramp tops out below Mercenary: the damage the player takes goes from Easy in round 1 to Hard
+// at MERC_ROUND (same smooth curve, scaled), then holds. Every other numeric field ends at Mercenary.
+const TOPS = { armor: 'hard' };
 // Brain skill as js/main.js spawnAircraft sets it: clamp(0.38 + 0.06 x mission index + fighter bonus + difficulty skill,
 // 0.2, 0.95). Infinity's progress term (skillBase) stands in for 0.38 + 0.06 x mission index: 0.38 at round 1, and at
 // MERC_ROUND exactly what brings the Mercenary offset to the 0.95 ceiling.
@@ -131,6 +131,23 @@ function mix32(a, b) {
   let h = Math.imul((a >>> 0) ^ 0x9E3779B9, 0x85EBCA6B) ^ (b >>> 0);
   h = Math.imul(h ^ (h >>> 13), 0xC2B2AE35);
   return (h ^ (h >>> 16)) >>> 0;
+}
+// ---- time of day ---------------------------------------------------------------------------------------------------
+// The lighting preset (js/timeofday.js) changes every ROTATE_ROUNDS rounds: rounds 1-3 fly in daylight, then each block
+// draws a preset from the run seed, never the previous block's again, and never 'night' while any of its rounds is
+// within the first NIGHT_FROM - 1 rounds.
+export const ROTATE_ROUNDS = 3, NIGHT_FROM = 6;
+const TIME_ROTATION = ['day', 'golden', 'dusk', 'overcast', 'evening', 'night'];
+/** The lighting preset name of `round` in the run with seed `runSeed`. */
+export function timeForRound(round, runSeed) {
+  const block = Math.floor((Math.max(1, round) - 1) / ROTATE_ROUNDS);
+  let prev = 'day';
+  for (let b = 1; b <= block; b++) {
+    const first = b * ROTATE_ROUNDS + 1;
+    const opts = TIME_ROTATION.filter((t) => t !== prev && (t !== 'night' || first >= NIGHT_FROM));
+    prev = opts[Math.floor(rng32(mix32((runSeed >>> 0) ^ 0x7D1E, b))() * opts.length)];
+  }
+  return prev;
 }
 function pickWeighted(list, rand, weight) {
   let sum = 0;
@@ -243,7 +260,7 @@ function mixIndex(round, seed) {
 
 /**
  * Generate round `round` of a run. opts: { difficulty (DIFFICULTY table), missileLoad, missileDamage, seed (run) }.
- * Returns { round, seed, mix, ramp, bounty, groups, counts, hits, missiles, ammoShare, capMissiles }: groups are
+ * Returns { round, seed, mix, ramp, bounty, groups, counts, hits, missiles, ammoShare, capMissiles, time }: groups are
  * js/missions.js groups ({ kind, type, count, formation | area, position, distance }; the bounty's has bounty: true);
  * hits = missile hits to destroy them all; missiles = what the player fires for that at HIT_RATE with the squadmates'
  * share taken off, never above capMissiles (AMMO_SHARE, or BOUNTY_AMMO_SHARE, of missileLoad). The same run seed and
@@ -433,7 +450,8 @@ export function generateRound(round, opts) {
   let hits = 0;
   for (const g of groups) { counts[g.kind] += g.count; counts.total += g.count; hits += g.count * U(g.kind, g.type).hits; }
   const missiles = cost(groups);
-  return { round, seed, mix: mix.name, ramp, bounty, groups, counts, hits, missiles, ammoShare: missiles / missileLoad, capMissiles: capM };
+  return { round, seed, mix: mix.name, ramp, bounty, groups, counts, hits, missiles, ammoShare: missiles / missileLoad, capMissiles: capM,
+    time: timeForRound(round, runSeed) };
 }
 
 // ---- local best ---------------------------------------------------------------------------------------------------

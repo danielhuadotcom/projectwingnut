@@ -1,5 +1,6 @@
 import * as THREE from 'https://cdnjs.cloudflare.com/ajax/libs/three.js/0.170.0/three.module.min.js';
 import { AfterburnerFX } from './engine_fx.js';
+import { NIGHT_FX } from './timeofday.js';
 // PROJECT WINGNUT — js/aircraft.js
 // Procedural F-22 Raptor likeness (buildJetMesh) + arcade flight model, navigation lights, wingtip contrails and the
 // afterburner hookup (Aircraft). Local frame: nose = -Z, up = +Y, right wing = +X; origin = center of mass.
@@ -747,14 +748,15 @@ attribute vec3 aColor;
 attribute float aKind;
 attribute float aSize;
 uniform float uViewportH, uTime;
+uniform vec2 uNav;        // time of day (js/timeofday.js NIGHT_FX): x = intensity multiplier, y = minimum size (px)
 varying vec3 vColor;
 void main() {
   vec4 mv = modelViewMatrix * vec4(position, 1.0);
   float inten = 1.0;
   if (aKind > 0.5) { float ph = fract(uTime * 0.8); inten = 0.08 + step(0.90, ph) + 0.8 * step(0.96, ph); }   // strobe
   float px = aSize * length(modelViewMatrix[0].xyz) * projectionMatrix[1][1] * uViewportH * 0.5 / max(-mv.z, 1.0);   // m at the drawn scale
-  gl_PointSize = clamp(px, 2.0, 160.0);
-  vColor = aColor * inten;
+  gl_PointSize = clamp(px * sqrt(uNav.x), uNav.y, 160.0);
+  vColor = aColor * (inten * uNav.x);
   gl_Position = projectionMatrix * mv;
 }`;
 const LIGHT_FRAG = /* glsl */`
@@ -805,7 +807,7 @@ export function buildJetMesh({ bodyColor = 0x8d9aa6, accentColor = 0xff5a1f, can
   group.add(canopy);
 
   const lightMat = new THREE.ShaderMaterial({
-    vertexShader: LIGHT_VERT, fragmentShader: LIGHT_FRAG, uniforms: { uViewportH: new FloatUniform(1080), uTime: new FloatUniform(0.5) },
+    vertexShader: LIGHT_VERT, fragmentShader: LIGHT_FRAG, uniforms: { uViewportH: new FloatUniform(1080), uTime: new FloatUniform(0.5), uNav: NIGHT_FX.uNav },
     transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, fog: false,
   });
   lightMat.name = 'jetLights';

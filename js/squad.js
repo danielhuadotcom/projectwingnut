@@ -9,7 +9,7 @@ import { isHolding } from './flights.js';
 // which hunt a squadmate is decided by the game's bandit director, js/main.js directBandits.)
 //
 // Squadmate targets: each squadmate picks a bandit on its own 3 s timer, or on its next tick after its target dies (at
-// most once per frame): within 6 km of the player, never a boss and never one whose flight still holds (js/flights.js:
+// most once per frame): within 3 km of the player, never a boss and never one whose flight still holds (js/flights.js:
 // squadmates don't drag holding flights in; with none committed they escort the player), bandits hunting the player
 // first, nearest to the player first; number 2 takes the nearest, number 3 the second nearest. Nothing else changes a
 // squadmate's target.
@@ -34,7 +34,7 @@ const KILL_SLACK = 0.6;        // a squadmate kill is allowed once the running s
 const GUN_DAMAGE = 0.5;        // squadmate cannon damage multiplier (and it only finishes a bandit within the budget)
 const MISSILE_GAP = 15;        // s between enemy launches at one squadmate (and never more than one after it)
 const PICK_EVERY = 3;          // s between a squadmate's target picks
-const LEASH2 = 6000 * 6000;    // squadmates only engage bandits within 6 km of the player
+const LEASH2 = 3000 * 3000;    // squadmates only engage bandits within 3 km of the player (the fight stays near them)
 const _v = new THREE.Vector3();
 
 export class Squadron {
@@ -116,7 +116,7 @@ export class Squadron {
     }
   }
 
-  /** Target pick for the squadmate at index k (0 = number 2, 1 = number 3 when both fly): within 6 km of the player,
+  /** Target pick for the squadmate at index k (0 = number 2, 1 = number 3 when both fly): within 3 km of the player,
    *  never a boss or a holding flight, bandits hunting the player first, then the others, nearest to the player first; entry k of that
    *  ranking (or the last one when there are fewer). No bandit to take: formation (a wide cover position while bandits
    *  remain, e.g. a boss duel). One O(bandits) pass, no allocation. */

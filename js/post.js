@@ -221,6 +221,8 @@ uniform float uGrain;       // grain amplitude (0.028 * grain)
 uniform vec2 uGrainSeed;
 uniform float uSharp;       // RCAS strength 0..1 (FULL 1)
 uniform float uFxaa;        // 1: edge AA (FULL 1)
+uniform vec3 uWB;           // white balance before tone mapping (time-of-day grade; 1 = neutral)
+uniform vec2 uGrade;        // x: saturation, y: contrast around display mid-grey, after tone mapping (1, 1 = off)
 varying vec2 vUv;
 
 // ---- Stephen Hill's ACES fit (same matrices as three.js' ACESFilmicToneMapping; the 1/0.6 exposure convention
@@ -335,9 +337,13 @@ void main() {
 
   // vignette (scene-referred, like a lens)
   float rad = sqrt(r2);
-  hdr *= 1.0 - uVignette * smoothstep(0.3, 1.5, rad);
+  hdr *= (1.0 - uVignette * smoothstep(0.3, 1.5, rad)) * uWB;
 
   vec3 ldr = acesFitted(hdr);
+  if (uGrade.x != 1.0 || uGrade.y != 1.0) {   // time-of-day grade (uniform branch: skipped by the day preset)
+    float lg = dot(ldr, vec3(0.2126, 0.7152, 0.0722));
+    ldr = clamp((mix(vec3(lg), ldr, uGrade.x) - 0.18) * uGrade.y + 0.18, 0.0, 1.0);
+  }
 
   // damage: red edge pulse (display-referred)
   if (uDamage > 0.0) {
@@ -464,6 +470,7 @@ export class PostFX {
       uAspect: { value: 1 }, uExposure: { value: 1 }, uChroma: { value: new THREE.Vector2(0.0018, 1e9) },
       uVignette: { value: 0.35 }, uFlash: { value: 0 }, uDamage: { value: 0 }, uGrain: { value: 0.028 }, uGrainSeed: { value: this._grainSeed },
       uSharp: { value: 0 }, uFxaa: { value: 0 },
+      uWB: { value: new THREE.Vector3(1, 1, 1) }, uGrade: { value: new THREE.Vector2(1, 1) },
     };
     // Six programs in total, all drawn from the first frame on (see _warmComposite); presets, render scale, sharpening
     // and FXAA only change uniforms.
@@ -571,6 +578,13 @@ export class PostFX {
    * Sun position in 0..1 screen coords, (0,0) = bottom-left, (1,1) = top-right (i.e. NDC * 0.5 + 0.5).
    * visible=false disables the flare (fades out smoothly). Optional intensity scales it (default 1).
    */
+  /** Colour grade (js/timeofday.js presets): saturation and contrast after tone mapping, white balance [r, g, b]
+   *  before it. (1, 1, [1, 1, 1]) = off. Uniforms only. */
+  setGrade(saturation = 1, contrast = 1, wb = null) {
+    this._compU.uGrade.value.set(Number.isFinite(saturation) ? saturation : 1, Number.isFinite(contrast) ? contrast : 1);
+    if (wb && wb.length === 3) this._compU.uWB.value.set(wb[0], wb[1], wb[2]); else this._compU.uWB.value.set(1, 1, 1);
+  }
+
   setSunScreenPos(x, y, visible, intensity = 1) {
     if (Number.isFinite(x) && Number.isFinite(y)) this._sun.set(x, y);
     this._sunVisible = !!visible;
