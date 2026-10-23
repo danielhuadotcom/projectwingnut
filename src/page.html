@@ -194,16 +194,13 @@ body { margin: 0; background: var(--bg); color: var(--fg); font-family: var(--mo
 .m-dloc { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; margin: 0; font: 400 12.5px/1.5 var(--mono); color: var(--fg); }
 .m-chip { padding: 4px 7px; border: 1px solid var(--line-2); font: 700 10px/1 var(--mono); letter-spacing: 0.16em; text-transform: uppercase; color: var(--hud); }
 .m-brief { margin: 0; max-width: 66ch; font: 400 13.5px/1.65 var(--mono); color: var(--fg); }
-.m-stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); border: 1px solid var(--line); background: rgba(156, 235, 255, 0.03); }
+.m-stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); border: 1px solid var(--line); background: rgba(156, 235, 255, 0.03); }
 .m-stats div { min-width: 0; padding: 11px 14px; border-left: 1px solid var(--line); }
 .m-stats div:first-child { border-left: 0; }
 .m-stats b { display: block; font: 700 24px/1 var(--display); font-variant-numeric: tabular-nums; color: var(--pale); }
 .m-stats span { display: block; margin-top: 7px; font: 700 10px/1 var(--mono); letter-spacing: 0.18em; text-transform: uppercase; color: var(--muted); }
 .m-stats .is-zero b { color: rgba(234, 251, 255, 0.35); }
 .m-note { margin: -6px 0 0; font: 400 11.5px/1.4 var(--mono); color: var(--muted); }
-.m-phases { display: flex; flex-direction: column; gap: 7px; margin: 0; padding: 0; list-style: none; }
-.m-phases li { display: flex; gap: 12px; font: 400 12.5px/1.4 var(--mono); color: var(--fg); }
-.m-phases li span { font-weight: 700; color: var(--hud-2); }
 .m-dact { position: sticky; bottom: 0; display: flex; margin-top: auto; padding: 14px 0 20px; background: linear-gradient(180deg, rgba(5, 10, 16, 0), rgba(5, 10, 16, 0.92) 30%); }
 .m-dact .m-btn { flex: 1 1 auto; min-height: 52px; font-size: 15px; }
 
@@ -252,7 +249,6 @@ body { margin: 0; background: var(--bg); color: var(--fg); font-family: var(--mo
   .m-detail { max-height: 52vh; gap: 10px; padding: 16px 16px 0; }
   .m-dname { font-size: 26px; }
   .m-brief { font-size: 12.5px; line-height: 1.55; }
-  .m-phases { display: none; }
   .m-stats b { font-size: 20px; }
   .m-stats div { padding: 9px 10px; }
   .m-dact { padding: 10px 0 14px; }
@@ -292,7 +288,7 @@ body { margin: 0; background: var(--bg); color: var(--fg); font-family: var(--mo
   .m-panel--title { width: min(400px, 100%); padding: 18px 22px 12px; }
   .m-logo-1 { font-size: 11px; margin-bottom: 4px; }
   .m-logo-2 { font-size: 38px; }
-  .m-tagline, .m-tip, .m-lbl small, .m-phases, .m-hints, .m-foot--hints { display: none; }
+  .m-tagline, .m-tip, .m-lbl small, .m-hints, .m-foot--hints { display: none; }
   .m-rule { margin: 12px 0 6px; }
   .m-item { min-height: 40px; font-size: 14px; }
   .m-foot { margin-top: 8px; padding-top: 8px; gap: 6px; }

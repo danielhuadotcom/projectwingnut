@@ -22,6 +22,8 @@ const COL = {
   dark: 'rgba(0,0,0,0.6)',     // outline pass
   panel: 'rgba(0,10,18,0.42)',  // translucent box fills
   seg: 'rgba(0,0,0,0.45)',     // empty gauge segments
+  ally: '#7CFF6A',             // friendlies: squadmates on screen and on the radar, allied ground/naval on the radar
+  allySoft: 'rgba(124,255,106,0.72)',
 };
 
 const NO_DASH = [];
@@ -32,6 +34,10 @@ const DEF_RADAR = { range: 8000, blips: EMPTY };
 const DEF_WARN = {};
 const DEF_INPUT = { gamepadConnected: false, gamepadName: null, gamepadBlocked: false, usingGamepad: false };
 const BANK_TICKS = [-60, -45, -30, -20, -10, 0, 10, 20, 30, 45, 60];
+const ALLY_MAX = 8;                        // squadmate markers drawn per frame
+const ALLY_NEAR = 1500, ALLY_FAR = 8000;   // m: squadmate markers shrink and fade between these distances
+const ARC_A = 0.95, ARC_C = Math.cos(ARC_A), ARC_S = Math.sin(ARC_A);   // half-angle of the "( )" bracket arcs
+const TOUCH_KEYS = ['lt', 'lb', 'rb', 'rt', 'flr', 'pause'];           // touch buttons (frame.touchRects) labels avoid
 const CARDINAL = { 0: 'N', 90: 'E', 180: 'S', 270: 'W' };
 const WARN_DEFS = [
   { key: 'missileIncoming', text: 'MISSILE', color: COL.red },
@@ -92,7 +98,8 @@ export class HUD {
     this._mslKey = NaN; this._mslStr = '';
     this._gunKey = NaN; this._gunStr = '';
     this._rngKey = NaN; this._rngStr = '';
-    this._inBlocked = null; this._inConn = null; this._inName = null; this._inUsing = null; this._inMaxW = -1;
+    this._allyRects = new Float32Array(4 * ALLY_MAX);   // squadmate label boxes placed this frame (x0, y0, x1, y1)
+    this._inBlocked = null; this._inConn = null; this._inName = null; this._inUsing = null; this._inLocked = null; this._inMaxW = -1;
     this._inLines = []; this._inColor = COL.green; this._inGlyph = false;
     this._ro = null;
     try {
@@ -182,6 +189,8 @@ export class HUD {
     ctx.font = L.fPill;
     L.pillW1 = Math.round(ctx.measureText('PADLOCK').width + 22 * s);
     L.pillW2 = Math.round(ctx.measureText('REAR VIEW').width + 22 * s);
+    ctx.font = L.fSmall;
+    L.chSmall = ctx.measureText('0000000000').width / 10;   // monospace advance: squadmate labels are laid out by length
     try {
       const g = ctx.createRadialGradient(L.cx, L.cy, m * 0.55, L.cx, L.cy, Math.max(w, h) * 0.78);
       g.addColorStop(0, 'rgba(255,30,20,0)'); g.addColorStop(0.55, 'rgba(255,30,20,0.35)'); g.addColorStop(1, 'rgba(255,30,20,0.85)');
@@ -203,10 +212,15 @@ export class HUD {
     ctx.lineWidth = 2 * this.L.outline + 0.5; ctx.strokeStyle = COL.dark; ctx.stroke();
     ctx.fillStyle = color; ctx.fill();
   }
-  _text(str, x, y, color, align, baseline) {
+  _text(str, x, y, color, align, baseline, maxW) {
     const ctx = this.ctx;
     ctx.textAlign = align || 'left'; ctx.textBaseline = baseline || 'middle';
-    ctx.lineWidth = this.L.textOutline; ctx.strokeStyle = COL.dark; ctx.strokeText(str, x, y);
+    ctx.lineWidth = this.L.textOutline; ctx.strokeStyle = COL.dark;
+    if (maxW > 0) {   // optional: the canvas condenses a wider string to maxW px
+      ctx.strokeText(str, x, y, maxW); ctx.fillStyle = color; ctx.fillText(str, x, y, maxW);
+      return;
+    }
+    ctx.strokeText(str, x, y);
     ctx.fillStyle = color; ctx.fillText(str, x, y);
   }
   /** Translucent dark box with a colored border. */
@@ -262,6 +276,7 @@ export class HUD {
     this._drawHealth(p);
     if (compact) this._drawCompactWeapons(p); else this._drawWeapons(p);
     if (!compact) { this._drawRadar(radar, p); this._drawScore(frame); }
+    this._drawAllies(frame.allies, frame.target, compact ? frame.touchRects : null);
     this._drawContacts(frame.contacts);
     this._drawTarget(frame.target);
     this._drawWarnings(frame.warnings || DEF_WARN, p);
@@ -433,7 +448,8 @@ export class HUD {
   _drawAirspeed(p) {
     const ctx = this.ctx, L = this.L, s = L.s, cy = L.cy;
     const xT = Math.round(L.cx - L.sideOff);
-    const kmh = Math.max(0, (p.speed || 0) * 3.6);
+    // bounded: the tape loops step 20 km/h from kmh - 110 and never end for an infinite (or > ~1e17) value
+    const kmh = Math.min(1e6, Math.max(0, (p.speed || 0) * 3.6));
     const half = L.tapeHalf, pxPer = half / 110;
     ctx.beginPath(); ctx.moveTo(xT, cy - half); ctx.lineTo(xT, cy + half);
     const first = Math.max(0, Math.ceil((kmh - 110) / 20) * 20);
@@ -469,7 +485,7 @@ export class HUD {
   _drawAltitude(p) {
     const ctx = this.ctx, L = this.L, s = L.s, cy = L.cy;
     const xT = Math.round(L.cx + L.sideOff);
-    const alt = p.altitude || 0, ra = p.radarAlt == null ? alt : p.radarAlt;
+    const alt = clamp(p.altitude || 0, -1e6, 1e6), ra = p.radarAlt == null ? alt : p.radarAlt;   // bounded: see _drawAirspeed
     const half = L.tapeHalf, pxPer = half / 300;
     const labelEvery = pxPer * 100 < 15 * L.ts ? 200 : 100;
     ctx.beginPath(); ctx.moveTo(xT, cy - half); ctx.lineTo(xT, cy + half);
@@ -604,7 +620,10 @@ export class HUD {
     const key = msl + '|' + ready + '|' + ammo + '|' + flr;
     if (key !== this._cwKey) { this._cwKey = key; this._cwStr = `MSL ${msl} [${ready}/${hp.length || 2}]   GUN ${ammo}   ${flr}`; }
     ctx.font = L.fSmall;
-    this._text(this._cwStr, L.cx, L.h - Math.round(70 * s), msl === 0 || ammo === 0 ? COL.amber : COL.green, 'center', 'middle');
+    // centered between the sticks; on narrow (portrait) screens nudged right just enough to clear the hull readout
+    const half = this._cwStr.length * L.chSmall * 0.5;
+    const x = Math.min(Math.max(L.cx, 18 * s + L.healthW + 13 * s + half), L.w - 8 * s - half);
+    this._text(this._cwStr, x, L.h - Math.round(70 * s), msl === 0 || ammo === 0 ? COL.amber : COL.green, 'center', 'middle');
   }
 
   _drawRadar(radar, p) {
@@ -625,6 +644,24 @@ export class HUD {
     ctx.beginPath(); ctx.moveTo(x0, y0 - 5 * s); ctx.lineTo(x0 + 4 * s, y0 + 4 * s); ctx.lineTo(x0, y0 + 2 * s);
     ctx.lineTo(x0 - 4 * s, y0 + 4 * s); ctx.closePath(); this._fillOutlined(COL.pale);
     const k = R / range, blips = radar.blips || EMPTY, lim = R - 4 * s;
+    // friendly contacts, under the hostiles: diamond = squadmate, square = ground unit, hull = ship (hollow at the rim)
+    const fr = radar.friendly || EMPTY;
+    for (let i = 0; i < fr.length && i < 32; i++) {
+      const b = fr[i]; if (!b) continue;
+      const dx = b.dx || 0, dz = b.dz || 0;
+      let bx = (dx * ch + dz * sh) * k, by = (-dx * sh + dz * ch) * k;
+      const d = Math.hypot(bx, by); let edge = false;
+      if (d > lim) { const f = lim / d; bx *= f; by *= f; edge = true; }
+      const sx = x0 + bx, sy = y0 + by;
+      ctx.beginPath();
+      if (b.type === 'air') { const q = 3.9 * s; ctx.moveTo(sx, sy - q); ctx.lineTo(sx + q, sy); ctx.lineTo(sx, sy + q); ctx.lineTo(sx - q, sy); }
+      else if (b.type === 'naval') {
+        const hw = 4.2 * s, hh = 2.4 * s;
+        ctx.moveTo(sx - hw, sy - hh); ctx.lineTo(sx + hw, sy - hh); ctx.lineTo(sx + 0.55 * hw, sy + hh); ctx.lineTo(sx - 0.55 * hw, sy + hh);
+      } else { const q = 2.7 * s; ctx.rect(sx - q, sy - q, 2 * q, 2 * q); }
+      ctx.closePath();
+      if (edge) this._stroke(COL.ally, L.lwThin); else this._fillOutlined(COL.ally);
+    }
     for (let i = 0; i < blips.length && i < 48; i++) {
       const b = blips[i]; if (!b) continue;
       const dx = b.dx || 0, dz = b.dz || 0;
@@ -676,6 +713,63 @@ export class HUD {
     this._text(fPrefixed(WAVE_STR, 'PHASE ', f.wave || 0), x, yy, COL.green, 'left', 'top'); yy += 14 * ts;
     this._text(fPrefixed(ENEMY_STR, 'TARGETS ', f.enemiesRemaining || 0), x, yy, COL.green, 'left', 'top'); yy += 14 * ts;
     this._text(fPrefixed(KILL_STR, 'KILLS ', f.kills || 0), x, yy, COL.green, 'left', 'top');
+  }
+
+  // ---- friendly squadmates ------------------------------------------------------------------------------------
+  /**
+   * Squadmate markers, on screen only (allies get no edge pointers): green round brackets "( )" where hostile
+   * contacts get square corners, plus a "CALLSIGN 1.2" (km) label. Between ALLY_NEAR and ALLY_FAR the brackets
+   * shrink and the whole marker fades, so distant wingmen stay quiet during a dogfight. The label hides while the
+   * marker sits near the target box; otherwise it takes the first free slot (above the marker, then below) clear of
+   * the target box, the other squadmate labels, the screen edges and, on the touch layout, the on-screen buttons.
+   */
+  _drawAllies(allies, t, touch) {
+    if (!allies || !allies.length) return;
+    const ctx = this.ctx, L = this.L, s = L.s, n = Math.min(allies.length, ALLY_MAX), R = this._allyRects;
+    // target keep-out: the box, its LOCK cue above and its info block below
+    let kx0 = 0, kx1 = -1, ky0 = 0, ky1 = -1;
+    if (t && t.onScreen && !t.behind && isFinite(t.x) && isFinite(t.y)) {
+      kx0 = t.x - 62 * s; kx1 = t.x + 62 * s; ky0 = t.y - 34 * s - 14 * L.ts; ky1 = t.y + 36 * s + 26 * L.ts;
+    }
+    const ch = L.chSmall, lh = Math.round(12 * L.ts), pad = 3 * s;
+    let nr = 0;
+    ctx.font = L.fSmall;
+    for (let i = 0; i < n; i++) {
+      const a = allies[i];
+      if (!a || !a.onScreen || a.behind || !isFinite(a.x) || !isFinite(a.y)) continue;
+      const x = a.x, y = a.y, d = a.distance || 0;
+      let k = (d - ALLY_NEAR) / (ALLY_FAR - ALLY_NEAR); k = k <= 0 ? 0 : k >= 1 ? 1 : k * k * (3 - 2 * k);
+      const r = Math.max(4.5, (9 - 3.5 * k) * s);
+      ctx.globalAlpha = this.alpha * (1 - 0.5 * k);
+      ctx.beginPath();
+      ctx.moveTo(x - r * ARC_C, y + r * ARC_S); ctx.arc(x, y, r, Math.PI - ARC_A, Math.PI + ARC_A);
+      ctx.moveTo(x + r * ARC_C, y - r * ARC_S); ctx.arc(x, y, r, -ARC_A, ARC_A);
+      this._stroke(COL.ally, L.lw);
+      if (x > kx0 && x < kx1 && y > ky0 && y < ky1) continue;          // close to the target box: brackets only
+      const cs = a.callsign || a.name || 'ALLY', ds = fDec1(Math.round(d / 100) / 10);
+      const len = cs.length + 1 + ds.length, hw = len * ch * 0.5 + 2;
+      const lx = clamp(x, hw + 4 * s, L.w - hw - 4 * s), x0 = lx - hw, x1 = lx + hw;
+      let ly = -1;
+      for (let c = 0; c < 2 && ly < 0; c++) {
+        const y0 = c === 0 ? y - r - pad - lh : y + r + pad, y1 = y0 + lh;
+        if (y0 < 2 || y1 > L.h - 2) continue;
+        if (x1 > kx0 && x0 < kx1 && y1 > ky0 && y0 < ky1) continue;
+        let free = true;
+        for (let j = 0; j < nr && free; j++) if (x1 > R[4 * j] && x0 < R[4 * j + 2] && y1 > R[4 * j + 1] && y0 < R[4 * j + 3]) free = false;
+        if (free && touch) for (let j = 0; j < TOUCH_KEYS.length && free; j++) {
+          const b = touch[TOUCH_KEYS[j]];
+          if (b && x1 > b.x - 2 && x0 < b.x + b.w + 2 && y1 > b.y - 2 && y0 < b.y + b.h + 2) free = false;
+        }
+        if (free) ly = y0;
+      }
+      if (ly < 0) continue;                                           // no free slot: brackets only
+      R[4 * nr] = x0; R[4 * nr + 1] = ly; R[4 * nr + 2] = x1; R[4 * nr + 3] = ly + lh; nr++;
+      const tx = lx - len * ch * 0.5, ty = ly + lh * 0.5;
+      ctx.globalAlpha = this.alpha * (1 - 0.35 * k);                  // the label fades less, so it stays legible on bright sky
+      this._text(cs, tx, ty, COL.ally, 'left', 'middle');
+      this._text(ds, tx + (cs.length + 1) * ch, ty, COL.allySoft, 'left', 'middle');
+    }
+    ctx.globalAlpha = this.alpha;
   }
 
   // ---- contacts & target --------------------------------------------------------------------------------------
@@ -844,7 +938,8 @@ export class HUD {
       const big = !!m.big, lh = (big ? 30 : 20) * L.ts;
       ctx.font = big ? L.fMsgBig : L.fMsg;
       ctx.globalAlpha = this.alpha * a;
-      this._text(m.text, cx, y + lh / 2 + (1 - aIn) * 6 * s, big ? COL.pale : COL.green, 'center', 'middle');
+      // briefing lines run to ~110 characters: condensed to the screen width on narrow screens instead of clipped
+      this._text(m.text, cx, y + lh / 2 + (1 - aIn) * 6 * s, big ? COL.pale : COL.green, 'center', 'middle', L.w - 16 * s);
       y += lh;
     }
     ctx.globalAlpha = this.alpha;
@@ -924,9 +1019,11 @@ export class HUD {
     const ctx = this.ctx, L = this.L, s = L.s, ts = L.ts;
     const maxW = Math.max(60, L.radarLeft - 14 * s - 18 * s);
     if (input.gamepadBlocked !== this._inBlocked || input.gamepadConnected !== this._inConn ||
-        input.gamepadName !== this._inName || input.usingGamepad !== this._inUsing || maxW !== this._inMaxW) {
+        input.gamepadName !== this._inName || input.usingGamepad !== this._inUsing || maxW !== this._inMaxW ||
+        !!input.pointerLocked !== this._inLocked) {   // the mouse-aim hint differs with the cursor captured or free
       this._inBlocked = input.gamepadBlocked; this._inConn = input.gamepadConnected;
       this._inName = input.gamepadName; this._inUsing = input.usingGamepad; this._inMaxW = maxW;
+      this._inLocked = !!input.pointerLocked;
       this._rebuildInputLines(input, maxW);
     }
     const lines = this._inLines, color = this._inColor;

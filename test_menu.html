@@ -22,7 +22,7 @@
 <div id="banner" hidden></div>
 <script type="module">
 import { Menu, loadSettings, saveSettings, DEFAULT_SETTINGS, CREDITS, SETTING_DEFS } from './js/menu.js';
-import { MISSIONS } from './js/missions.js';
+import { MISSIONS, countUnits } from './js/missions.js';
 import { Input } from './js/input.js';
 
 window.addEventListener('error', (e) => console.log('MENU_ERR ' + (e.message || e)));
@@ -66,7 +66,9 @@ const visited = new Set();
 const note = () => { if (menu.screen) visited.add(menu.screen); };
 const step = (dt, keys = []) => { for (const k of EDGES) fake[k] = false; for (const k of keys) fake[k] = true; menu.update(dt, fake); note(); };
 const press = (...names) => { step(1 / 60, names.map((n) => NAMES[n])); step(1 / 60); };
-const settle = () => step(1.0);
+// The menu ignores input for a moment after it opens (0.25 s; 0.8 s for the debrief), timed on the wall clock (Menu.show sets
+// _lockUntil from performance.now()), so a fake dt can't skip it: wait out the remaining lock for real, then step.
+const settle = async () => { await new Promise((r) => setTimeout(r, Math.max(0, (menu._lockUntil || 0) - performance.now()) + 20)); step(1.0); };
 const focused = () => { const f = menu.el.querySelector('.is-focus'); if (!f) return null; const d = f.dataset; return d.act || d.key || d.tab || (d.mission !== undefined ? 'm' + d.mission : '?'); };
 const last = () => calls[calls.length - 1] || [];
 // layout-agnostic: press each direction (up to 4 times) until `target` has focus
@@ -80,7 +82,7 @@ async function runSelfTest() {
   menu.show('title'); note();
   check('opens on title', menu.open && menu.screen === 'title');
   press('ok'); check('input locked right after opening', menu.open && calls.length === 0);
-  settle();
+  await settle();
   check('title focus starts on Start Campaign', focused() === 'start', focused());
   press('up'); check('title wraps up to Credits', focused() === 'credits', focused());
   press('down'); check('title wraps down to Start', focused() === 'start', focused());
@@ -93,13 +95,16 @@ async function runSelfTest() {
   press('down'); press('down'); press('down');
   check('down moves through the list', focused() === 'm3', focused());
   check('detail follows the selection', menu.el.querySelector('.m-dname').textContent === MISSIONS[3].name);
-  check('detail shows phase count', menu.el.querySelector('.m-stats b').textContent === String(MISSIONS[3].phases.length));
+  const n3 = countUnits(MISSIONS[3], settings.difficulty);
+  const cells = [...menu.el.querySelectorAll('.m-stats > div')].map((c) => `${c.querySelector('span').textContent} ${c.querySelector('b').textContent}`).join(', ');
+  check('detail shows only the target counts', cells === `Air ${n3.air}, Ground ${n3.ground}, Naval ${n3.naval}`, cells);
+  check('detail hides the mission structure', !scr('missions').querySelector('.m-phases') && !/phase/i.test(scr('missions').textContent));
   press('right'); check('right jumps to Launch', focused() === 'launch', focused());
   press('left'); check('left returns to the selected mission', focused() === 'm3', focused());
   press('ok'); check('confirm on a mission launches it', last()[0] === 'start' && last()[1] === 3 && !menu.open, last());
 
   // Settings from the title
-  menu.show('title'); settle(); press('down'); press('down');
+  menu.show('title'); await settle(); press('down'); press('down');
   check('title focus on Settings', focused() === 'settings', focused());
   press('ok'); check('Settings opens', menu.screen === 'settings');
   check('settings focus on the active tab', focused() === 'graphics', focused());
@@ -143,7 +148,8 @@ async function runSelfTest() {
   check('keyboard card shows the preset', scr('controls').querySelector('.m-card--kb h3 small').textContent.toLowerCase().startsWith(settings.mouseKeys));
   const body = scr('controls').querySelector('.m-body');
   press('down');
-  await new Promise((r) => setTimeout(r, 700));
+  // the scroll is smooth (scrollBy behavior 'smooth'): give it up to 2 s on a slow (software-rendered) page
+  for (let i = 0; i < 40 && !(body.scrollTop > 0) && body.scrollHeight > body.clientHeight + 1; i++) await new Promise((r) => setTimeout(r, 50));
   check('down scrolls the controls', body.scrollTop > 0 || body.scrollHeight <= body.clientHeight + 1, [body.scrollTop, body.scrollHeight, body.clientHeight]);
   press('back'); press('down'); check('focus on Credits', focused() === 'credits', focused());
   press('ok'); check('Credits opens', menu.screen === 'credits');
@@ -154,7 +160,7 @@ async function runSelfTest() {
   menu.hide(); check('hide closes', !menu.open && menu.screen === null);
   menu.show('pause', { missionIndex: 2 });
   press('back'); check('Esc that opened pause is ignored', menu.open && menu.screen === 'pause');
-  settle();
+  await settle();
   check('pause focus on Resume', focused() === 'resume', focused());
   check('pause names the mission', menu.el.querySelector('.m-pause-sub').textContent.includes(MISSIONS[2].name));
   press('down'); check('focus Restart Mission', focused() === 'restart', focused());
@@ -163,25 +169,25 @@ async function runSelfTest() {
   press('back'); check('Cancel returns to pause on Restart', menu.screen === 'pause' && focused() === 'restart', [menu.screen, focused()]);
   press('ok'); check('the confirm button is reachable', reach('confirm-yes', 'left', 'up'), focused());
   press('ok'); check('confirm fires onRestart and closes', last()[0] === 'restart' && !menu.open, last());
-  menu.show('pause'); settle(); press('up'); check('pause wraps to Quit', focused() === 'quit', focused());
+  menu.show('pause'); await settle(); press('up'); check('pause wraps to Quit', focused() === 'quit', focused());
   press('ok'); reach('confirm-yes', 'left', 'up'); press('ok');
   check('quit fires onQuit and shows the title', last()[0] === 'quit' && menu.screen === 'title', [last(), menu.screen]);
-  menu.hide(); menu.show('pause'); settle(); press('down'); press('down'); press('ok');
+  menu.hide(); menu.show('pause'); await settle(); press('down'); press('down'); press('ok');
   check('Settings from pause', menu.screen === 'settings');
   press('pause'); check('Start/P resumes from a pause sub-screen', last()[0] === 'resume' && !menu.open, last());
-  menu.show('pause'); settle(); press('back'); check('Back at the pause root resumes', last()[0] === 'resume' && !menu.open, last());
-  menu.show('pause'); settle(); press('ok'); check('Resume item resumes', last()[0] === 'resume' && !menu.open, last());
-  menu.show('settings'); settle(); press('back');
+  menu.show('pause'); await settle(); press('back'); check('Back at the pause root resumes', last()[0] === 'resume' && !menu.open, last());
+  menu.show('pause'); await settle(); press('ok'); check('Resume item resumes', last()[0] === 'resume' && !menu.open, last());
+  menu.show('settings'); await settle(); press('back');
   check('a sub-screen opened on its own closes on Back', !menu.open && last()[0] === 'resume', last());
 
   // Debrief
   menu.show('debrief', { title: 'Mission accomplished', stats: 'SCORE 12,400 · KILLS 14 · TIME 06:21', canNext: true, missionIndex: 4 });
   press('ok'); check('debrief ignores early presses', menu.open && menu.screen === 'debrief');
-  settle();
+  await settle();
   check('debrief focus on Next Mission', focused() === 'next', focused());
   check('stats string split into chips', menu.el.querySelectorAll('.m-deb-stats .m-stat').length === 3 && menu.el.querySelector('.m-deb-stats .m-stat b').textContent === '12,400');
   press('ok'); check('Next fires onNext', last()[0] === 'next' && !menu.open, last());
-  menu.show('debrief', { title: 'Shot down', stats: [['Score', '900'], ['Kills', 2]], canNext: false, missionIndex: 4 }); settle();
+  menu.show('debrief', { title: 'Shot down', stats: [['Score', '900'], ['Kills', 2]], canNext: false, missionIndex: 4 }); await settle();
   check('no Next button after a failure', menu.el.querySelector('[data-screen="debrief"] [data-act="next"]').hidden);
   check('failure focus on Retry', focused() === 'retry', focused());
   press('down'); check('down reaches Mission Select', focused() === 'missions', focused());
@@ -189,11 +195,11 @@ async function runSelfTest() {
   press('back'); check('Back returns to the debrief', menu.screen === 'debrief' && focused() === 'missions', [menu.screen, focused()]);
   check('Quit is reachable', reach('quit', 'right', 'down'), focused());
   press('ok'); check('debrief Quit fires onQuit (no confirm)', last()[0] === 'quit' && menu.screen === 'title', [last(), menu.screen]);
-  menu.show('debrief', { canNext: false }); settle(); press('ok');
+  menu.show('debrief', { canNext: false }); await settle(); press('ok');
   check('Retry fires onRestart', last()[0] === 'restart' && !menu.open, last());
 
   // API
-  menu.show('title'); settle();
+  menu.show('title'); await settle();
   menu.setControllerStatus('Controller ready: Test Pad', true);
   const st = menu.el.querySelector('[data-screen="title"] .m-status');
   check('controller status text + ok', st.textContent.includes('Test Pad') && st.classList.contains('ok'));
@@ -261,7 +267,7 @@ else if (want === 'debrief') {
     : { title: 'Shot down', stats: 'SCORE 12,400 · PHASE 2/3 · KILLS 9', canNext: false, missionIndex: 2 });
 } else if (want === 'title') menu.show('title');
 else { menu.show('title'); menu.show(want, { tab: params.get('tab') || undefined, selected: params.has('sel') ? Number(params.get('sel')) : undefined }); }
-settle();
+await settle();
 if (want === 'confirm') { press('up'); press('ok'); }
 for (const n of (params.get('nav') || '').split(',').filter(Boolean)) press(n);
 if (params.get('dev')) menu.setDevice(params.get('dev'));

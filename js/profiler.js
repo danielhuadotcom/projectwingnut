@@ -47,7 +47,8 @@ export class Profiler {
   }
   // ---- GPU queries ----
   _begin(label) {
-    if (this._active) return;
+    // context lost: no result ever becomes available, so every query begun now would stay in _pending until restore()
+    if (this._active || this.gl.isContextLost()) return;
     const gl = this.gl; const q = this._pool.pop() || gl.createQuery();
     gl.beginQuery(this.ext.TIME_ELAPSED_EXT, q);
     this._active = { q, label, mode: this.mode };

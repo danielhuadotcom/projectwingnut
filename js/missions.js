@@ -45,6 +45,19 @@
 //   MISSIONS: main.js shows the name, up to three briefing sentences and each phase label (upper-cased). location, setting
 //     and time (local, 24 h) are flavor. groups[].optional = not needed to clear the phase.
 //     groups[].difficulty = 'hard' (spawns on Hard and Mercenary) or 'mercenary' (Mercenary only); counted in the caps.
+//     wingmen (optional) = which Loose Screws squadmates fly with the player: '2' = Cotter, '3' = Rivet. Absent means
+//     ['2', '3'] (both); [] = solo, e.g. a one-on-one duel.
+//     allies (optional) = friendly story units (js/allies.js): immortal props in a friendly tint that never fire, are never
+//     fired at and never count toward clearing a phase. Each group: { name, kind: 'ground' | 'naval', phase (index of
+//     the phase they join, default 0), position + distance (from the player, as for enemy groups) or near: <type> +
+//     distance (next to that phase's enemy units of that type: the first clear site from `distance` m out, far side
+//     first; needs after: true, i.e. placed after the phase's enemies), units: [{ type, count, escort }] }. A naval
+//     group's first unit is its flagship; escort units are mortal only to leakers (groups[].target). At most 20 units
+//     per entry.
+//     groups[].target = 'fleet' (unarmed air types only): the group spawns `distance` m past the player from the
+//     mission's allied fleet and flies at its escorts. One that gets within ~150 m of an allied hull is consumed and
+//     sinks the nearest live escort (once none are left it bursts harmlessly on the flagship); it counts as resolved
+//     for the phase, with no score. Needs a naval allies group joining at or before that phase.
 //   ESTIMATES: speeds of the AI-only types, a few agility values, every KD-38H value, HP of refineries, containers, oil
 //     tanks, extractors and the M1 crate, and all surface-unit sizes (modeled on real ship and vehicle classes); each note
 //     says which. Colors come from a small shared palette so main.js's color-keyed aircraft pool can reuse airframes.
@@ -141,7 +154,7 @@ export const GROUND_TYPES = {
 export const MISSIONS = [
   {
     id: 1, name: 'Salvage Rights',
-    briefing: 'The Saltjaw Corsairs stole a crate of League thunderglass, and the Concord is on its way to buy it. Flatten the sea fort and put a missile through that crate before anyone collects.',
+    briefing: 'The Saltjaw Corsairs stole a crate of League thunderglass and holed up with it at Gullrock. Flatten their sea fort: patrol boats, flak guns and those kelp-green floatplanes.',
     setting: 'sea stacks', location: 'Gullrock Stacks (Saltjaw sea fort)', time: '16:05',
     phases: [
       { label: 'Gullrock sea fort', groups: [
@@ -170,7 +183,7 @@ export const MISSIONS = [
   },
   {
     id: 2, name: 'Burned Bridges',
-    briefing: 'The Concord wanted that crate, and now it wants us. Fight through three waves of border interceptors and their AWACS to reach League airspace.',
+    briefing: 'The Concord wanted that crate, and now it wants us. Its border patrol is waiting at Hollowgap Pass; punch through to League airspace.',
     setting: 'mountains', location: 'Anvil Range (Hollowgap Pass)', time: '17:45',
     phases: [
       { label: 'Border patrol', groups: [
@@ -198,7 +211,7 @@ export const MISSIONS = [
   },
   {
     id: 3, name: 'Housewarming',
-    briefing: "The League can't afford a base for us, so we're taking the Concord's air station at Tarnfell. Clear the harbor guns, catch their jets on the runway, then deal with whoever comes to evict us.",
+    briefing: "The League can't afford a base for us, so we're taking the Concord's air station at Tarnfell. Its harbor covers the approach: sink the warships and silence the shore guns.",
     setting: 'snow coast', location: 'Tarnfell Air Station (soon the Toolshed)', time: '08:12',
     phases: [
       { label: 'Harbor and shore guns', groups: [
@@ -232,8 +245,12 @@ export const MISSIONS = [
   },
   {
     id: 4, name: 'Bad Apples',
-    briefing: 'The Herring Guard is pinned down in the Brekka orchards by Concord armor and artillery. Break the guns around them, then the second push of helicopters, bombers and attack jets.',
+    briefing: 'The Herring Guard is pinned down in the Brekka orchards by Concord armor and artillery, with bombers overhead. Break the guns around them and give them room to breathe.',
     setting: 'hills', location: 'Brekka Valley orchards', time: '17:40',
+    allies: [   // the Herring Guard, dug in among the orchards just past the Concord armor that has them pinned down
+      { name: 'Herring Guard', kind: 'ground', near: 'tank', distance: 1000, after: true,
+        units: [{ type: 'tank', count: 8 }, { type: 'truck', count: 5 }, { type: 'aa', count: 3 }] },
+    ],
     phases: [
       { label: 'Relieve the Herring Guard', groups: [
         { kind: 'ground', type: 'artillery', count: 12, area: 'convoy', distance: 6500 },
@@ -270,7 +287,7 @@ export const MISSIONS = [
   },
   {
     id: 5, name: 'Lights Out',
-    briefing: 'Lanternport is falling, and the League government is leaving on the morning ferries. Hold the sky over the harbor until the last boat is clear.',
+    briefing: 'Lanternport is falling, and the League government is leaving on the morning ferries. A Concord dawn raid is inbound; keep it off the boats.',
     setting: 'city coast', location: 'Lanternport harbor', time: '07:30',
     phases: [
       { label: 'Dawn raid', groups: [
@@ -303,7 +320,7 @@ export const MISSIONS = [
   },
   {
     id: 6, name: 'Lightning Rod',
-    briefing: "Hit the Concord's thunderglass refineries in Glasswater Gorge, then the extraction rigs on the summit. Work fast: something expensive will answer the alarm.",
+    briefing: 'The Concord refines its thunderglass in Glasswater Gorge and has parked a SAM on every ledge. Burn the refineries and mind the walls.',
     setting: 'gorge', location: 'Glasswater Gorge, Anvil Range', time: '17:30',
     phases: [
       { label: 'Refineries', groups: [
@@ -341,8 +358,13 @@ export const MISSIONS = [
   },
   {
     id: 7, name: 'Finders Keepers',
-    briefing: "League sailors just stole the Concord's newest battleship and renamed her the Hand-Me-Down. Sink the ships hunting her, break up the strike wave, then swat the cruise missiles sent to finish her.",
+    briefing: "League sailors just stole the Concord's newest battleship and renamed her the Hand-Me-Down. Concord pickets are combing the Galestrait for her: sink the ships and splash their air cover.",
     setting: 'sea', location: 'The Galestrait', time: '12:30',
+    wingmen: ['3'],   // Cotter sits this one out
+    allies: [   // the Hand-Me-Down shows up as the pursuit closes in, with four cruisers and a supply ship
+      { name: 'Hand-Me-Down', kind: 'naval', phase: 1, position: 'ahead', distance: 3000,
+        units: [{ type: 'battleship', count: 1 }, { type: 'cruiser', count: 4, escort: true }, { type: 'cargo ship', count: 1, escort: true }] },
+    ],
     phases: [
       { label: 'Concord pickets', groups: [
         { kind: 'air', type: 'NV-73', count: 6, formation: 'vee', position: 'ahead', distance: 5500 },
@@ -367,8 +389,8 @@ export const MISSIONS = [
         { kind: 'air', type: 'NV-56N', count: 3, formation: 'pair', position: 'low', distance: 7000, difficulty: 'mercenary' },  // 8 -> 3 (phase air cap); also stands in for carrier launches
       ] },
       { label: 'Bodkins inbound', groups: [
-        { kind: 'air', type: 'BODKIN', count: 5, formation: 'line', position: 'right', distance: 7000 },     // inbound from the southeast
-        { kind: 'air', type: 'BODKIN', count: 5, formation: 'line', position: 'right', distance: 8000 },
+        { kind: 'air', type: 'BODKIN', count: 5, formation: 'line', position: 'right', distance: 7000, target: 'fleet' },   // at the Hand-Me-Down's escorts
+        { kind: 'air', type: 'BODKIN', count: 5, formation: 'line', position: 'right', distance: 8000, target: 'fleet' },
         { kind: 'air', type: 'FALLWIND-6', count: 4, formation: 'vee', position: 'right', distance: 6500 },
         { kind: 'air', type: 'SQUALL-7T', count: 2, formation: 'pair', position: 'right', distance: 6000, difficulty: 'mercenary' },  // 4 -> 2 (phase air cap)
       ] },
@@ -376,8 +398,9 @@ export const MISSIONS = [
   },
   {
     id: 8, name: 'Rush Hour',
-    briefing: 'The Concord is flying supplies to its mountain garrisons along the Saddleback corridor. Down the transports and their escorts, and expect the duty interceptors to clock in.',
+    briefing: 'The Concord is flying supplies to its mountain garrisons along the Saddleback corridor. Down the transports; the escorts will object.',
     setting: 'mountains', location: 'Anvil Range (Saddleback corridor)', time: '09:30',
+    wingmen: ['2'],   // just Cotter on this one
     phases: [
       { label: 'First convoy', groups: [
         { kind: 'air', type: 'KD-260', count: 3, formation: 'line', position: 'ahead', distance: 7000 },
@@ -404,8 +427,9 @@ export const MISSIONS = [
   },
   {
     id: 9, name: 'Threading the Needle',
-    briefing: "Solo run tonight, Wingnut: Vesper Fjord is lined with SAM sites all the way to the Concord's array. Hug the rock and kill them site by site; the planners named them after tools so you'd feel at home.",
+    briefing: "Solo run tonight, Wingnut: Vesper Fjord, the back door to the Concord's array. SAM sites Hammer and Tongs guard the fjord: hug the rock and kill them. The planners named them after tools so you'd feel at home.",
     setting: 'night fjord', location: 'Vesper Fjord', time: '22:00',
+    wingmen: [],   // a lone sortie
     phases: [
       { label: 'Sites Hammer and Tongs', groups: [
         { kind: 'ground', type: 'l-sam', count: 3, area: 'ridge', distance: 7500 },
@@ -448,7 +472,7 @@ export const MISSIONS = [
   },
   {
     id: 10, name: 'Dead Air',
-    briefing: "The League is dropping paratroopers on the Choir, the Concord's listening array on Kaldmoor. Clear their landing zone, knock out the array's radars and armor, then take the airbase next door.",
+    briefing: "The League is dropping paratroopers on the Choir, the Concord's listening array on Kaldmoor. Clear the landing zone, ground and sky, before the first chute opens.",
     setting: 'plateau', location: 'Kaldmoor plateau (the Choir array)', time: '16:30',
     phases: [
       { label: 'Landing zone', groups: [
@@ -489,7 +513,7 @@ export const MISSIONS = [
   },
   {
     id: 11, name: 'Icebreaker',
-    briefing: "A Concord supply run over the Ice Gate has become the war's biggest dogfight, and both sides keep feeding it. Keep shooting until the reinforcements run out; Chime Squadron will want a word.",
+    briefing: "A Concord supply run over the Ice Gate has turned into the war's biggest dogfight. Pick a bandit, any bandit, and start thinning the crowd.",
     setting: 'pack ice', location: 'The Ice Gate, northern strait', time: '13:05',
     phases: [
       { label: 'Ice Gate furball', groups: [
@@ -527,7 +551,7 @@ export const MISSIONS = [
   },
   {
     id: 12, name: 'Graveyard Shift',
-    briefing: "The Concord is testing something experimental on its Morrow Deep rigs tonight. Tear down the railgun batteries and their guards, then find out what they're hiding.",
+    briefing: 'The Concord is working a night shift on its Morrow Deep rigs, test-firing railguns. Tear down the batteries and everything guarding them.',
     setting: 'night sea', location: 'Morrow Deep rigs', time: '00:30',
     phases: [
       { label: 'Morrow Deep rigs', groups: [
@@ -553,7 +577,7 @@ export const MISSIONS = [
   },
   {
     id: 13, name: 'Shore Leave',
-    briefing: 'The Concord Home Fleet is tied up at Vantmouth with half its crews ashore. Wreck the harbor defenses and depots, sink everything at the piers, then greet the escorts when they rush home.',
+    briefing: 'The Concord Home Fleet is tied up at Vantmouth with half its crews ashore. Wreck the harbor defenses and depots before anyone finds their boots.',
     setting: 'harbor', location: 'Vantmouth naval yard', time: '07:00',
     phases: [
       { label: 'Harbor defenses', groups: [
@@ -584,8 +608,12 @@ export const MISSIONS = [
   },
   {
     id: 14, name: 'Clearance Sale',
-    briefing: 'The Concord is pulling out of Blackfir Forest and torching it on the way out. Sink the flotilla covering the retreat, then the armor and artillery columns: everything must go.',
+    briefing: 'The Concord is pulling out of Blackfir Forest and torching it on the way out. Sink the flotilla covering the retreat: everything must go.',
     setting: 'forest', location: 'Blackfir Forest', time: '16:00',
+    allies: [   // the Herring Guard, pushing through the forest behind the retreat
+      { name: 'Herring Guard', kind: 'ground', position: 'left', distance: 3500,
+        units: [{ type: 'tank', count: 7 }, { type: 'truck', count: 5 }, { type: 'aa', count: 3 }] },
+    ],
     phases: [
       { label: 'Rearguard flotilla', groups: [
         { kind: 'naval', type: 'cruiser', count: 6, area: 'fleet', distance: 7000 },
@@ -611,7 +639,7 @@ export const MISSIONS = [
   },
   {
     id: 15, name: 'Glass Houses',
-    briefing: 'The League is retaking Kelderwick, and you have the sky over the glassworks. If the Concord fires its Thunderhead missiles, stop every one you can.',
+    briefing: 'The League is retaking Kelderwick, and you have the sky over the glassworks. Clear out the Concord fighters and SAMs, and try not to break anything.',
     setting: 'city', location: 'Kelderwick', time: '10:35',
     phases: [
       { label: 'Kelderwick air cover', groups: [
@@ -641,7 +669,7 @@ export const MISSIONS = [
   },
   {
     id: 17, name: 'Heavy Machinery',
-    briefing: 'Two months after the Glassfall, the Concord is dug in at Brassgate Fortress. Blind its radar net, break the gun batteries, then stop the two siege crawlers rolling out of the gates.',
+    briefing: 'Two months after the Glassfall, the Concord is dug in at Brassgate Fortress. Blind its radar net and break the gun batteries.',
     setting: 'valley', location: 'Brassgate Fortress, Ravel Valley', time: '15:50',
     phases: [
       { label: 'Brassgate Fortress', groups: [
@@ -660,7 +688,7 @@ export const MISSIONS = [
   },
   {
     id: 18, name: 'Sweeping Up',
-    briefing: "Back to Kelderwick to sweep the last Concord holdouts out of the broken glass. Chime Squadron is here too, and this time they don't get to leave.",
+    briefing: 'Back to Kelderwick to sweep the last Concord holdouts out of the broken glass. Flak guns and gunships are hiding in the ruins, with a few jets overhead.',
     setting: 'ruins', location: 'Kelderwick (Glassfall ruins)', time: '18:00',
     phases: [
       { label: 'Holdouts', groups: [
@@ -679,8 +707,11 @@ export const MISSIONS = [
   },
   {
     id: 19, name: 'Hostile Takeover',
-    briefing: 'The Hand-Me-Down is sailing for Lanternport, and the Concord battle fleet means to stop her. Sink three groups of warships, ending with the flagship Dividend and her carrier.',
+    briefing: 'The Hand-Me-Down is sailing for Lanternport, and the Concord battle fleet means to stop her. Cruisers and supply ships are moving to cut her off under fighter cover: sink them.',
     setting: 'sea', location: 'The Galestrait, off Lanternport', time: '17:30',
+    allies: [   // the Hand-Me-Down leads the League line straight at the Concord fleet
+      { name: 'Hand-Me-Down', kind: 'naval', position: 'ahead', distance: 3000, units: [{ type: 'battleship', count: 1 }] },
+    ],
     phases: [
       { label: 'Screening group', groups: [
         { kind: 'air', type: 'NV-73', count: 6, formation: 'vee', position: 'ahead', distance: 5500 },
@@ -707,7 +738,7 @@ export const MISSIONS = [
   },
   {
     id: 20, name: 'Lights On',
-    briefing: 'Today we take Lanternport back. Smash the hill guns, win the sky, sink the ships breaking out, then silence the lighthouse batteries.',
+    briefing: "Today we take Lanternport back. Concord guns are dug into the hills above the city: smash them, and let's turn the lights back on.",
     setting: 'city', location: 'Lanternport', time: '16:00',
     phases: [
       { label: 'Hill batteries', groups: [
@@ -749,6 +780,7 @@ export const MISSIONS = [
     id: 21, name: 'Unwound',
     briefing: 'Mainspring is up in the Q12 over Lanternport, alone, waiting for you. One last duel, Wingnut: unwind the spring.',
     setting: 'city dusk', location: 'Lanternport at sundown', time: '18:00',
+    wingmen: [],   // the duel is flown alone
     phases: [
       { label: 'Mainspring', groups: [
         { kind: 'air', type: 'Q12 MAINSPRING', count: 1, formation: 'pair', position: 'ahead', distance: 4000 },
@@ -781,11 +813,33 @@ export function countUnits(missionOrPhase, difficulty = 'normal') {
 export function validateMissions(missions = MISSIONS) {
   const out = [];
   for (const m of missions) {
+    if ('wingmen' in m) {
+      const w = m.wingmen;
+      if (!Array.isArray(w) || w.some((n) => n !== '2' && n !== '3') || new Set(w).size !== w.length) out.push(`M${m.id}: wingmen must be a list of distinct '2' / '3'`);
+    }
+    const allies = 'allies' in m ? m.allies : [];
+    if (!Array.isArray(allies)) out.push(`M${m.id}: allies must be a list`);
+    else for (const a of allies) {
+      const where = `M${m.id} allies ${a.name || '?'}`, ph = a.phase || 0, naval = a.kind === 'naval';
+      if (!naval && a.kind !== 'ground') out.push(`${where}: kind must be 'ground' or 'naval'`);
+      if (!(Number.isInteger(ph) && ph >= 0 && ph < m.phases.length)) out.push(`${where}: bad phase`);
+      else if (a.near && !(a.after && m.phases[ph].groups.some((g) => g.kind !== 'air' && g.type === a.near && !g.difficulty))) out.push(`${where}: near needs after: true and a '${a.near}' group in its phase`);
+      if (!Array.isArray(a.units) || !a.units.length) { out.push(`${where}: no units`); continue; }
+      a.units.forEach((u, k) => {
+        const t = GROUND_TYPES[u.type];
+        if (!t) out.push(`${where}: unknown type ${u.type}`);
+        else if (naval !== !!t.naval) out.push(`${where} ${u.type}: kind/naval mismatch`);
+        if (!(u.count >= 1 && u.count <= 20)) out.push(`${where} ${u.type}: count must be 1-20`);
+        if (u.escort && (!naval || k === 0)) out.push(`${where} ${u.type}: escorts are ships after the flagship`);
+      });
+    }
     m.phases.forEach((p, i) => {
       let air = 0;
       for (const g of p.groups) {
         const where = `M${m.id} phase ${i + 1} ${g.type}`;
         if ('difficulty' in g && !['hard', 'mercenary'].includes(g.difficulty)) out.push(`${where}: bad difficulty`);
+        if ('target' in g && (g.target !== 'fleet' || g.kind !== 'air' || !AIRCRAFT_TYPES[g.type] || AIRCRAFT_TYPES[g.type].armed !== false
+          || !(Array.isArray(allies) && allies.some((a) => a.kind === 'naval' && (a.phase || 0) <= i)))) out.push(`${where}: target 'fleet' needs an unarmed air type and an allied fleet by this phase`);
         if (g.kind === 'air') {
           if (!AIRCRAFT_TYPES[g.type]) out.push(`${where}: unknown aircraft type`);
           if (g.count > 8) out.push(`${where}: air group over 8`);

@@ -366,6 +366,9 @@ export class Menu {
   _build() {
     const el = this.el = document.createElement('div');
     el.className = 'menu'; el.id = 'menu'; el.hidden = true;
+    // Taps on the panels are handled here; js/touch.js must not also turn them into confirm / back pulses (a tap on
+    // the briefing text would launch the selected mission, a tap on the credits text would leave the screen).
+    el.setAttribute('data-touch-ignore', '');
     el.innerHTML = '<div class="m-scrim" aria-hidden="true"></div>' + this._htmlTitle() + this._htmlMissions() + this._htmlPause() +
       this._htmlDebrief() + this._htmlSettings() + this._htmlControls() + this._htmlCredits() + this._htmlConfirm();
     this.root.insertBefore(el, this.root.firstChild);
@@ -377,7 +380,7 @@ export class Menu {
     const M = this._screens.missions;
     this._detail = {
       el: q('.m-detail', M), eye: q('.m-d-eye', M), name: q('.m-dname', M), loc: q('.m-d-loc', M), chip: q('.m-d-chip', M),
-      brief: q('.m-brief', M), stats: q('.m-stats', M), note: q('.m-note', M), phases: q('.m-phases', M),
+      brief: q('.m-brief', M), stats: q('.m-stats', M), note: q('.m-note', M),
     };
     const D = this._screens.debrief;
     this._debEls = { eye: q('.m-deb-eye', D), title: q('.m-deb-title', D), sub: q('.m-deb-sub', D), stats: q('.m-deb-stats', D),
@@ -427,7 +430,6 @@ export class Menu {
             <p class="m-brief"></p>
             <div class="m-stats"></div>
             <p class="m-note" hidden></p>
-            <ol class="m-phases" aria-label="Phases"></ol>
             <div class="m-dact"><button type="button" class="m-btn primary" data-nav data-act="launch" data-left="[data-group=missions][aria-selected=true]">Launch <span aria-hidden="true">›</span></button></div>
           </article>
         </div>
@@ -632,7 +634,7 @@ export class Menu {
   _setConfirm(d) {
     const kind = (d && d.kind) || this._pending || 'quit';
     const T = kind === 'restart'
-      ? ['Restart mission?', 'The mission starts over from the first phase.', 'Restart']
+      ? ['Restart mission?', 'The mission starts over from the beginning.', 'Restart']
       : ['Quit to title?', 'Progress in this mission will be lost.', 'Quit'];
     this._cf.title.textContent = T[0]; this._cf.text.textContent = T[1]; this._cf.yes.textContent = T[2];
   }
@@ -668,14 +670,13 @@ export class Menu {
     D.loc.textContent = m.location || '';
     D.chip.textContent = m.setting || ''; D.chip.hidden = !m.setting;
     D.brief.textContent = m.briefing || '';
-    const phases = Array.isArray(m.phases) ? m.phases : [];
+    // Briefing and target counts only: phase counts and labels would give away how the mission unfolds.
     let n = null;
     try { n = countUnits(m, this.settings.difficulty); } catch { n = null; }
-    const cells = [['Phases', phases.length], ['Air', n && n.air], ['Ground', n && n.ground], ['Naval', n && n.naval]];
+    const cells = [['Air', n && n.air], ['Ground', n && n.ground], ['Naval', n && n.naval]];
     D.stats.innerHTML = cells.map(([label, v]) => `<div${v ? '' : ' class="is-zero"'}><b>${v == null ? '–' : v}</b><span>${label}</span></div>`).join('');
     D.note.textContent = n && n.optional ? `Includes ${n.optional} optional target${n.optional === 1 ? '' : 's'}.` : '';
     D.note.hidden = !(n && n.optional);
-    D.phases.innerHTML = phases.map((p, j) => `<li><span>${pad2(j + 1)}</span>${esc(p.label || `Phase ${j + 1}`)}</li>`).join('');
     D.el.scrollTop = 0;
   }
 
@@ -903,6 +904,7 @@ export class Menu {
     this._stack = [{ screen: 'title', focus: null }];
     this._pending = null;
     this._lock = 0.25;
+    this._lockUntil = performance.now() + this._lock * 1000;   // update() reads the wall-clock lock (see show())
     this.el.hidden = false;
     this._enter('title', {}, false);
     this._cb('onQuit');

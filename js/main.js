@@ -8,6 +8,8 @@ import { Aircraft, AIRCRAFT_RADIUS, FLIGHT } from './aircraft.js';
 import { Weapons } from './weapons.js';
 import { ChaseCamera } from './camera.js';
 import { EnemyBrain } from './ai.js';
+import { Squadron } from './squad.js';
+import { AlliedForces } from './allies.js';
 import { Profiler } from './profiler.js';
 import { PRESETS, TIERS, CHOICES, DynamicResolution, loadChoice, saveChoice, guessTier } from './quality.js';
 import { GroundForces, DEFAULT_GROUND_TYPES } from './targets.js';
@@ -43,7 +45,7 @@ const LOCK_COS = Math.cos(THREE.MathUtils.degToRad(22.5));   // 45 deg full cone
 const LOCK_RANGE = 2800;
 const HOLD_COS = Math.cos(THREE.MathUtils.degToRad(70)), HOLD_RANGE = 4500;   // once locked, the lock holds this far
 const LOCK_TIME = 0.5;
-const HARDPOINTS = 2, HARDPOINT_RELOAD = 5;   // s per hardpoint
+const HARDPOINTS = 4, HARDPOINT_RELOAD = 5;   // four standard-missile hardpoints (stands in for PW special-weapon slots), s per hardpoint
 const FLARE_RELOAD = 7;                         // s (PW: infinite flares, 7 s reload)
 const GUN_LEAD_RANGE = 1200;                    // m (PW shows the lead pipper inside 1200 m of the target)
 const RADAR_RANGE = 8000;
@@ -52,22 +54,35 @@ const PLAYER_ARMOR = 0.5;      // incoming damage multiplier for the player
 const ENEMY_HEALTH = 100;      // two missiles (65 each) kill, as for most fighters in PW; ~25 cannon hits
 const MAX_ENEMIES = 6;
 // Difficulty: player damage taken, enemy hit points and skill, how many bandits may attack at once (the rest hold
-// off), enemy missile agility, and which difficulty-specific mission groups spawn.
+// off), enemy missile agility, which difficulty-specific mission groups spawn, and the player's share of the armed
+// bandits while squadmates fly (the rest go after the squadmates; js/squad.js).
 const DIFFICULTY = {
-  easy:      { armor: 0.35, enemyHp: 0.8,  skill: -0.15, aggressors: 1,        missileTurn: 0.5, groups: [] },
-  normal:    { armor: 0.5,  enemyHp: 1.0,  skill: 0,     aggressors: 2,        missileTurn: 0.6, groups: [] },
-  hard:      { armor: 0.7,  enemyHp: 1.15, skill: 0.1,   aggressors: 4,        missileTurn: 0.7, groups: ['hard'] },
-  mercenary: { armor: 1.0,  enemyHp: 1.3,  skill: 0.2,   aggressors: Infinity, missileTurn: 0.8, groups: ['hard', 'mercenary'] },
+  easy:      { armor: 0.35, enemyHp: 0.8,  skill: -0.15, aggressors: 1,        missileTurn: 0.5, groups: [],                      playerShare: 0.3 },
+  normal:    { armor: 0.5,  enemyHp: 1.0,  skill: 0,     aggressors: 2,        missileTurn: 0.6, groups: [],                      playerShare: 0.4 },
+  hard:      { armor: 0.7,  enemyHp: 1.15, skill: 0.1,   aggressors: 4,        missileTurn: 0.7, groups: ['hard'],                playerShare: 0.5 },
+  mercenary: { armor: 1.0,  enemyHp: 1.3,  skill: 0.2,   aggressors: Infinity, missileTurn: 0.8, groups: ['hard', 'mercenary'], playerShare: 0.6 },
 };
 const ENEMY_MISSILE_TURN = 0.6;  // enemy shots turn at 60% of the player's rate (difficulty adjusts it)
 const WORLD_UP = new THREE.Vector3(0, 1, 0);
 const PARAMS = new URLSearchParams(location.search);
 
 const RIDGE_MARGIN = 20;   // m of clear ground kept between a land unit's footprint and the tunnel ridge's rock
+// Allied story units (missions[].allies; js/allies.js): placement
+const ALLY_SITE_GAP = 600;      // m: an allied group's site stays this clear of live enemy units,
+const ALLY_UNIT_GAP = 220;      //   each allied vehicle this clear,
+const ALLY_SEA_GAP = 400;       //   each allied ship this clear (hullClear also keeps hulls apart)
+const ALLY_SPACING = 18;        // m between allied vehicles
+const REGIMENT_R = 300;         // m: an allied land group spreads this far around its site
+const ALLY_UNIT_MAX = 20;       // units per entry of an allied group
+const ZONE_SITE_MARGIN = 500, ZONE_UNIT_MARGIN = 150;   // m that enemy group sites / units keep outside an allied group's circle
+// Allied fleet: escort stations [right, ahead] (m) in the flagship's frame (a second ring further out beyond eight)
+const FLEET_SLOTS = [[430, 260], [-430, 260], [430, -320], [-430, -320], [0, -640], [0, 660], [780, -20], [-780, -20]];
 const _v = new THREE.Vector3(), _v2 = new THREE.Vector3(), _v3 = new THREE.Vector3(), _fwd = new THREE.Vector3(), _up = new THREE.Vector3(), _right = new THREE.Vector3();
+const _fit = new THREE.Vector3();   // ringFit result
 const _ret = new THREE.Vector3(), _rv = new THREE.Vector3();   // reticle direction scratch
 const _q = new THREE.Quaternion();
 const yawToward = (from, to) => Math.atan2(-(to.x - from.x), -(to.z - from.z)); // rotation about +Y so that -Z nose points from->to
+const byDistance = (a, b) => a._d2 - b._d2;   // sort by squared distance to the player (set beforehand)
 
 class Game {
   constructor(root) {
@@ -162,17 +177,23 @@ class Game {
     // Ground and naval targets (instanced boxes/prisms), campaign data, combined combat list for weapons and radar
     this.ground = new GroundForces(this.scene, this.world);
     if (this.tunnel) { const tn = this.tunnel; this.ground.obstacle = (pt) => tn.collide(pt, 1) === 'wall'; }
+    // Allied story units (immortal props in a friendly tint; js/allies.js): cosmetic flak, cruise missiles leaking onto
+    // the fleet. Idle (no per-frame work) in missions without allies
+    this.allied = new AlliedForces({ ground: this.ground, weapons: this.weapons, onLeak: (ac, sunk, missed) => this.onLeak(ac, sunk, missed) });
     // Campaign: the 21 Galebreak Isles missions (js/missions.js), small fallback campaign otherwise
     this.missions = (MISSIONS && MISSIONS.length) ? MISSIONS : FALLBACK_MISSIONS;
     this.airTypes = Object.assign({}, FALLBACK_AIR_TYPES, AIRCRAFT_TYPES || {});
     this.groundTypes = Object.assign({}, DEFAULT_GROUND_TYPES, GROUND_TYPES || {});
     this.missionIndex = 0; this.mission = this.missions[0]; this.phaseIndex = 0;
     this.combatList = [this.player];
+    this.hostiles = [];                    // combatList minus the player: all the player's team can hit
+    this._nAir = 0;                        // hostiles[0, _nAir) are aircraft (rebuildCombatList)
+    this.teamTargets = { player: this.hostiles };   // per-team target lists for the weapons (no friendly fire)
     this.killTimes = [];
     this._onFlak = (pos, hit) => {
       this.weapons.explode(pos, 0.3);
       const p = this.player;
-      if (hit && p.alive) {
+      if (hit && p.alive && !p.immortal) {   // (immortal once the mission is complete)
         this.damageFlash = Math.max(this.damageFlash, 0.5); this.post.damage(0.3); this.chase.addShake(0.2);
         if (p.applyDamage(6)) { this.weapons.aircraftDeath(p); this.die('SHOT DOWN BY FLAK', true); }
       }
@@ -191,6 +212,16 @@ class Game {
     for (const o of this.scene.children) if (!o.userData.__prof) this.profiler.instrument(o, 'fx:' + (o.name || o.type));
     if (!PARAMS.has('bench')) this.profiler.setMode('pass');
     this.bench = PARAMS.has('bench') ? { dur: Number(PARAMS.get('dur') || 16), warm: Number(PARAMS.get('warm') || 4), t: 0, boomT: 0, mslT: 0, modeT: 0, done: false } : null;
+    // Squadmates COTTER and RIVET (js/squad.js), parked until a mission calls them up. Left out of benchmarks so runs stay
+    // comparable (?bench=1&wingmen=1 adds them, to measure what they cost).
+    this.squad = !this.bench || PARAMS.has('wingmen')
+      ? new Squadron(this.scene, { world: this.world, tunnel: this.tunnel, profiler: this.profiler, fxQuality: PRESETS[this.quality].sub, worldHalf: WORLD_HALF })
+      : null;
+    this.allies = this.squad ? this.squad.allies : [];   // squadmates flying this mission (isAlly, team 'player', callsign)
+    if (this.squad) {
+      for (const a of Object.values(this.squad.members)) this.allAircraft.push(a);
+      this.weapons.damageFilter = (target, dmg, shooter, kind, m) => this.squad.damage(target, dmg, shooter, kind, m);
+    }
     // Gameplay tuning: missiles must be evadable with a hard break turn (module default of 7 rad/s is nearly unmissable)
     // Dodgeable missiles (calibrated with tools/msltest.mjs): ~60 deg seeker gimbal, airframe response lag and a short
     // blind range at the end, so a hard break ~1 s before impact makes them overshoot while straight-flying targets
@@ -203,7 +234,7 @@ class Game {
     this.weapons.missileCooldown = 0.2;          // hardpoints pace the player; this only stops double-taps in one frame
     this.applyQuality(this.quality);
     window.addEventListener('resize', () => this.resize());
-    document.addEventListener('visibilitychange', () => { this.last = performance.now(); });
+    document.addEventListener('visibilitychange', () => { this.last = performance.now(); this.tabHidden(document.hidden); });
     const gesture = () => { this.audio.unlock(); this.awacs.preload(); this.music.play(); };
     // capture phase: menu panels stop propagation of their clicks, but audio must still unlock on the first gesture
     window.addEventListener('pointerdown', () => {
@@ -283,6 +314,9 @@ class Game {
     } catch (e) { console.warn('effect warm-up skipped', e); }
   }
   resize() {
+    // devicePixelRatio follows browser zoom and the monitor: re-read it on every resize (the HUD reads it every frame)
+    this._dprSeen = window.devicePixelRatio || 1;
+    if (!PARAMS.has('dpr')) this.dpr = Math.min(this._dprSeen, PRESETS[this.quality].dprCap);
     const w = this.glHost.clientWidth || 1, h = this.glHost.clientHeight || 1;
     const post = this.post;
     if (post.setRenderScale) {
@@ -376,6 +410,8 @@ class Game {
     p.speed = 230; p.throttle = 0.72;
     p.velocity.set(0, 0, -p.speed);
     p.ammo = FLIGHT.AMMO; p.maxMissiles = FLIGHT.MAX_MISSILES; p.missiles = FLIGHT.MAX_MISSILES;
+    p.immortal = false;                    // (missionComplete sets it)
+    this.inTunnel = false;                 // respawned in the open: no stale tunnel state (radio calls, camera clamp)
     this.hardpoints = new Array(HARDPOINTS).fill(0); this.flareT = 0;
     this.syncAim();
   }
@@ -402,14 +438,17 @@ class Game {
     const M = this.mission = list[((i % n) + n) % n];
     this.resetPlayer();
     this.chase.snap(this.player);
+    if (this.squad) this.squad.spawn(M, this.player);   // squadmates in mission.wingmen form up on the player
+    this._slotT = 0;                                       // hand out attack slots on the first frame
     for (const e of this.enemies) e.kill();
-    this.ground.clear();
+    this.ground.clear(); this.allied.clear();
     for (const m of this.weapons.missiles) m.alive = false;
     this.messages.length = 0;
     this.target = null; this.lockTimer = 0; this.locked = false;
     this.phaseIndex = -1; this.waveTimer = 0; this.missionDoneT = 0; this.killTimes.length = 0;
     this.lowHealthSaid = false;
     this.fireGrace = 0.35;                 // the button that launched the sortie must not also fire a weapon
+    if (this.audio.setPaused) this.audio.setPaused(false);   // e.g. a restart from the pause menu
     this.setState('playing');
     this.message(`MISSION ${M.id}: ${String(M.name).toUpperCase()}`, true, 4.5);
     if (M.briefing) for (const line of String(M.briefing).split(/(?<=[.!?])\s+/).slice(0, 3)) this.message(line, false, 7);
@@ -424,12 +463,16 @@ class Game {
     const P = M.phases[this.phaseIndex];
     let air = 0, ground = 0, naval = 0;
     const allowed = (this.diff || DIFFICULTY.normal).groups;
+    this.spawnAllies(false);               // this phase's allied units first: the enemy groups keep clear of them
     for (const g of P.groups) {
       if (g.difficulty && !allowed.includes(g.difficulty)) continue;
       const k = this.spawnGroup(g);
       if (g.kind === 'air') air += k; else if (g.kind === 'naval') naval += k; else ground += k;
     }
+    this.spawnAllies(true);                // allied units placed beside this phase's enemies (allies[].after)
     this.rebuildCombatList();
+    this.directBandits();                  // the new bandits take whichever hunting role is short
+    if (this.squad) this.squad.newWave();  // squadmates pick a bandit within a second
     this.wave = this.phaseIndex + 1;
     if (this.phaseIndex > 0) {
       // ammo refresh between phases (missiles, cannon, flares); hull carries over within a mission
@@ -445,15 +488,70 @@ class Game {
   }
   missionComplete() {
     this.missionDoneT = 0.001;
+    this.player.immortal = true;           // nothing can shoot the player down from here on (Weapons: immortals take no hits)
     this.score += 3000 + 1000 * this.missionIndex;
     this.message('MISSION COMPLETE', true, 5.5);
     this.say('missionComplete', 3);
     this.audio.ui('wave');
   }
+  /** Rebuilt when units spawn or die, never per frame. combatList: the player and every live hostile (what the player
+   *  can target, what the HUD lists, what enemy fire is tested against; friendlies are immortal, so it never needs them).
+   *  hostiles: the same minus the player, all that the player's team (player, squadmates) is tested against; its first
+   *  _nAir entries are the enemy aircraft (all that allied flak looks at). */
   rebuildCombatList() {
-    const L = this.combatList; L.length = 0;
-    for (const a of this.allAircraft) L.push(a);
-    for (const t of this.ground.targets) if (t.alive) L.push(t);
+    const L = this.combatList, H = this.hostiles; L.length = 0; H.length = 0;
+    for (const a of this.allAircraft) { if (a === this.player) L.push(a); else if (a.alive && a.team !== 'player') { L.push(a); H.push(a); } }
+    this._nAir = H.length;
+    for (const t of this.ground.targets) if (t.alive && t.team !== 'player') { L.push(t); H.push(t); }
+    this.combatDirty = false;
+  }
+  /**
+   * Bandit director (about every 1 s, and right after a phase spawns). Of the N live armed bandits, D = min(N, max(1,
+   * ceil(share x N))) should hunt the player (share per difficulty; all N when no squadmate flies), the rest a squadmate.
+   * New spawns, and a bandit whose squadmate target is gone, take the role that is short at once, nearest the player
+   * first. Otherwise at most one role change per tick, only while the player-hunter count H is outside D +- 1 (exactly D
+   * when N <= 3), and never for a bandit that changed role in the last 10 s: the squadmate-hunter nearest the player
+   * breaks off to come for the player, or the player-hunter farthest away leaves for the squadmate with fewer hunters.
+   * Bosses always hunt the player. Nothing else changes a bandit's target.
+   */
+  directBandits() {
+    const p = this.player, A = this.allies, now = this.time;
+    if (!p.alive) return;
+    const pend = this._pend || (this._pend = []); pend.length = 0;
+    let N = 0, H = 0, near = null, far = null, nearD = Infinity, farD = -1;
+    for (let i = 0; i < A.length; i++) A[i]._hunters = 0;
+    for (const e of this.enemies) {
+      const b = e.brain;
+      if (!e.alive || !b || b.passive) continue;
+      N++;
+      const d2 = e._d2 = e.position.distanceToSquared(p.position);
+      if (!b.role || (b.role === 'squad' && !(b.target && b.target.alive))) { pend.push(e); continue; }
+      const free = now - b.roleSince >= 10;
+      if (b.role === 'player') { H++; if (free && !(e.bossBars > 0) && d2 > farD) { farD = d2; far = e; } }
+      else { b.target._hunters++; if (free && d2 < nearD) { nearD = d2; near = e; } }
+    }
+    const D = A.length ? Math.min(N, Math.max(1, Math.ceil((this.diff || DIFFICULTY.normal).playerShare * N))) : N;
+    if (pend.length) {
+      pend.sort(byDistance);
+      for (const e of pend) { const hunt = H < D || e.bossBars > 0; this.setRole(e, hunt, true); if (hunt || !A.length) H++; }
+      return;
+    }
+    if (N <= 3 ? H === D : H >= D - 1 && H <= D + 1) return;
+    if (H < D) { if (near) this.setRole(near, true, false); }
+    else if (far) this.setRole(far, false, false);
+  }
+  /** Role setter for directBandits: hunt the player, or the squadmate with fewer hunters (its _hunters count). */
+  setRole(e, hunt, isNew) {
+    const b = e.brain, A = this.allies;
+    b.roleSince = this.time;
+    if (hunt || !A.length) {
+      b.role = 'player'; b.target = this.player; b.threat = null;
+      if (!isNew) b.aggressor = false;     // breaking off to come for the player: it waits for an attack slot
+    } else {
+      const a = A.length > 1 && A[1]._hunters < A[0]._hunters ? A[1] : A[0];
+      a._hunters++;
+      b.role = 'squad'; b.target = a; b.threat = this.player; b.aggressor = true;   // the player's guns still scare it
+    }
   }
   /** Place one mission group relative to the player: air groups in formation, surface groups on suitable terrain. */
   spawnGroup(g) {
@@ -462,10 +560,41 @@ class Game {
     const rel = { ahead: 0, high: 0, low: 0, left: -Math.PI / 2, right: Math.PI / 2, behind: Math.PI }[g.position];
     const bearing = base + (rel !== undefined ? rel : (Math.random() - 0.5) * 1.6) + (Math.random() - 0.5) * 0.35;
     const dist = g.distance || (g.kind === 'air' ? 5000 : 7000);
-    const cx = THREE.MathUtils.clamp(p.position.x + Math.sin(bearing) * dist, -WORLD_HALF * 0.85, WORLD_HALF * 0.85);
-    const cz = THREE.MathUtils.clamp(p.position.z - Math.cos(bearing) * dist, -WORLD_HALF * 0.85, WORLD_HALF * 0.85);
-    this._spawnOptional = !!g.optional;
-    return g.kind === 'air' ? this.spawnAirGroup(g, cx, cz) : this.spawnSurfaceGroup(g, cx, cz);
+    let cx = THREE.MathUtils.clamp(p.position.x + Math.sin(bearing) * dist, -WORLD_HALF * 0.85, WORLD_HALF * 0.85);
+    let cz = THREE.MathUtils.clamp(p.position.z - Math.cos(bearing) * dist, -WORLD_HALF * 0.85, WORLD_HALF * 0.85);
+    // target 'fleet': past the player from the allied fleet, flying at it (js/allies.js leakers)
+    const atFleet = g.target === 'fleet' && g.kind === 'air' && this.allied && this.allied.ships.length > 0;
+    if (atFleet) { this.fleetApproach(g, dist, _v2); cx = _v2.x; cz = _v2.z; }
+    this._spawnOptional = !!g.optional; this._spawnAtFleet = atFleet;
+    const n = g.kind === 'air' ? this.spawnAirGroup(g, cx, cz) : this.spawnSurfaceGroup(g, cx, cz);
+    this._spawnAtFleet = false;
+    return n;
+  }
+  /**
+   * Spawn point for an air group with target 'fleet': `dist` m from the player on the far side from the allied fleet
+   * (swung ~23 deg to the group's 'left' / 'right'), so it flies past the player to reach the fleet. Takes the least
+   * swung of 16 bearings that stays on the map and is no nearer the fleet than max(dist, the player's own distance);
+   * failing that (the player near a map edge with the fleet inland of them), the least swung on the map at least dist
+   * from the fleet (at least dist / cruise speed of flight: 7 km at a Bodkin's 182 m/s = 38 s), else the bearing on the
+   * map farthest from the fleet. Writes out (x, z).
+   */
+  fleetApproach(g, dist, out) {
+    const p = this.player.position, F = this.allied.fleetCenter, lim = WORLD_HALF * 0.85;
+    let ux = p.x - F.x, uz = p.z - F.z;
+    const d = Math.hypot(ux, uz);
+    if (d < 300) { this.player.getForward(_fwd); ux = -_fwd.z; uz = _fwd.x; }   // over the fleet: from the player's right
+    const pref = Math.atan2(uz, ux) + (g.position === 'right' ? 0.4 : g.position === 'left' ? -0.4 : 0) + (Math.random() - 0.5) * 0.3;
+    let tier = 4, far = -1;   // 1: past the player, 2: >= dist from the fleet, 3: on the map, farthest from it, 4: clamped
+    for (let k = 0; k < 16 && tier > 1; k++) {
+      const a = pref + (k & 1 ? 1 : -1) * ((k + 1) >> 1) * (Math.PI / 8);   // 0, +22.5, -22.5, +45 ... 180 deg
+      let x = p.x + Math.cos(a) * dist, z = p.z + Math.sin(a) * dist;
+      const onMap = Math.abs(x) <= lim && Math.abs(z) <= lim;
+      if (!onMap) { x = THREE.MathUtils.clamp(x, -lim, lim); z = THREE.MathUtils.clamp(z, -lim, lim); }
+      const f = Math.hypot(x - F.x, z - F.z);
+      const t = !onMap ? 4 : f >= Math.max(dist, d) ? 1 : f >= dist ? 2 : 3;
+      if (t < tier || (t === tier && t >= 3 && f > far)) { tier = t; far = f; out.set(x, 0, z); }   // tiers 1-2: least swung wins
+    }
+    return out;
   }
   spawnAirGroup(g, cx, cz) {
     const typeName = g.type || 'SLEET-2';
@@ -523,24 +652,27 @@ class Game {
     ac.getForward(_fwd); ac.velocity.copy(_fwd).multiplyScalar(ac.speed);
     const skill = THREE.MathUtils.clamp(0.38 + this.missionIndex * 0.06 + (type.role === 'fighter' ? 0.05 : 0) + (this.skillOffset || 0), 0.2, 0.95);
     ac.brain.skill = skill; ac.brain.state = 'pursue'; ac.brain.stateTime = 0; ac.brain.missileCooldown = 10 + Math.random() * 8;
+    ac.brain.target = null; ac.brain.role = null; ac.brain.threat = null;   // pooled: the bandit director assigns a role
     ac.brain.missileReload = type.missileReload || 0;   // per-type override (Mainspring: a third of the player's hardpoint reload)
     if (type.missileReload) ac.missiles = 999;
     ac.brain.passive = type.armed === false;
     ac.brain.gunsOnly = type.armed === false ? 'none' : null;
     if (ac.brain.passive) { ac.getForward(ac.brain.transitDir); ac.brain.transitAlt = pos.y; ac.brain.state = 'transit'; }
+    ac.brain.setTransitGoal(null);                       // pooled: a leaker's goal must not carry over
     ac.name = typeName;
+    if (this._spawnAtFleet) this.allied.addLeaker(ac);   // flies at the allied fleet instead (js/allies.js)
     return ac;
   }
   /**
    * Find a land (or sea) site near (cx, cz): a spiral search out to 9 km, then the nearest qualifying point of a 1 km grid
    * over the map (both bounded; null only if nothing qualifies anywhere). A sea site needs open water 1 km around (room for
-   * the group, no inland lakes) and must float def's hull clear of other ships.
+   * the group, no inland lakes) and must float def's hull clear of other ships. Optional `extra` (x, z) => bool adds a
+   * test: allied groups keep clear of enemy units, enemy groups clear of allied ones.
    */
-  findSite(cx, cz, naval, out, def) {
-    const w = this.world, gf = this.ground, lim = WORLD_HALF * 0.9;
-    const ok = naval
-      ? (x, z) => gf.openWater(x, z, 1000) && (!def || gf.hullClear(def, x, z))
-      : (x, z) => { const h = w.getHeight(x, z); return h > 8 && h < 900 && Math.abs(w.getHeight(x + 40, z) - w.getHeight(x - 40, z)) < 50 && Math.abs(w.getHeight(x, z + 40) - w.getHeight(x, z - 40)) < 50 && this.ridgeClear(def, x, z, 60); };
+  findSite(cx, cz, naval, out, def, extra = null) {
+    const w = this.world, lim = WORLD_HALF * 0.9;
+    const base = (x, z) => this.siteFits(naval, def, x, z);
+    const ok = extra ? (x, z) => extra(x, z) && base(x, z) : base;
     for (let r = 0; r <= 9000; r += 300) {
       const steps = r === 0 ? 1 : Math.max(6, Math.round(r / 250));
       for (let k = 0; k < steps; k++) {
@@ -558,6 +690,14 @@ class Game {
       }
     }
     return best < Infinity ? out : null;
+  }
+  /** findSite's test for a group site: open water 1 km around and def's hull clear at sea; flat land between 8 and 900 m,
+   *  60 m clear of the tunnel ridge, ashore. */
+  siteFits(naval, def, x, z) {
+    const w = this.world, gf = this.ground;
+    if (naval) return gf.openWater(x, z, 1000) && (!def || gf.hullClear(def, x, z));
+    const h = w.getHeight(x, z);
+    return h > 8 && h < 900 && Math.abs(w.getHeight(x + 40, z) - w.getHeight(x - 40, z)) < 50 && Math.abs(w.getHeight(x, z + 40) - w.getHeight(x, z - 40)) < 50 && this.ridgeClear(def, x, z, 60);
   }
   /**
    * Land placement test against the tunnel ridge (a separate mesh over the heightfield, so the terrain tests miss it):
@@ -579,18 +719,35 @@ class Game {
     }
     return true;
   }
+  /** Land unit placement test: dry ground below 1200 m, clear of the tunnel ridge. */
+  landFits(def, x, z) { const h = this.world.getHeight(x, z); return h > 3 && h < 1200 && this.ridgeClear(def, x, z); }
+  /** Bounded ring search around (cx, cz) for a spot where fits(x, z, hdg) holds: rings 80 m apart out to 2.4 km, points
+   *  ~100 m apart along each, from a random bearing. Writes it to out and returns true; false if nothing fits. */
+  ringFit(cx, cz, hdg, fits, out) {
+    const a0 = Math.random() * Math.PI * 2;
+    for (let r = 80; r <= 2400; r += 80) {
+      const steps = Math.max(8, Math.round(r / 16));   // ~100 m apart along the ring
+      for (let k = 0; k < steps; k++) {
+        const a = a0 + (k / steps) * Math.PI * 2, x = cx + Math.cos(a) * r, z = cz + Math.sin(a) * r;
+        if (fits(x, z, hdg)) { out.set(x, 0, z); return true; }
+      }
+    }
+    return false;
+  }
   spawnSurfaceGroup(g, cx, cz) {
     const typeName = g.type || 'tank';
     const def = this.groundTypes[typeName] || DEFAULT_GROUND_TYPES[typeName] || DEFAULT_GROUND_TYPES.tank;
     const naval = g.kind === 'naval' || !!def.naval;
-    const site = this.findSite(cx, cz, naval, _v3, def);
+    // enemy units keep clear of allied groups (AlliedForces zones; no extra test while there are none)
+    const AZ = this.allied && this.allied.nZones > 0 ? this.allied : null;
+    const site = this.findSite(cx, cz, naval, _v3, def, AZ ? (x, z) => AZ.clearOf(x, z, ZONE_SITE_MARGIN) : null);
     if (!site) return 0;
     const n = Math.max(1, Math.min(g.count || 1, 24));
     const area = g.area || (naval ? 'fleet' : 'base');
     const dirA = Math.random() * Math.PI * 2;
     // ships need the whole hull afloat in open water, clear of other ships; vehicles need dry land
-    const fits = naval ? (x, z, hdg) => this.ground.hullClear(def, x, z, hdg)
-                       : (x, z) => { const h = this.world.getHeight(x, z); return h > 3 && h < 1200 && this.ridgeClear(def, x, z); };
+    const fits = naval ? (x, z, hdg) => this.ground.hullClear(def, x, z, hdg) && (AZ === null || AZ.clearOf(x, z, ZONE_UNIT_MARGIN))
+                       : (x, z) => this.landFits(def, x, z) && (AZ === null || AZ.clearOf(x, z, ZONE_UNIT_MARGIN));
     let placed = 0;
     for (let i = 0; i < n; i++) {
       let x = site.x, z = site.z, ok = false;
@@ -603,18 +760,10 @@ class Game {
         ok = fits(x, z, hdg);
       }
       if (!ok) {
-        // formation slot unusable: the nearest spot that fits around the site (bounded ring search from a random bearing),
-        // else leave the unit out rather than strand it on land or in the sea
-        const a0 = Math.random() * Math.PI * 2;
-        for (let r = 80; !ok && r <= 2400; r += 80) {
-          const steps = Math.max(8, Math.round(r / 16));   // ~100 m apart along the ring
-          for (let k = 0; k < steps && !ok; k++) {
-            const a = a0 + (k / steps) * Math.PI * 2;
-            x = site.x + Math.cos(a) * r; z = site.z + Math.sin(a) * r;
-            ok = fits(x, z, hdg);
-          }
-        }
-        if (!ok) continue;
+        // formation slot unusable: the nearest spot that fits around the site, else leave the unit out rather than
+        // strand it on land or in the sea
+        if (!this.ringFit(site.x, site.z, hdg, fits, _fit)) continue;
+        x = _fit.x; z = _fit.z;
       }
       const t = this.ground.spawn(typeName, def, x, z, hdg);
       if (t) {
@@ -623,6 +772,106 @@ class Game {
       }
     }
     return placed;
+  }
+  // ---------- allied story units (missions[].allies; js/allies.js) ----------
+  /**
+   * Spawn the allied groups that join with the current phase: before its enemy groups (after = false; those then keep
+   * clear of them) or after them (allies[].after, e.g. beside the enemy armor of type `near`). Same validated placement
+   * as enemy groups: findSite for the site (open water and a clear hull at sea; flat dry land clear of the tunnel ridge
+   * ashore), hullClear / landFits (ridgeClear) for every unit. Allied sites keep ALLY_SITE_GAP from live enemy units,
+   * vehicles ALLY_UNIT_GAP and ships ALLY_SEA_GAP. Placement only (spawn time), never per frame.
+   */
+  spawnAllies(after) {
+    const list = this.mission && this.mission.allies;
+    if (!Array.isArray(list) || !this.allied) return 0;
+    let n = 0;
+    for (const a of list) if ((a.phase || 0) === this.phaseIndex && !!a.after === after) n += this.spawnAllyGroup(a);
+    if (n) this.allied.commit();
+    return n;
+  }
+  spawnAllyGroup(a) {
+    const units = Array.isArray(a.units) ? a.units : [], AL = this.allied;
+    const lead = units.length ? this.groundTypes[units[0].type] : null;
+    if (!lead) return 0;
+    const naval = a.kind === 'naval', p = this.player.position, lim = WORLD_HALF * 0.85;
+    const dist = a.distance || (a.near ? 1000 : 3500);
+    const clearOfEnemy = (x, z) => this.enemyClear(x, z, ALLY_SITE_GAP);
+    let cx, cz, site = null;
+    const anchor = a.near ? this.enemyCentroid(a.near, _v2) : null;
+    if (anchor) {
+      // next to the live enemy units of type `near` (the unit they have pinned down): rings from `dist` to dist + 1.8 km
+      // around them, each swept from the far side (seen from the player) toward the near side
+      const d = Math.hypot(anchor.x - p.x, anchor.z - p.z) || 1, ux = (anchor.x - p.x) / d, uz = (anchor.z - p.z) / d, a0 = Math.atan2(uz, ux);
+      cx = anchor.x + ux * dist; cz = anchor.z + uz * dist;
+      for (let r = dist; !site && r <= dist + 1800; r += 300) {
+        const steps = Math.max(8, Math.round(2 * Math.PI * r / 250));   // ~250 m apart
+        for (let j = 0; j < steps && !site; j++) {
+          const an = a0 + (j & 1 ? 1 : -1) * ((j + 1) >> 1) * (2 * Math.PI / steps);
+          const x = anchor.x + Math.cos(an) * r, z = anchor.z + Math.sin(an) * r;
+          if (Math.abs(x) <= lim && Math.abs(z) <= lim && clearOfEnemy(x, z) && this.siteFits(naval, lead, x, z)) site = _v3.set(x, 0, z);
+        }
+      }
+    } else {
+      this.player.getForward(_fwd);
+      const b = Math.atan2(_fwd.x, -_fwd.z) + ({ left: -Math.PI / 2, right: Math.PI / 2, behind: Math.PI }[a.position] || 0);
+      cx = p.x + Math.sin(b) * dist; cz = p.z - Math.cos(b) * dist;
+    }
+    cx = THREE.MathUtils.clamp(cx, -lim, lim); cz = THREE.MathUtils.clamp(cz, -lim, lim);
+    if (!site) site = this.findSite(cx, cz, naval, _v3, lead, clearOfEnemy);
+    if (!site) return 0;
+    const sx = site.x, sz = site.z, hdg = Math.random() * Math.PI * 2;
+    const fx = -Math.sin(hdg), fz = -Math.cos(hdg), rx = -fz, rz = fx;   // the fleet's ahead and right
+    AL.beginGroup();
+    let placed = 0, k = 0;
+    for (const u of units) {
+      const def = this.groundTypes[u.type];
+      if (!def || !!def.naval !== naval) continue;
+      const gap = naval ? ALLY_SEA_GAP : ALLY_UNIT_GAP;
+      const fits = naval ? (x, z, h) => this.ground.hullClear(def, x, z, h) && this.enemyClear(x, z, gap)
+                         : (x, z) => this.landFits(def, x, z) && this.enemyClear(x, z, gap) && AL.spacingOk(x, z, ALLY_SPACING);
+      const n = Math.max(1, Math.min(u.count || 1, ALLY_UNIT_MAX));
+      for (let i = 0; i < n; i++, k++) {
+        // station: the flagship on the site, escorts on FLEET_SLOTS around her (all on the fleet's heading); vehicles
+        // scattered within REGIMENT_R of the site, each on its own heading
+        let px = sx, pz = sz;
+        if (naval && k > 0) {
+          const S = FLEET_SLOTS[(k - 1) % FLEET_SLOTS.length], ring = 1 + Math.floor((k - 1) / FLEET_SLOTS.length);
+          px += (rx * S[0] + fx * S[1]) * ring; pz += (rz * S[0] + fz * S[1]) * ring;
+        }
+        const h = naval ? hdg : Math.random() * Math.PI * 2;
+        let x = px, z = pz, ok = false;
+        for (let tries = 0; tries < 8 && !ok; tries++) {
+          if (naval) { x = px; z = pz; }
+          else { const r = REGIMENT_R * Math.sqrt(Math.random()), an = Math.random() * Math.PI * 2; x = sx + Math.cos(an) * r; z = sz + Math.sin(an) * r; }
+          if (tries > 0) { x += (Math.random() - 0.5) * 120 * tries; z += (Math.random() - 0.5) * 120 * tries; }
+          ok = fits(x, z, h);
+        }
+        if (!ok) { if (!this.ringFit(px, pz, h, fits, _fit)) continue; x = _fit.x; z = _fit.z; }
+        const t = this.ground.spawn(u.type, def, x, z, h, 'player');
+        if (!t) break;                                     // the allied instance budget is spent
+        if (naval && placed === 0 && a.name) t.name = String(a.name).toUpperCase();   // the flagship carries the group's name
+        AL.addUnit(t, !!u.escort); placed++;
+      }
+    }
+    AL.endGroup();
+    return placed;
+  }
+  /** True if no live enemy surface unit stands within r m of (x, z). Placement only. */
+  enemyClear(x, z, r) {
+    const T = this.ground.targets, r2 = r * r;
+    for (let i = 0; i < T.length; i++) {
+      const t = T[i];
+      if (!t.alive || t.team === 'player') continue;
+      const dx = t.position.x - x, dz = t.position.z - z;
+      if (dx * dx + dz * dz < r2) return false;
+    }
+    return true;
+  }
+  /** Centroid (into out) of the live enemy surface units of `type`, or null if there are none. */
+  enemyCentroid(type, out) {
+    let n = 0, x = 0, z = 0;
+    for (const t of this.ground.targets) if (t.alive && t.team !== 'player' && t.type === type) { x += t.position.x; z += t.position.z; n++; }
+    return n ? out.set(x / n, 0, z / n) : null;
   }
   /** AWACS radio line (wired to js/awacs.js when present). */
   say(key, priority = 1, cooldown) {
@@ -661,6 +910,8 @@ class Game {
   onKill(target, shooter) {
     if (target === this.player) { this.die('SHOT DOWN', true); return; }
     target.kill();
+    this.combatDirty = true;                               // target lists drop it after this frame's weapons step
+    if (this.squad) this.squad.onKill(target, shooter);   // the squadmates' kill budget (they score nothing for the player)
     if (shooter === this.player) {
       this.kills++;
       const isGround = !!target.isGround;
@@ -677,6 +928,14 @@ class Game {
     } else this.message(target.isGround ? 'TARGET DESTROYED' : 'BANDIT DOWN', false, 2);
     if (this.target === target) { this.target = null; this.lockTimer = 0; this.locked = false; }
   }
+  /** AlliedForces leak (js/allies.js): a cruise missile reached the allied fleet and is consumed. Resolved for the phase,
+   *  with no score or kill credit. sunk = the escort it sank, or null (a harmless hit on the flagship); missed = it
+   *  splashed into the sea short of the hulls (no callout). */
+  onLeak(ac, sunk, missed = false) {
+    ac.kill(); this.combatDirty = true;
+    if (this.target === ac) { this.target = null; this.lockTimer = 0; this.locked = false; }
+    if (!missed) this.message(sunk ? 'ESCORT LOST' : `${this.allied.flagName || 'FLAGSHIP'} HIT`, false, 2.5);
+  }
   onExplosion(pos, size) {
     const d = pos.distanceTo(this.camera.position);
     const k = THREE.MathUtils.clamp(1 - d / 900, 0, 1) * Math.min(1, size);
@@ -684,6 +943,7 @@ class Game {
     this.audio.explosion(d * 0.3);
   }
   onMissileLaunch(m) {
+    if (this.squad && this.squad.onMissileLaunch(m, this.weapons)) return;   // a squadmate's shot: lethal or a dud
     if (m.owner !== this.player) m.turnScale = this.enemyMissileTurn || ENEMY_MISSILE_TURN;
     if (m.owner !== this.player && m.target === this.player) { this.message('MISSILE LAUNCH', false, 2); this.say('missileIncoming', 3); }
   }
@@ -694,6 +954,7 @@ class Game {
     let dt = (now - this.last) / 1000; this.last = now;
     if (!(dt > 0)) dt = 0.016; dt = Math.min(dt, 0.05);
     if (document.hidden) return;
+    if ((window.devicePixelRatio || 1) !== this._dprSeen) this.resize();   // zoom / another monitor without a resize event
     this.time += dt;
     const prof = this.profiler; prof.cpuBegin('logic');
     const input = this.input; input.update(dt);
@@ -762,13 +1023,16 @@ class Game {
     p.setControls({ pitch: THREE.MathUtils.clamp((800 - p.position.y) * 0.002 - p.velocity.y * 0.01, -0.4, 0.4), roll: THREE.MathUtils.clamp(-bank * 2, -0.5, 0.5), yaw: 0, throttleDelta: 0 });
     p.update(dt);
     if (Math.abs(p.position.x) > 6000 || Math.abs(p.position.z) > 6000) { this.resetPlayer(); this.chase.snap(p); }
-    this.weapons.update(dt, this.combatList, this.camera);
+    this.weapons.update(dt, this.combatList, this.camera, this.teamTargets);
     this.audio.setEngine({ throttle: p.throttle, speedFrac: p.speed / FLIGHT.AB_SPEED, afterburner: false, alive: true });
   }
   updateDead(dt) {
     this.deadTimer += dt;
     for (let i = 0; i < this.enemies.length; i++) { const e = this.enemies[i]; if (e.alive) { e.brain.update(dt, this.player, this.world, this.weapons, this.time); e.update(dt); } }
-    this.weapons.update(dt, this.combatList, this.camera);
+    if (this.squad) this.squad.update(dt, this.player, this.enemies, this.weapons, this.time);
+    if (this.allied.active) { this.profiler.cpuBegin('allies'); this.allied.update(dt, this.time, this.camera.position, this.player, this.hostiles, this._nAir); this.profiler.cpuEnd('allies'); }
+    this.weapons.update(dt, this.combatList, this.camera, this.teamTargets);
+    if (this.combatDirty) this.rebuildCombatList();
     this.audio.setEngine({ throttle: 0, speedFrac: 0, afterburner: false, alive: false });
     this.ageMessages(dt);
   }
@@ -804,29 +1068,43 @@ class Game {
         if (!this.boundaryWarned || this.time - this.boundaryWarned > 4) { this.message('RETURN TO THE COMBAT AREA', false, 3); this.boundaryWarned = this.time; this.say('outOfBounds', 2, 15); }
       }
     }
-    // Attack slots: only the N closest armed bandits press the attack; the rest hold off (no limit on Mercenary)
+    // Bandit director (~1 s): how many bandits hunt the player and how many a squadmate (directBandits)
+    this._dirT = (this._dirT || 0) - dt;
+    if (this._dirT <= 0) { this._dirT = 1; this.profiler.cpuBegin('allies'); this.directBandits(); this.profiler.cpuEnd('allies'); }
+    // Attack slots (every 0.5 s): only the N closest bandits hunting the player press the attack, the rest hold off (no
+    // limit on Mercenary); bandits hunting a squadmate need no slot
     this._slotT = (this._slotT || 0) - dt;
     if (this._slotT <= 0) {
       this._slotT = 0.5;
       const maxA = (this.diff || DIFFICULTY.normal).aggressors;
       const armed = this._armed || (this._armed = []); armed.length = 0;
       for (const e of this.enemies) if (e.alive && e.brain && !e.brain.passive) { e._d2 = e.position.distanceToSquared(p.position); armed.push(e); }
-      armed.sort((a, b) => a._d2 - b._d2);
-      for (let i = 0; i < armed.length; i++) armed[i].brain.aggressor = i < maxA;
+      armed.sort(byDistance);
+      let onPlayer = 0;
+      for (let i = 0; i < armed.length; i++) { const b = armed[i].brain; b.aggressor = b.target && b.target !== p ? true : onPlayer++ < maxA; }
     }
     // Enemies
     let aliveEnemies = 0;
     for (let i = 0; i < this.enemies.length; i++) {
       const e = this.enemies[i]; if (!e.alive) continue;
-      e.brain.update(dt, p, world, weapons, this.time);
+      e.brain.update(dt, e.brain.target || p, world, weapons, this.time);
       e.update(dt);
       const h = Math.max(world.getHeight(e.position.x, e.position.z), 0);
       if (e.position.y < h + 3 * (e.mesh.scale.x || 1) || (this.tunnel && this.tunnel.collide(e.position, 6) === 'wall')) {
-        weapons.aircraftDeath(e); e.kill(); this.score += 300; this.message('BANDIT CRASHED', false, 2);
+        if (this.allied.leakers.length > 0 && this.allied.crashLeak(e)) continue;   // a leaker that hit the sea at the fleet: a leak
+        weapons.aircraftDeath(e); e.kill(); this.combatDirty = true; this.score += 300; this.message('BANDIT CRASHED', false, 2);
         if (this.target === e) { this.target = null; this.lockTimer = 0; this.locked = false; }
         continue;
       }
-      if (!e.optional) aliveEnemies++;
+      if (!e.optional && e.team !== 'player') aliveEnemies++;
+    }
+    // Squadmates and allied units (after the bandits, so they react to this frame's positions)
+    const alliedOn = this.allied.active;
+    if (this.squad || alliedOn) {
+      this.profiler.cpuBegin('allies');
+      if (this.squad) this.squad.update(dt, p, this.enemies, weapons, this.time);
+      if (alliedOn) this.allied.update(dt, this.time, this.camera.position, p, this.hostiles, this._nAir);   // flak, leakers, sinking
+      this.profiler.cpuEnd('allies');
     }
     // Targeting, lock, camera button semantics
     this.updateTargeting(dt);
@@ -869,10 +1147,11 @@ class Game {
     for (let i = 0; i < this.hardpoints.length; i++) if (this.hardpoints[i] > 0) this.hardpoints[i] = Math.max(0, this.hardpoints[i] - dt);
     if (this.flareT > 0) this.flareT = Math.max(0, this.flareT - dt);
     this.ground.update(dt, p, weapons, this._onFlak);
-    weapons.update(dt, this.combatList, this.camera);
-    // Mission progression: a phase is cleared when no enemy aircraft or ground/naval targets remain
+    weapons.update(dt, this.combatList, this.camera, this.teamTargets);
+    if (this.combatDirty) this.rebuildCombatList();   // a unit died this frame: drop it from the target lists
+    // Mission progression: a phase is cleared when no enemy aircraft or ground/naval targets remain (friendlies don't count)
     let surfaceAlive = 0;
-    for (const t of this.ground.targets) if (t.alive && !t.optional) surfaceAlive++;
+    for (const t of this.ground.targets) if (t.alive && !t.optional && t.team !== 'player') surfaceAlive++;
     if (this.missionDoneT > 0) {
       this.missionDoneT += dt;
       if (this.missionDoneT > 4.5) { this.missionDoneT = 0; this.setState('complete'); this.showDebrief(true); }
@@ -900,7 +1179,9 @@ class Game {
     this.audio.pullUpWarning(pullUp);
     this.audio.lockTone(!p.alive || !this.target ? 'none' : this.locked ? 'locked' : this.inCone ? 'seeking' : 'none');
     this.audio.setEngine({ throttle: p.throttle, speedFrac: THREE.MathUtils.clamp(p.speed / FLIGHT.AB_SPEED, 0, 1), afterburner: p.afterburner, alive: p.alive });
-    if (!p.alive) { this.deadTimer += dt; if (this.deadTimer > 2.2) { this.setState('dead'); this.showDebrief(false); } }
+    if (this.state === 'complete') this.stopWarnings();   // just entered the debrief: no tones left running behind it
+    // (a crash after mission complete doesn't turn it into a failure: the countdown above still ends on the debrief)
+    else if (!p.alive && !(this.missionDoneT > 0)) { this.deadTimer += dt; if (this.deadTimer > 2.2) { this.setState('dead'); this.showDebrief(false); } }
     this.ageMessages(dt);
   }
 
@@ -975,7 +1256,8 @@ class Game {
   bestTarget() {
     const dir = this.reticleDir(_ret);
     let best = null, bs = Infinity;
-    for (const e of this.combatList) { if (!e.alive || e === this.player) continue; const sc = this.targetScore(e, dir); if (sc < bs) { bs = sc; best = e; } }
+    // friendlies (the player's team: squadmates, allied units) are never targets
+    for (const e of this.combatList) { if (!e.alive || e === this.player || e.team === this.player.team) continue; const sc = this.targetScore(e, dir); if (sc < bs) { bs = sc; best = e; } }
     return best;
   }
   nearestEnemy() { return this.bestTarget(); }
@@ -994,7 +1276,7 @@ class Game {
       if (pass === 1) { walk.clear(); if (this.target) walk.add(this.target); }   // all visited: wrap to the closest again
       let bd = Infinity;
       for (const e of this.combatList) {
-        if (!e.alive || e === this.player || walk.has(e)) continue;
+        if (!e.alive || e === this.player || e.team === this.player.team || walk.has(e)) continue;
         const a = this.reticleAngle(e, dir);
         if (a < bd) { bd = a; best = e; }
       }
@@ -1071,10 +1353,13 @@ class Game {
   }
   quitToTitle() {
     for (const e of this.enemies) e.kill();
-    this.ground.clear();
+    if (this.squad) this.squad.hide();
+    this.ground.clear(); this.allied.clear();
+    this.rebuildCombatList();
     for (const m of this.weapons.missiles) m.alive = false;
     this.messages.length = 0; this.radio = null; this.target = null;
     if (this.awacs.stop) this.awacs.stop();
+    this.stopWarnings();                   // only the flight loop switches warning / lock tones off otherwise
     if (this.audio.setPaused) this.audio.setPaused(false);
     this.resetPlayer(); this.chase.snap(this.player);
     this.setState('title');
@@ -1106,6 +1391,19 @@ class Game {
     if (a.setPaused) { a.setPaused(true); return; }
     a.setEngine({ throttle: 0, speedFrac: 0, afterburner: false, alive: false });
     a.lockTone('none'); a.missileWarning(false); a.pullUpWarning(false);
+  }
+  /** Warning and lock tones (and the HUD warnings) off: leaving the flight loop for the title or the debrief. */
+  stopWarnings() {
+    const a = this.audio;
+    a.lockTone('none'); a.missileWarning(false); a.pullUpWarning(false);
+    this.missileIncoming = false; this.pullUp = false; this.stall = false;
+  }
+  /** Hidden tab: the loop stops, so game audio goes quiet the way pause silences it, and the music with it. Back in
+   *  view both return, except that game audio stays paused while the game is paused. */
+  tabHidden(hidden) {
+    if (hidden) this.silenceGameAudio();
+    else if (this.state !== 'paused' && this.audio.setPaused) this.audio.setPaused(false);
+    if (this.music.setVolume) this.music.setVolume(hidden ? 0 : Number(this.settings.music ?? 0.7));
   }
   // ---------- War Thunder-style mouse aim ----------
   isMouseMode() { return !this.input.usingGamepad && !(this.touch && this.touch.active) && !this.bench; }
@@ -1207,7 +1505,7 @@ class Game {
   startBench() {
     this.startMission();
     for (const e of this.enemies) e.kill();
-    this.ground.clear();
+    this.ground.clear(); this.allied.clear();
     const p = this.player; p.getForward(_fwd);
     this.spawnAirGroup({ type: 'NV-48', count: 6, formation: 'loose' }, p.position.x + _fwd.x * 3500, p.position.z + _fwd.z * 3500);   // constant workload
     this.rebuildCombatList();
@@ -1351,7 +1649,7 @@ class Game {
     f.contacts.length = 0; f.radar.blips.length = 0;
     let n = 0, remaining = 0;
     for (const e of this.combatList) {
-      if (!e.alive || e === p) continue; remaining++;
+      if (!e.alive || e === p || e.team === 'player') continue; remaining++;   // friendlies are listed below
       if (n < f._contactPool.length) {
         const c = f._contactPool[n]; this.project(e.position, c); c.type = 'enemy'; c.hostile = true; c.distance = e.position.distanceTo(p.position); c.isTarget = e === t;
         f.contacts.push(c);
@@ -1360,13 +1658,42 @@ class Game {
       }
     }
     for (const m of this.weapons.missiles) {
-      if (!m.alive || m.owner === p || n >= f._contactPool.length) continue;
+      if (!m.alive || m.owner === p || (m.owner && m.owner.team === 'player') || n >= f._contactPool.length) continue;
       const c = f._contactPool[n]; this.project(m.position, c); c.type = 'missile'; c.hostile = m.target === p; c.distance = m.position.distanceTo(p.position); c.isTarget = false;
       f.contacts.push(c);
       const b = f.radar._pool[n]; b.dx = m.position.x - p.position.x; b.dz = m.position.z - p.position.z; b.type = 'missile'; b.isTarget = false; b.relAlt = m.position.y - p.position.y;
       f.radar.blips.push(b); n++;
     }
     f.enemiesRemaining = remaining;
+    // Friendlies: screen markers for live squadmates (this.allies) and friendly radar contacts for squadmates and allied
+    // ground/naval units (AlliedForces.radar, built when they spawn). Pools are made once; nothing here allocates per frame.
+    const AP = f._allyPool || (f._allyPool = Array.from({ length: 8 }, () => ({ name: '', callsign: '', x: 0, y: 0, onScreen: false, behind: false, distance: 0 })));
+    const FP = f.radar._friendlyPool || (f.radar._friendlyPool = Array.from({ length: 32 }, () => ({ dx: 0, dz: 0, relAlt: 0, type: 'air' })));
+    const fa = f.allies || (f.allies = []), fr = f.radar.friendly || (f.radar.friendly = []);
+    fa.length = 0; fr.length = 0;
+    if (this.state !== 'title') {
+      const al = this.allies;
+      if (al) for (let i = 0; i < al.length; i++) {
+        const a = al[i];
+        if (!a || !a.alive || !a.position || a === p) continue;
+        if (fa.length < AP.length) {
+          const c = AP[fa.length]; this.project(a.position, c);
+          c.name = c.callsign = a.callsign || a.name || 'ALLY'; c.distance = p.position.distanceTo(a.position);
+          fa.push(c);
+        }
+        if (fr.length < FP.length) {
+          const b = FP[fr.length]; b.dx = a.position.x - p.position.x; b.dz = a.position.z - p.position.z; b.relAlt = a.position.y - p.position.y; b.type = 'air';
+          fr.push(b);
+        }
+      }
+      const AR = this.allied.radar;
+      for (let i = 0; i < AR.length && fr.length < FP.length; i++) {
+        const g = AR[i];
+        if (!g.alive) continue;
+        const b = FP[fr.length]; b.dx = g.position.x - p.position.x; b.dz = g.position.z - p.position.z; b.relAlt = g.position.y - p.position.y; b.type = g.naval ? 'naval' : 'ground';
+        fr.push(b);
+      }
+    }
     // Boss health bar: the first live enemy whose type has bars (segments drain one at a time)
     let boss = null;
     if (this.state !== 'title') for (const e of this.enemies) if (e.alive && e.bossBars > 0) { boss = e; break; }
@@ -1378,6 +1705,12 @@ class Game {
     f.warnings.missileIncoming = !!this.missileIncoming; f.warnings.pullUp = !!this.pullUp; f.warnings.stall = !!this.stall; f.warnings.overG = false;
     f.radio = this.radio;
     f.compact = !!(this.touch && this.touch.active);
+    // Touch button rectangles, so HUD labels can avoid them. getRects() reads layout: refresh it when the size or the
+    // controls' visibility changes, and once a second, never every frame.
+    if (f.compact && this.touch.getRects) {
+      const tk = f.w * 8192 + f.h + (this.touch.visible ? 0.5 : 0) + (this.touch.paused ? 0.25 : 0);
+      if (tk !== f._touchKey || this.time - f._touchT > 1) { f._touchKey = tk; f._touchT = this.time; f.touchRects = this.touch.getRects(); }
+    } else { f.touchRects = null; f._touchKey = -1; }
     f.messages = this.messages; f.score = this.score; f.wave = this.wave; f.kills = this.kills; f.mission = this.mission ? this.mission.id : 0;
     f.padlock = this.camMode === 'padlock'; f.lookBack = this.camMode === 'rear';
     if (this.camMode === 'mouseaim' && p.alive) {

@@ -15,7 +15,8 @@ const bundle = buildSync({
   minifyWhitespace: minify, minifySyntax: minify, write: false,
 }).outputFiles[0].text;
 const inline = bundle.replace(/<\/script/gi, '<\\/script').replace(/<!--/g, '<\\!--');
-const artifact = page.replace('<!--SCRIPT-->', `<script type="module">\n${inline}\n</script>`);
+// replacer function: a replacement *string* would expand $&, $', $`, $$ and $1 occurring in the bundle
+const artifact = page.replace('<!--SCRIPT-->', () => `<script type="module">\n${inline}\n</script>`);
 writeFileSync('dist/wingnut.html', artifact);
 writeFileSync('dist/wingnut_local.html', skeletonHead + artifact + skeletonTail);
 writeFileSync('dev.html', skeletonHead + page.replace('<!--SCRIPT-->', '<script type="module" src="js/main.js"></script>') + skeletonTail);

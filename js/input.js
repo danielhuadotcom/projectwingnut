@@ -240,7 +240,8 @@ export class Input {
     if (code === 'ControlLeft' || code === 'ControlRight') { if (!e.ctrlKey) { this._keys.delete('ControlLeft'); this._keys.delete('ControlRight'); } }
   }
 
-  _clearKeys() { this._keys.clear(); }
+  // held keys and mouse buttons: after a blur / hidden tab their keyup / mouseup may never arrive (stuck gun)
+  _clearKeys() { this._keys.clear(); this._mLeft = this._mRight = false; }
 
   /** True if any held key maps to `action` (e.g. 'gun', 'pitch+'). */
   _kbHeld(action) {

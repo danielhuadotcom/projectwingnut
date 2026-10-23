@@ -22,6 +22,13 @@ import * as THREE from 'https://cdnjs.cloudflare.com/ajax/libs/three.js/0.170.0/
 // the next flareProtectTime seconds) switch to a flare; they burst on it (flareFuse) or overshoot and lose it, and
 // go ballistic when it burns out.
 //
+// Teams: update(dt, list, camera, teamTargets) takes optional per-team target lists ({ team: [targets] }, built by the
+// game when units spawn or die, never per frame): rounds and fuses of a shooter whose team has an entry test only that
+// list (e.g. the player's team: hostiles only, so no friendly fire), everyone else tests `list`. Targets flagged
+// `immortal` (squadmates) belong in no list: bullets never touch them, and a missile chasing one airbursts harmlessly
+// when it reaches it (a single extra test against its own target). An optional damageFilter(target, damage, shooter,
+// kind, missile) lets the game adjust damage before it is applied.
+//
 // Particles are simulated on the GPU: the CPU writes a particle once, when it is spawned, into a ring
 // buffer (interleaved, partial bufferSubData of only the freshly written range). The vertex shader
 // evaluates position / size / colour analytically from (time - birth), initial velocity, linear drag
@@ -772,6 +779,10 @@ export class Missile {
     this.unguided = false;                       // fired without a target: flies straight for its whole life
     this.groundLaunch = false;                   // fired by an `isGround` launcher (pops up, no rail drop)
     this.turnScale = 1;                          // per-shot multiplier on the turn limit (game balance hook)
+    this.dud = false;                            // scripted miss: homes on a point missBy m beside its target, never fuses
+    this.missBy = 0;
+    this.missSide = 1;                           // which side of the target the dud passes (+1 / -1)
+    this.lethal = false;                         // game flag (squadmate shots allowed to kill); reset on every launch
     this.alive = false;
     this.age = 0;
     this.speed = 0;
@@ -842,6 +853,8 @@ export class Weapons {
     if (RAND_TABLE[0] === 0) for (let i = 0; i < RAND_SIZE; i++) RAND_TABLE[i] = Math.random();   // one-time fill
     this.onHit = onHit; this.onKill = onKill; this.onExplosion = onExplosion; this.onMissileLaunch = onMissileLaunch;
     this.onDecoy = onDecoy;                  // optional: onDecoy(missile, flare, aircraft) when a flare spoofs a missile
+    this.damageFilter = null;                // optional: (target, damage, shooter, kind, missile) => damage to apply
+    this._teamTargets = null;                // per-team target lists for this frame (see update)
     this.time = 0;
     this.missiles = [];                      // live missiles (array identity is stable)
 
@@ -873,6 +886,7 @@ export class Weapons {
     this.missileLag = 0.18;                  // s, airframe response lag on the guidance command (late breaks overshoot)
     this.missileBlindRange = 90;             // m, the seeker stops steering this close (last-instant jinks cause misses)
     this.missileArmTime = 0.25;              // s before the fuse arms
+    this.dudBurstRadius = 25;                // m: a dud passing this close to anyone airbursts harmlessly (never a hit)
     this.missileDamage = 65;
     this.missileSmokeRate = 90;              // puffs/s while boosting (main.js scales this with the quality tier)
     this.missileCoastSmokeRate = 55;         // puffs/s while coasting (capped at missileSmokeRate) — dense the whole flight
@@ -1293,8 +1307,9 @@ export class Weapons {
     this._bOwner[i] = a;
   }
 
-  /** Bullet hit-sphere radius for rounds fired by `a`: gunHitRadius[a.team], else bulletRadius. */
+  /** Bullet hit-sphere radius for rounds fired by `a`: its own gunHitRadius, else gunHitRadius[a.team], else bulletRadius. */
   _gunRadius(a) {
+    if (a && typeof a.gunHitRadius === 'number' && a.gunHitRadius > 0) return a.gunHitRadius;
     const tbl = this.gunHitRadius, team = a ? a.team : undefined;
     const r = tbl && team !== undefined && team !== null ? tbl[team] : undefined;
     return typeof r === 'number' && r > 0 ? r : this.bulletRadius;
@@ -1312,12 +1327,18 @@ export class Weapons {
     this._bOwner[last] = null;
   }
 
+  /** Targets that the rounds / fuse of `owner` test against: teamTargets[owner.team] when given, else `list`. */
+  _listFor(owner, list) {
+    const tt = this._teamTargets;
+    if (tt !== null && owner) { const T = tt[owner.team]; if (T !== undefined) return T; }
+    return list;
+  }
+
   _updateBullets(dt, list) {
     const P = this._bPos, V = this._bVel, A = this._bAge;
     const mat = this._tracerMesh.instanceMatrix.array, ta = this._tracerAttr.array;
     const life = this.bulletLife, gdt = this.bulletGravity * dt, BR = this._bRad;
     const L = this.tracerLength, w = this.tracerWidth, ceil = this.terrainCeiling;
-    const nl = list.length;
     for (let i = 0; i < this._nb;) {
       const i3 = i * 3;
       A[i] += dt;
@@ -1329,10 +1350,12 @@ export class Weapons {
       P[i3] = bx; P[i3 + 1] = by; P[i3 + 2] = bz;
       // ---- hit test: segment travelled this frame vs. each target sphere, in the target's moving frame. Radius =
       //      max(shooter team's gunHitRadius, target.hitRadius if any); the earliest crossing along the segment wins
+      //      Only the owner team's target list is tested (see update).
       const owner = this._bOwner[i], rB = BR[i];
+      const tl = this._listFor(owner, list), nl = tl.length;
       let hit = null, hx = 0, hy = 0, hz = 0, bestU = 2;
       for (let j = 0; j < nl; j++) {
-        const T = list[j];
+        const T = tl[j];
         if (T === owner || Weapons._isDead(T)) continue;
         const tr = T.hitRadius, big = typeof tr === 'number' && tr > rB, RR = big ? tr : rB;
         const tp = T.position, tv = T.velocity || _zero;
@@ -1404,7 +1427,9 @@ export class Weapons {
   }
 
   _gunHit(target, shooter, x, y, z, dx, dy, dz) {
-    if (this.onHit) this.onHit(target, this.bulletDamage, shooter, 'gun');
+    if (target.immortal === true) return;          // (immortals belong in no target list) never a visible hit
+    const dmg = this.damageFilter ? this.damageFilter(target, this.bulletDamage, shooter, 'gun', null) : this.bulletDamage;
+    if (this.onHit) this.onHit(target, dmg, shooter, 'gun');
     if (!this._far(x, y, z)) {
       const tv = target.velocity || _zero, t = this.time;
       const k = this._recK;                      // sparks sprayed back toward the shooter, carried by the target's motion
@@ -1430,7 +1455,7 @@ export class Weapons {
       p[16] = 0; p[17] = 0; p[18] = 1; p[19] = rnd(); p[20] = 0; p[21] = 0; p[22] = 0; p[23] = 0.04;
       this._smokeRing.push(p);
     }
-    const killed = typeof target.applyDamage === 'function' ? target.applyDamage(this.bulletDamage) === true : false;
+    const killed = typeof target.applyDamage === 'function' ? target.applyDamage(dmg) === true : false;
     if (killed) {
       if (this.onKill) this.onKill(target, shooter);
       this.aircraftDeath(target);
@@ -1484,6 +1509,8 @@ export class Weapons {
     m.smokeAcc = rnd(); m.flameAcc = rnd();
     m.seed = rnd(); m.id = ++this._missileSerial;
     m.turnScale = 1;                       // per-shot multiplier on the turn limit (game balance hook)
+    m.dud = false; m.missBy = 0; m.missSide = 1; m.lethal = false;   // pooled: the launch callback may set these
+    m.ax = 0; m.ay = 0; m.az = 0;          // pooled: guidance lag state (_guide's own reset never fires: it starts after the rail drop)
     m.mesh.updateMatrix(); m.mesh.matrixWorld.copy(m.mesh.matrix);
     this.missiles.push(m);
     if (this.onMissileLaunch) this.onMissileLaunch(m);
@@ -1560,15 +1587,17 @@ export class Weapons {
     mp.x += mv.x * dt; mp.y += mv.y * dt; mp.z += mv.z * dt;
     if (m.ignited) this._missileTrail(m);
 
-    // ---- proximity fuse vs any live aircraft / ground target except the owner (segment test in the target's frame);
-    //      radius = max(missileFuse, 0.8 * target.hitRadius) so big ground targets (ships) fuse at their hull
+    // ---- proximity fuse vs any live aircraft / ground target in the owner team's list except the owner (segment test in
+    //      the target's frame); radius = max(missileFuse, 0.8 * target.hitRadius) so big ground targets (ships) fuse at
+    //      their hull. A dud only airbursts, harmlessly, and only if something comes within dudBurstRadius (it aims wide).
     if (m.age > this.missileArmTime) {
-      const F = this.missileFuse;
+      const F = m.dud ? this.dudBurstRadius : this.missileFuse;
       const ax = m.prev.x, ay = m.prev.y, az = m.prev.z, bx = m.position.x, by = m.position.y, bz = m.position.z;
+      const own = m.owner, tl = this._listFor(own, list);
       let best = null, bestU = 2, px = 0, py = 0, pz = 0;
-      for (let j = 0; j < list.length; j++) {
-        const T = list[j];
-        if (T === m.owner || Weapons._isDead(T)) continue;
+      for (let j = 0; j < tl.length; j++) {
+        const T = tl[j];
+        if (T === own || Weapons._isDead(T)) continue;
         const tr = T.hitRadius, fr = typeof tr === 'number' && tr * 0.8 > F ? tr * 0.8 : F, R2 = fr * fr;
         const tp = T.position, tv = T.velocity || _zero;
         const sx = ax - (tp.x - tv.x * dt), sy = ay - (tp.y - tv.y * dt), sz = az - (tp.z - tv.z * dt);
@@ -1582,7 +1611,23 @@ export class Weapons {
           best = T; bestU = u; px = ax + (bx - ax) * u; py = ay + (by - ay) * u; pz = az + (bz - az) * u;
         }
       }
-      if (best) { this._detonate(m, best, px, py, pz); return; }
+      if (best) {
+        if (m.dud || best.immortal === true) this._detonate(m, null, px, py, pz, true);   // dud / an immortal: harmless airburst
+        else this._detonate(m, best, px, py, pz);
+        return;
+      }
+      // chasing an immortal (in no list): reaching it is a harmless airburst, never a hit
+      const I = m.target;
+      if (I !== null && I.immortal === true && !Weapons._isDead(I)) {
+        const tp = I.position, tv = I.velocity || _zero;
+        const sx = ax - (tp.x - tv.x * dt), sy = ay - (tp.y - tv.y * dt), sz = az - (tp.z - tv.z * dt);
+        const dx = bx - tp.x - sx, dy = by - tp.y - sy, dz = bz - tp.z - sz;
+        const len2 = dx * dx + dy * dy + dz * dz;
+        let u = len2 > 1e-9 ? -(sx * dx + sy * dy + sz * dz) / len2 : 0;
+        u = u < 0 ? 0 : u > 1 ? 1 : u;
+        const cx = sx + dx * u, cy = sy + dy * u, cz = sz + dz * u;
+        if (cx * cx + cy * cy + cz * cz < F * F) { this._detonate(m, null, ax + (bx - ax) * u, ay + (by - ay) * u, az + (bz - az) * u, true); return; }
+      }
       // ---- spoofed: burst on the flare it is chasing (or overshoot it: _guide then drops the track)
       const D = m.target;
       if (D && D.isDecoy && D.alive) {
@@ -1639,7 +1684,13 @@ export class Weapons {
     const T = m.target, dt = this._dt, boostEnd = this.missileDropTime + this.missileBoostTime;
     if (Weapons._isDead(T)) { m.target = null; return; }
     const dir = m.forward, tp = T.position, tv = T.velocity || _zero;
-    const rx = tp.x - m.position.x, ry = tp.y - m.position.y, rz = tp.z - m.position.z;
+    let rx = tp.x - m.position.x, ry = tp.y - m.position.y, rz = tp.z - m.position.z;
+    if (m.missBy > 0 && !T.isDecoy) {
+      // scripted near miss: home on a point beside the target, across the line of sight (and a little above it)
+      const h = Math.sqrt(rx * rx + rz * rz);
+      if (h > 1) { const s = m.missBy * m.missSide / h, offX = -rz * s, offZ = rx * s; rx += offX; rz += offZ; }
+      ry += m.missBy * 0.3;
+    }
     const r2 = rx * rx + ry * ry + rz * rz;
     if (r2 < 1e-4) return;
     const dist = Math.sqrt(r2), lx = rx / dist, ly = ry / dist, lz = rz / dist;
@@ -1737,12 +1788,13 @@ export class Weapons {
     m.boosting = false;
     const owner = m.owner;
     if (victim) {
-      if (this.onHit) this.onHit(victim, this.missileDamage, owner, 'missile');
+      const dmg = this.damageFilter ? this.damageFilter(victim, this.missileDamage, owner, 'missile', m) : this.missileDamage;
+      if (this.onHit) this.onHit(victim, dmg, owner, 'missile');
       const tv = victim.velocity || _zero;
       this._tmpPos.set(x, y, z);
       this._tmpVel.copy(tv).multiplyScalar(0.6);
       this.explode(this._tmpPos, 1.0, this._tmpVel);
-      const killed = typeof victim.applyDamage === 'function' ? victim.applyDamage(this.missileDamage) === true : false;
+      const killed = typeof victim.applyDamage === 'function' ? victim.applyDamage(dmg) === true : false;
       if (killed) {
         if (this.onKill) this.onKill(victim, owner);
         this.aircraftDeath(victim);
@@ -2312,10 +2364,12 @@ export class Weapons {
   // ===============================================================================================
   // Frame update
   // ===============================================================================================
-  /** Integrate bullets, missiles, debris and emitters; resolve hits; push particle data. Call once per frame. */
-  update(dt, aircraftList, camera) {
+  /** Integrate bullets, missiles, debris and emitters; resolve hits; push particle data. Call once per frame.
+   *  teamTargets (optional, { team: [targets] }): what shooters on that team can hit; other shooters use aircraftList. */
+  update(dt, aircraftList, camera, teamTargets = null) {
     dt = Math.min(Math.max(+dt || 0, 0), 0.05);
     const list = Array.isArray(aircraftList) ? aircraftList : EMPTY;
+    this._teamTargets = teamTargets && typeof teamTargets === 'object' ? teamTargets : null;
     this.time += dt;
     this._dt = dt;
     if (camera && camera.matrixWorld) {

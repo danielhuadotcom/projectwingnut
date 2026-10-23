@@ -3,10 +3,17 @@ import * as THREE from 'https://cdnjs.cloudflare.com/ajax/libs/three.js/0.170.0/
 // Ground and naval targets for missions. Every target is drawn as an instanced box or prism (2 draw calls total) and is
 // duck-typed like an Aircraft (position, velocity, quaternion, alive, team, health, applyDamage, hitRadius, isGround),
 // so weapons, lock-on, the HUD and the radar treat it like any other contact.
-const MAX_PER_SHAPE = 192;
-const _m = new THREE.Matrix4(), _s = new THREE.Vector3(), _c = new THREE.Color(), _v = new THREE.Vector3(), _q = new THREE.Quaternion();
+// Allied props (team 'player', js/allies.js) share the meshes in a friendly tint but draw on a budget of their own, so
+// they never take an enemy's instance: spawn() returns null only when that unit's own side is full.
+const MAX_PER_SHAPE = 192;        // enemy instances per shape
+const ALLY_PER_SHAPE = 32;        // allied instances per shape, on top
+const CAPACITY = MAX_PER_SHAPE + ALLY_PER_SHAPE;
+const ALLY_TINT = 0x4f6f94, ALLY_TINT_NAVAL = 0x7d94b2;   // allied steel blue (no enemy type is blue)
+const WRECK = 0x1c1a18;
+const SINK_TIME = 10;             // s for a scripted sinking (sink) to settle under the surface
+const _m = new THREE.Matrix4(), _s = new THREE.Vector3(), _c = new THREE.Color(), _v = new THREE.Vector3(), _q = new THREE.Quaternion(), _q2 = new THREE.Quaternion();
 const ZERO_SCALE = new THREE.Matrix4().makeScale(0, 0, 0);
-const UP = new THREE.Vector3(0, 1, 0), FWD = new THREE.Vector3(0, 0, -1);
+const UP = new THREE.Vector3(0, 1, 0), FWD = new THREE.Vector3(0, 0, -1), X_AXIS = new THREE.Vector3(1, 0, 0), Z_AXIS = new THREE.Vector3(0, 0, 1);
 // Naval placement: water depth (m) needed under every hull sample, and how far (m) past bow, stern and beams it must reach
 // (shallower water renders as sand and shoreline foam, so a hull over it looks beached)
 const NAVAL_DEPTH = 5, NAVAL_MARGIN = 30;
@@ -52,9 +59,11 @@ export class GroundTarget {
     this.missiles = 1e9; this.ammo = 1e9; this.speed = 0;
     this.cool = 3 + Math.random() * 6;           // weapon cooldown (s)
     this.heading = 0;
+    this.immortal = false;                       // allied props: nothing damages them (set for every target: one shape)
+    this.sinkT = -1;                             // s since a scripted sinking began (GroundForces.sink), -1 = none
   }
   applyDamage(amount) {
-    if (!this.alive) return false;
+    if (!this.alive || this.immortal) return false;
     this.health -= amount;
     return this.health <= 0;
   }
@@ -69,19 +78,22 @@ export class GroundForces {
     this.scene = scene; this.world = world;
     this.material = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.8, metalness: 0.15, name: 'groundTargets' });
     this.meshes = {
-      box: new THREE.InstancedMesh(new THREE.BoxGeometry(1, 1, 1).translate(0, 0.5, 0), this.material, MAX_PER_SHAPE),
-      prism: new THREE.InstancedMesh(prismGeometry(), this.material, MAX_PER_SHAPE),
+      box: new THREE.InstancedMesh(new THREE.BoxGeometry(1, 1, 1).translate(0, 0.5, 0), this.material, CAPACITY),
+      prism: new THREE.InstancedMesh(prismGeometry(), this.material, CAPACITY),
     };
-    this.used = { box: 0, prism: 0 };
+    this.used = { box: 0, prism: 0 };              // instance slots handed out (both sides)
+    this.enemyCount = { box: 0, prism: 0 };        // units spawned per side, each capped on its own budget
+    this.allyCount = { box: 0, prism: 0 };
     this.freeSlots = { box: [], prism: [] };
     for (const k of ['box', 'prism']) {
       const m = this.meshes[k];
       m.name = 'groundTargets:' + k; m.frustumCulled = false; m.count = 0;
       m.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
-      for (let i = 0; i < MAX_PER_SHAPE; i++) { m.setMatrixAt(i, ZERO_SCALE); m.setColorAt(i, _c.set(0xffffff)); }
+      for (let i = 0; i < CAPACITY; i++) { m.setMatrixAt(i, ZERO_SCALE); m.setColorAt(i, _c.set(0xffffff)); }
       scene.add(m);
     }
     this.targets = [];
+    this.sinking = [];      // targets going down (sink), animated by updateSinking
     this.obstacle = null;   // optional (point) => true if solid structure (tunnel ridge) blocks that point
   }
   /** Line of sight from a ground unit to `to`: terrain (and structures) sampled along the segment. */
@@ -96,12 +108,17 @@ export class GroundForces {
     }
     return true;
   }
-  /** Place a target on the terrain (or the sea surface for naval types). Returns the GroundTarget or null if full. */
-  spawn(typeName, def, x, z, heading = 0) {
-    const shape = def.shape === 'prism' ? 'prism' : 'box';
-    const slot = this.freeSlots[shape].length ? this.freeSlots[shape].pop() : (this.used[shape] < MAX_PER_SHAPE ? this.used[shape]++ : -1);
+  /** Place a target on the terrain (or the sea surface for naval types). team 'player' makes an allied prop (immortal,
+   *  friendly tint, allied budget). Returns the GroundTarget or null if that side's budget for the shape is full. */
+  spawn(typeName, def, x, z, heading = 0, team = 'enemy') {
+    const shape = def.shape === 'prism' ? 'prism' : 'box', ally = team === 'player';
+    const count = ally ? this.allyCount : this.enemyCount;
+    if (count[shape] >= (ally ? ALLY_PER_SHAPE : MAX_PER_SHAPE)) return null;
+    const slot = this.freeSlots[shape].length ? this.freeSlots[shape].pop() : (this.used[shape] < CAPACITY ? this.used[shape]++ : -1);
     if (slot < 0) return null;
+    count[shape]++;
     const t = new GroundTarget(this, shape, slot, typeName, def);
+    if (ally) { t.team = 'player'; t.immortal = true; }
     const ground = this.world.getHeight(x, z);
     const y = def.naval ? 0.5 : Math.max(ground, 0.5) - 0.3;
     t.position.set(x, y + def.size[1] * 0.5, z);           // center of mass for lock-on and fuses
@@ -111,7 +128,7 @@ export class GroundForces {
     _s.set(def.size[0], def.size[1], def.size[2]);
     _m.compose(_v.set(x, y, z), t.quaternion, _s);
     mesh.setMatrixAt(slot, _m);
-    mesh.setColorAt(slot, _c.set(tintFor(typeName, def)));
+    mesh.setColorAt(slot, _c.set(ally ? (def.naval ? ALLY_TINT_NAVAL : ALLY_TINT) : tintFor(typeName, def)));
     mesh.count = Math.max(mesh.count, slot + 1);
     mesh.instanceMatrix.needsUpdate = true; if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
     this.targets.push(t);
@@ -169,28 +186,53 @@ export class GroundForces {
     // leave a scorched, flattened wreck instead of popping out
     _s.set(t.def.size[0] * 0.9, t.def.size[1] * 0.25, t.def.size[2] * 0.9);
     _m.compose(_v.set(t.position.x, t.position.y - t.def.size[1] * 0.5, t.position.z), t.quaternion, _s);
-    mesh.setMatrixAt(t.slot, _m); mesh.setColorAt(t.slot, _c.set(0x1c1a18));
+    mesh.setMatrixAt(t.slot, _m); mesh.setColorAt(t.slot, _c.set(WRECK));
     mesh.instanceMatrix.needsUpdate = true; if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+  }
+  /** Scripted sinking (an allied escort lost to a cruise missile): the hull goes dark, lists and settles bow-up under
+   *  the surface over SINK_TIME s, then is removed. updateSinking animates it. */
+  sink(t) {
+    if (!t.alive) return;
+    t.alive = false; t.health = Math.min(t.health, 0); t.sinkT = 0;
+    this.sinking.push(t);
+    const mesh = this.meshes[t.shape];
+    mesh.setColorAt(t.slot, _c.set(WRECK)); if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+  }
+  /** One matrix per sinking hull per frame (bounded by the hulls going down at once); no allocation. */
+  updateSinking(dt) {
+    const S = this.sinking;
+    for (let i = S.length - 1; i >= 0; i--) {
+      const t = S[i], mesh = this.meshes[t.shape], s = t.def.size;
+      t.sinkT += dt;
+      const k = Math.min(1, t.sinkT / SINK_TIME), e = k * k;
+      if (k >= 1) { mesh.setMatrixAt(t.slot, ZERO_SCALE); S[i] = S[S.length - 1]; S.pop(); }
+      else {
+        _q.copy(t.quaternion).multiply(_q2.setFromAxisAngle(X_AXIS, 0.2 * e)).multiply(_q2.setFromAxisAngle(Z_AXIS, 0.3 * k));
+        _m.compose(_v.set(t.position.x, 0.5 - e * (s[1] + 0.3 * s[2] + 10), t.position.z), _q, _s.set(s[0], s[1], s[2]));
+        mesh.setMatrixAt(t.slot, _m);
+      }
+      mesh.instanceMatrix.needsUpdate = true;
+    }
   }
   clear() {
     for (const k of ['box', 'prism']) {
       const m = this.meshes[k];
       for (let i = 0; i < this.used[k]; i++) m.setMatrixAt(i, ZERO_SCALE);
       m.count = 0; m.instanceMatrix.needsUpdate = true;
-      this.used[k] = 0; this.freeSlots[k].length = 0;
+      this.used[k] = 0; this.freeSlots[k].length = 0; this.enemyCount[k] = 0; this.allyCount[k] = 0;
     }
     for (const t of this.targets) t.alive = false;
-    this.targets.length = 0;
+    this.targets.length = 0; this.sinking.length = 0;
   }
   aliveCount() { let n = 0; for (const t of this.targets) if (t.alive) n++; return n; }
   /**
    * Air defenses: SAM sites fire missiles at the player inside their range; AA sites throw flak bursts near the
-   * player (onFlak(position, hit) lets the game spawn the puff and apply damage).
+   * player (onFlak(position, hit) lets the game spawn the puff and apply damage). Allied props never fire.
    */
   update(dt, player, weapons, onFlak) {
     if (!player || !player.alive) return;
     for (const t of this.targets) {
-      if (!t.alive || !t.def.shoots) continue;
+      if (!t.alive || !t.def.shoots || t.team === 'player') continue;
       t.cool -= dt;
       if (t.cool > 0) continue;
       const d = t.position.distanceTo(player.position);

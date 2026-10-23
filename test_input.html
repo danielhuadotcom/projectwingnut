@@ -16,9 +16,9 @@
 <body>
 <div id="wrap">
   <h1>PROJECT WINGNUT — js/input.js live test</h1>
-  <div class="note">Keys: W/S or Up/Down = pitch (S/Down = nose up) · A/D or Left/Right = roll · Q/E = yaw · Shift,+ / Ctrl,- = throttle
-Space = gun · F / Enter = missile · Tab = target (hold = padlock) · V = look back · Esc / P = pause · I = invert pitch · R = restart
-Gamepad (standard mapping): L-stick X yaw, L-stick Y throttle, R-stick roll/pitch, LT missile, RT gun, RB target, LB look back, Start pause, Back invert, Y restart</div>
+  <div class="note">Keys: W/S or Up/Down = pitch (S/Down = nose up) · A/D or Left/Right = roll · Q/E = yaw · Shift,+ = boost / H,- = airbrake (no Ctrl)
+Space = gun · F / Enter = missile · X = flares · Tab = target (hold = padlock) · V = look back · C = free look · Esc / P = pause · I = invert-pitch edge · R = restart
+Gamepad (standard mapping): L-stick X yaw, L-stick Y throttle, R-stick roll/pitch, LT missile, RT gun, RB target, LB look back, L3 flares, Start pause, Back invert edge, Y restart</div>
   <pre id="log"></pre>
   <pre id="out">loading…</pre>
 </div>
@@ -111,23 +111,30 @@ function selfTest() {
   key('keydown', 'KeyP'); t.update(DT); check('P: pausePressed', t.pausePressed === true); key('keyup', 'KeyP'); t.update(DT);
   key('keydown', 'KeyR'); t.update(DT); check('R: restartPressed', t.restartPressed === true); key('keyup', 'KeyR'); t.update(DT); check('restartPressed one frame', t.restartPressed === false);
   key('keydown', 'KeyV'); t.update(DT); check('V: lookBack', t.lookBack === true); key('keyup', 'KeyV'); t.update(DT); check('V up: lookBack off', t.lookBack === false);
+  key('keydown', 'KeyX'); t.update(DT); check('X: flaresPressed', t.flaresPressed === true); t.update(DT); check('flaresPressed one frame', t.flaresPressed === false); key('keyup', 'KeyX'); t.update(DT);
+  key('keydown', 'KeyC'); t.update(DT); check('C held: freeLook', t.freeLook === true); key('keyup', 'KeyC'); t.update(DT); check('C up: freeLook off', t.freeLook === false);
   key('keydown', 'KeyQ'); steps(10); check('Q: yaw -1', t.yaw === -1); key('keyup', 'KeyQ'); key('keydown', 'KeyE'); steps(20); check('E: yaw +1', t.yaw === 1); key('keyup', 'KeyE'); steps(6);
 
   // invert pitch toggle + persistence
+  // invert pitch: I only reports the toggle edge (the setting is changed from the settings menu, never mid-flight)
   key('keydown', 'KeyI'); t.update(DT);
-  check('I: invertPitchToggled + flipped', t.invertPitchToggled === true && t.invertPitch === !originalInvert);
-  let stored = null; try { stored = localStorage.getItem('wingnut.invertPitch'); } catch (e) { stored = 'n/a'; }
-  check('I: persisted', stored === 'n/a' || stored === (t.invertPitch ? '1' : '0'), stored);
+  check('I: invertPitchToggled edge, setting unchanged', t.invertPitchToggled === true && t.invertPitch === originalInvert);
   key('keyup', 'KeyI'); t.update(DT); check('toggled one frame', t.invertPitchToggled === false);
-  t.setInvertPitch(true); key('keydown', 'KeyS'); steps(10); check('inverted: S gives -1', t.pitch === -1, t.pitch); key('keyup', 'KeyS'); steps(6);
+  t.setInvertPitch(true);
+  let stored = null; try { stored = localStorage.getItem('wingnut.invertPitch'); } catch (e) { stored = 'n/a'; }
+  check('setInvertPitch persists', stored === 'n/a' || stored === '1', stored);
+  key('keydown', 'KeyS'); steps(10); check('inverted: S gives -1', t.pitch === -1, t.pitch); key('keyup', 'KeyS'); steps(6);
   t.setInvertPitch(originalInvert);
   try { stored = localStorage.getItem('wingnut.invertPitch'); check('restored storage', stored === (originalInvert ? '1' : '0'), stored); } catch (e) { /* ignore */ }
 
-  // throttle: Shift up, Ctrl down, both cancel
+  // throttle: Shift boost, H airbrake, both cancel; Ctrl is unmapped (Ctrl+W would close the browser tab)
   key('keydown', 'ShiftLeft'); steps(10); check('Shift: throttle +1', t.throttleDelta === 1, t.throttleDelta);
-  key('keydown', 'ControlLeft'); steps(6); check('Shift+Ctrl: 0', t.throttleDelta === 0, t.throttleDelta);
-  key('keyup', 'ShiftLeft', { shiftKey: false }); steps(10); check('Ctrl: throttle -1', t.throttleDelta === -1, t.throttleDelta);
-  key('keyup', 'ControlLeft', { ctrlKey: false }); steps(6); check('throttle back to 0', t.throttleDelta === 0);
+  key('keydown', 'KeyH'); steps(6); check('Shift+H: 0', t.throttleDelta === 0, t.throttleDelta);
+  key('keyup', 'ShiftLeft', { shiftKey: false }); steps(10); check('H (airbrake): throttle -1', t.throttleDelta === -1, t.throttleDelta);
+  key('keyup', 'KeyH'); steps(6); check('throttle back to 0', t.throttleDelta === 0);
+  const ctl = key('keydown', 'ControlLeft'); steps(10);
+  check('Ctrl unmapped: no throttle, browser default kept', t.throttleDelta === 0 && !ctl.defaultPrevented, t.throttleDelta);
+  key('keyup', 'ControlLeft', { ctrlKey: false }); steps(2);
   key('keydown', 'Equal'); steps(10); check('= : throttle +1', t.throttleDelta === 1); key('keyup', 'Equal'); key('keydown', 'Minus'); steps(20); check('- : throttle -1', t.throttleDelta === -1); key('keyup', 'Minus'); steps(6);
 
   // blur clears held keys
@@ -153,7 +160,7 @@ function selfTest() {
     t.update(DT);
     check('gp: connected + name', t.gamepadConnected === true && t.gamepadName === 'Fake Pad' && t.gamepadIndex === 0, t.gamepadName);
     check('gp: left Y up -> throttle +1', t.throttleDelta === 1, t.throttleDelta);
-    check('gp: right X 0.5 -> roll expo', near(t.roll, shapeAxis(0.5)) && near(shapeAxis(0.5), 0.2386, 1e-3), t.roll);
+    check('gp: right X 0.5 -> roll expo', near(t.roll, shapeAxis(0.5)) && near(shapeAxis(0.5), 0.1508, 1e-3), t.roll);   // EXPO 0.8: 0.8 m^3 + 0.2 m, m = 0.38 / 0.88
     check('gp: right Y +1 (pull) -> pitch +1', t.pitch === (originalInvert ? -1 : 1), t.pitch);
     check('gp: yaw 0 (deadzone)', t.yaw === 0);
     check('gp: LT 0.5 -> missile, RT 0 -> no gun', t.missile === true && t.gun === false && t.missileAnalog === 0.5);
@@ -167,7 +174,9 @@ function selfTest() {
     t.update(DT); check('gp: Start held -> no repeat', t.pausePressed === false);
     fake.buttons[9] = { pressed: false, touched: false, value: 0 };
     fake.buttons[3] = { pressed: true, touched: true, value: 1 }; t.update(DT); check('gp: Y -> restartPressed', t.restartPressed === true); fake.buttons[3] = { pressed: false, touched: false, value: 0 };
-    fake.buttons[8] = { pressed: true, touched: true, value: 1 }; t.update(DT); check('gp: Back -> invertPitchToggled', t.invertPitchToggled === true && t.invertPitch === !originalInvert);
+    fake.buttons[10] = { pressed: true, touched: true, value: 1 }; t.update(DT); check('gp: L3 -> flaresPressed', t.flaresPressed === true);
+    t.update(DT); check('gp: L3 held -> no repeat', t.flaresPressed === false); fake.buttons[10] = { pressed: false, touched: false, value: 0 }; t.update(DT);
+    fake.buttons[8] = { pressed: true, touched: true, value: 1 }; t.update(DT); check('gp: Back -> invertPitchToggled edge, setting unchanged', t.invertPitchToggled === true && t.invertPitch === originalInvert);
     fake.buttons[8] = { pressed: false, touched: false, value: 0 }; t.update(DT); t.setInvertPitch(originalInvert);
     fake.buttons[7] = { pressed: true, touched: true, value: 0.8 }; fake.buttons[4] = { pressed: true, touched: true, value: 1 }; t.update(DT);
     check('gp: RT -> gun, LB -> lookBack', t.gun === true && t.gunPressed === true && t.lookBack === true && near(t.gunAnalog, 0.8));

@@ -601,7 +601,8 @@ export class AfterburnerFX {
     _cam.setFromMatrixPosition(camera.matrixWorld).applyMatrix4(_inv);
     U.uCamObj.value.copy(_cam);
     const rt = renderer.getRenderTarget();
-    let h = rt ? rt.height : renderer.getDrawingBufferSize(_v2).y;
+    // the viewport, not the allocation: PostFX renders the scene into a renderScale sub-rectangle of its target
+    let h = rt ? rt.viewport.w : renderer.getDrawingBufferSize(_v2).y;
     const p5 = camera.projectionMatrix.elements[5];
     const pa = camera.isPerspectiveCamera && p5 > 0 && h > 0 ? 2 / (p5 * h) : 0.002;
     U.uPixAngle.value = pa;
