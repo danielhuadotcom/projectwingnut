@@ -225,15 +225,16 @@ export class AlliedForces {
     }
   }
   /** A leaker reached the fleet: it is consumed and the nearest live escort goes down (big blast, then it sinks);
-   *  with no escort left it bursts harmlessly on the flagship. */
+   *  with no escort left it bursts harmlessly on the flagship. The escort's effect bundle is spread over three frames:
+   *  the blast now, its death (secondary blasts, burning debris, a smoke column) next frame, the spray the frame after. */
   _strike(ac) {
     this._struck = true;                                           // one strike's effects per frame (see _leakCheck)
     const W = this.weapons, esc = this._nearestEscort(ac.position);
     if (esc !== null) {
       const t = esc.t, s = esc.along(ac.position) * 0.8;
       W.explode(_p.set(t.position.x + esc.fx * s, t.position.y + t.def.size[1] * 0.3, t.position.z + esc.fz * s), 2.6);
-      W.aircraftDeath(t);                                          // secondary blasts, burning debris, a smoke column
-      W.terrainImpact(_p.set(t.position.x, 0.3, t.position.z), 1.6);   // water thrown up alongside
+      W.delayEffect('death', t.position, 1, 1, 0, t.velocity);     // next frame: secondary blasts, debris, smoke column
+      W.delayEffect('impact', _p.set(t.position.x, 0.3, t.position.z), 1.6, 2);   // the frame after: water thrown up
       this.ground.sink(t);
       this.stats.sunk++; this.liveEscorts--;
       // the leakers after this escort re-aim at once, not on their next round-robin turn (one pass, per sinking)
@@ -318,10 +319,9 @@ export class AlliedForces {
       const pp = player.position, ax = px - pp.x, ay = py - pp.y, az = pz - pp.z, cx = px - cam.x, cy = py - cam.y, cz = pz - cam.z;
       if (ax * ax + ay * ay + az * az < CLEAR2 || cx * cx + cy * cy + cz * cz > CAM2) { this._flakAt[i] = time + 0.5; continue; }
       this._bank -= 1; this._flakAt[i] = time + 1.4 + _rnd[3] * 1.2;
-      // the enemy flak puff (Game._onFlak), without its sound, flash or shake: purely cosmetic, never damages anything
+      // the light flak puff (as the enemy's, Game._onFlak) without its sound, flash or shake: purely cosmetic
       _p.x = px; _p.y = py; _p.z = pz;
-      const W = this.weapons, cb = W.onExplosion;
-      W.onExplosion = null; W.explode(_p, 0.3); W.onExplosion = cb;
+      this.weapons.flakPuff(_p, false);
       this.stats.flak++;
       break;                                                         // one burst per frame: the next gun waits its turn
     }

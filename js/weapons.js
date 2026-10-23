@@ -25,9 +25,14 @@ import * as THREE from 'https://cdnjs.cloudflare.com/ajax/libs/three.js/0.170.0/
 // Teams: update(dt, list, camera, teamTargets) takes optional per-team target lists ({ team: [targets] }, built by the
 // game when units spawn or die, never per frame): rounds and fuses of a shooter whose team has an entry test only that
 // list (e.g. the player's team: hostiles only, so no friendly fire), everyone else tests `list`. Targets flagged
-// `immortal` (squadmates) belong in no list: bullets never touch them, and a missile chasing one airbursts harmlessly
-// when it reaches it (a single extra test against its own target). An optional damageFilter(target, damage, shooter,
-// kind, missile) lets the game adjust damage before it is applied.
+// `immortal` (squadmates) take no damage: a round that reaches one stops there with a visible hit, a missile airbursts
+// harmlessly (one that chases an immortal in no list airbursts on reaching it: a single extra test against its own
+// target). Aircraft with `holdFire === true` never fire (fireGun / fireMissile refuse: the game's attack slots). An
+// optional damageFilter(target, damage, shooter, kind, missile) lets the game adjust damage before it is applied.
+//
+// flakPuff(position) is the light AA burst (brief flash, a few sparks, a lingering dark smoke puff: ~17 particles,
+// explode(p, 0.3) is ~80). delayEffect(kind, position, ...) runs an explosion / aircraft death / terrain impact a frame
+// or more later, to spread a big effect bundle over frames.
 //
 // Particles are simulated on the GPU: the CPU writes a particle once, when it is spawned, into a ring
 // buffer (interleaved, partial bufferSubData of only the freshly written range). The vertex shader
@@ -50,7 +55,7 @@ const RING_CAPACITY = 24;
 const DEBRIS_CAPACITY = 72;
 const MISSILE_CAPACITY = 48;
 const EMITTER_CAPACITY = 64;
-const DELAYED_CAPACITY = 16;
+const DELAYED_CAPACITY = 24;
 const FLARE_STRIDE = 16;        // floats per flare head sprite (see _ejectFlare for the layout)
 const FLARE_CAPACITY = 128;     // flare decoys alive at once (CPU pool) = flare head sprite ring (GPU)
 const BURST_CAPACITY = 16;      // flare bursts being ejected / inside their protection window at once
@@ -59,6 +64,7 @@ const NOZZLE_OFFSET = 1.64;     // m from missile origin to the nozzle exit (+Z 
 
 const KIND_TENDRIL = 0;         // emitter kinds
 const KIND_COLUMN = 1;
+const FX_SECONDARY = 0, FX_EXPLODE = 1, FX_DEATH = 2, FX_IMPACT = 3;   // delayed effect kinds (delayEffect)
 
 // ---- module-scope scratch (zero per-frame allocation) -------------------------------------------
 const _v0 = new THREE.Vector3();
@@ -812,6 +818,7 @@ export class FlareDecoy {
     this.owner = null;           // aircraft that deployed it
     this.ejected = false;        // false while still in the dispenser (it then rides along with the jet)
     this.inUse = false;          // pool bookkeeping
+    this.poolIndex = -1;         //   (slot in Weapons._flarePool, pushed on the free stack when released)
     this.ejectAt = 0;            // scheduled ejection time (Weapons.time)
     this.birth = 0;              // actual ejection time = start of the burn
     this.life = 3.5;             // burn time (s)
@@ -955,8 +962,10 @@ export class Weapons {
     }
     this._delayed = [];
     for (let i = 0; i < DELAYED_CAPACITY; i++) {
-      this._delayed.push({ active: false, at: 0, x: 0, y: 0, z: 0, s: 1, vx: 0, vy: 0, vz: 0 });
+      this._delayed.push({ active: false, kind: FX_SECONDARY, at: 0, frame: 0, x: 0, y: 0, z: 0, s: 1, vx: 0, vy: 0, vz: 0 });
     }
+    this._frameNo = 0;                            // update() calls completed (delayEffect's frame counter)
+    this._dPos = new THREE.Vector3();             // delayed-effect scratch position
     this._recS = new Float32Array(SMOKE_STRIDE);  // scratch particle records (see ParticleRing.push)
     this._recG = new Float32Array(POINT_STRIDE);
     this._recK = new Float32Array(SPARK_STRIDE);
@@ -1115,9 +1124,11 @@ export class Weapons {
     this._flareMat = fxMaterial({ uTime: U.uTime, uScreenH: U.uScreenH, uMinPx: U.uMinPx, uMaxPx: U.uMaxPx },
       FLARE_VERT, FLARE_FRAG, true);
     this._flarePoints = this._add(new THREE.Points(g, this._flareMat), 23);
-    // CPU: decoy pool + burst records (fixed size, scanned linearly: no per-frame allocation)
+    // CPU: decoy pool with a free-index stack (O(1) alloc / release) + burst records; no per-frame allocation
     this._flarePool = [];
-    for (let i = 0; i < FLARE_CAPACITY; i++) this._flarePool.push(new FlareDecoy());
+    for (let i = 0; i < FLARE_CAPACITY; i++) { const f = new FlareDecoy(); f.poolIndex = i; this._flarePool.push(f); }
+    this._flareFree = new Int16Array(FLARE_CAPACITY);
+    this._resetFlareFree();
     this._flaresInUse = 0;
     this._bursts = [];
     for (let i = 0; i < BURST_CAPACITY; i++) {
@@ -1181,14 +1192,41 @@ export class Weapons {
     }
   }
 
-  _delay(after, x, y, z, s, vx, vy, vz) {
+  _delay(after, x, y, z, s, vx, vy, vz) { this._schedule(FX_SECONDARY, after, 0, x, y, z, s, vx, vy, vz); }
+
+  /** Pooled delayed effect: fires in the first update() at least `frames` updates and `after` seconds from now.
+   *  False when the pool is full. */
+  _schedule(kind, after, frames, x, y, z, s, vx, vy, vz) {
     const D = this._delayed;
     for (let i = 0; i < D.length; i++) {
       const e = D[i];
       if (e.active) continue;
-      e.active = true; e.at = this.time + after; e.x = x; e.y = y; e.z = z; e.s = s; e.vx = vx; e.vy = vy; e.vz = vz;
-      return;
+      e.active = true; e.kind = kind; e.at = this.time + after; e.frame = this._frameNo + frames;
+      e.x = x; e.y = y; e.z = z; e.s = s; e.vx = vx; e.vy = vy; e.vz = vz;
+      return true;
     }
+    return false;
+  }
+
+  /**
+   * Run an effect a little later, e.g. to spread the CPU cost of a big effect bundle over frames. kind: 'explode' (as
+   * explode()), 'secondary' (an explosion without tendrils or shockwave ring), 'death' (aircraftDeath at that point:
+   * blasts, burning debris, a smoke column; size unused) or 'impact' (terrainImpact, size = scale). position and the
+   * optional velocity are copied now. It fires in the first update() that is at least `frames` updates later (1 = the
+   * next frame, whatever the frame rate) and at least `after` seconds later. With the pool full it runs at once.
+   */
+  delayEffect(kind, position, size = 1, frames = 1, after = 0, velocity = null) {
+    if (!position) return;
+    const k = kind === 'explode' ? FX_EXPLODE : kind === 'death' ? FX_DEATH : kind === 'impact' ? FX_IMPACT : FX_SECONDARY;
+    const v = velocity || _zero, n = frames > 0 ? Math.floor(frames) : 0, a = after > 0 ? +after : 0;
+    if (!this._schedule(k, a, n, position.x, position.y, position.z, size, v.x, v.y, v.z)) this._runEffect(k, position.x, position.y, position.z, size, v.x, v.y, v.z);
+  }
+
+  _runEffect(kind, x, y, z, s, vx, vy, vz) {
+    if (kind === FX_SECONDARY) this._explode(x, y, z, s, vx, vy, vz, false);   // secondary blast: no tendrils
+    else if (kind === FX_EXPLODE) this._explode(x, y, z, s, vx, vy, vz, true);
+    else if (kind === FX_DEATH) this._death(x, y, z, vx, vy, vz);
+    else this.terrainImpact(this._dPos.set(x, y, z), s);
   }
 
   /** Push pending particle writes to the renderer and update visibility. Called by every public spawning method. */
@@ -1247,7 +1285,7 @@ export class Weapons {
   // ===============================================================================================
   /** Call every frame the trigger is held. Returns the number of rounds fired this call. */
   fireGun(aircraft) {
-    if (!aircraft || Weapons._isDead(aircraft)) return 0;
+    if (!aircraft || aircraft.holdFire === true || Weapons._isDead(aircraft)) return 0;
     const st = this._state(aircraft);
     const now = this.time, interval = 1 / (aircraft.gunRate || this.gunRate);   // per-aircraft rate (enemies fire slower)
     if (st.gunNext < now - 0.1) st.gunNext = now;               // trigger (re)pressed: first round immediately
@@ -1427,9 +1465,9 @@ export class Weapons {
   }
 
   _gunHit(target, shooter, x, y, z, dx, dy, dz) {
-    if (target.immortal === true) return;          // (immortals belong in no target list) never a visible hit
-    const dmg = this.damageFilter ? this.damageFilter(target, this.bulletDamage, shooter, 'gun', null) : this.bulletDamage;
-    if (this.onHit) this.onHit(target, dmg, shooter, 'gun');
+    const immortal = target.immortal === true;     // (squadmates, in the enemy team's list) a visible hit, never damage
+    const dmg = immortal ? 0 : this.damageFilter ? this.damageFilter(target, this.bulletDamage, shooter, 'gun', null) : this.bulletDamage;
+    if (!immortal && this.onHit) this.onHit(target, dmg, shooter, 'gun');
     if (!this._far(x, y, z)) {
       const tv = target.velocity || _zero, t = this.time;
       const k = this._recK;                      // sparks sprayed back toward the shooter, carried by the target's motion
@@ -1455,6 +1493,7 @@ export class Weapons {
       p[16] = 0; p[17] = 0; p[18] = 1; p[19] = rnd(); p[20] = 0; p[21] = 0; p[22] = 0; p[23] = 0.04;
       this._smokeRing.push(p);
     }
+    if (immortal) return;
     const killed = typeof target.applyDamage === 'function' ? target.applyDamage(dmg) === true : false;
     if (killed) {
       if (this.onKill) this.onKill(target, shooter);
@@ -1467,7 +1506,7 @@ export class Weapons {
   // ===============================================================================================
   /** Launch a missile from the next rail. target: Aircraft|null (null = unguided). Returns the Missile or null. */
   fireMissile(aircraft, target = null) {
-    if (!aircraft || Weapons._isDead(aircraft)) return null;
+    if (!aircraft || aircraft.holdFire === true || Weapons._isDead(aircraft)) return null;
     if (typeof aircraft.missiles === 'number' && aircraft.missiles <= 0) return null;
     const st = this._state(aircraft);
     if (this.time < st.missileReady) return null;
@@ -1854,16 +1893,22 @@ export class Weapons {
   }
 
   _allocFlare() {
-    const P = this._flarePool;
-    for (let i = 0; i < P.length; i++) {
-      if (!P[i].inUse) { this._flaresInUse++; return P[i]; }
-    }
-    return null;
+    if (this._flareFreeN === 0) return null;
+    this._flaresInUse++;
+    return this._flarePool[this._flareFree[--this._flareFreeN]];
+  }
+
+  /** Every flare free (pool order: index 0 is handed out first). */
+  _resetFlareFree() {
+    this._flareFreeN = 0;
+    for (let i = FLARE_CAPACITY - 1; i >= 0; i--) this._flareFree[this._flareFreeN++] = i;
   }
 
   /** Back to the pool. Missiles still chasing it lose their target and go ballistic (then self-destruct at end of life). */
   _releaseFlare(f) {
+    if (!f.inUse) return;
     f.inUse = false; f.alive = false; f.health = 0; f.ejected = false; f.owner = null;
+    this._flareFree[this._flareFreeN++] = f.poolIndex;
     this._flaresInUse--;
     const ms = this.missiles;
     for (let j = 0; j < ms.length; j++) if (ms[j].target === f) ms[j].target = null;
@@ -2064,6 +2109,31 @@ export class Weapons {
       velocity ? velocity.z : 0, true);
   }
 
+  /** Light AA flak burst: a brief, very bright flash with a hot core, a few shell-fragment sparks and a dense, dark,
+   *  lumpy smoke puff that hangs in the air for ~5 s. About 17 particles and no shockwave ring (explode(p, 0.3) spawns
+   *  ~80). notify = false skips onExplosion (no sound, screen flash or shake: purely cosmetic flak). */
+  flakPuff(position, notify = true) {
+    if (!position) return;
+    const px = position.x, py = position.y, pz = position.z, t = this.time;
+    this._glow(px, py, pz, 0, 0, 0, 0.11, 6, 13, 20, 13, 6, 2, 0, 0.3, 0.2, t);                      // flash
+    this._glow(px, py, pz, 0, 0, 0, rand(0.18, 0.26), 3.5, 7, 7, 2.6, 0.6, 2.5, 0, 1, 0.8, t);       // hot core, cools fast
+    const life0 = rand(5, 6);                                                                     // smoke: a dense core puff,
+    this._puff(px, py, pz, 0, 0.6, 0, life0, 5, rand(16, 19), 0.05, 0.047, 0.044, 0.92, 2.2, 0.35, 0.14 / life0, 0.9, 1, t);
+    for (let i = 0; i < 5; i++) {                                                                 // and lumps around it
+      randDir(_v0);
+      const r0 = rand(1.2, 2.6), sp = rand(4, 9), life = rand(3.8, 5.2), dark = rand(0.05, 0.09);
+      this._puff(px + _v0.x * r0, py + _v0.y * r0, pz + _v0.z * r0, _v0.x * sp, _v0.y * sp + 0.5, _v0.z * sp,
+        life, rand(3.5, 4.5), rand(10, 14), dark, dark * 0.95, dark * 0.9, rand(0.75, 0.9), 2.4, 0.3, 0.1 / life, 0.6, 1, t);
+    }
+    for (let i = 0; i < 8; i++) {                                                                 // shell fragments
+      randDir(_v0);
+      const sp = rand(80, 170), c = rand(0.7, 1.2);
+      this._spark(px, py, pz, _v0.x * sp, _v0.y * sp, _v0.z * sp, rand(0.25, 0.55), 14 * c, 7 * c, 2.2 * c, 0.13, 0.9, -G, rand(0.04, 0.07), t);
+    }
+    this._commit();
+    if (notify && this.onExplosion) { this._cbPos.set(px, py, pz); this.onExplosion(this._cbPos, 0.3); }
+  }
+
   _explode(px, py, pz, size, bx, by, bz, tendrils) {
     const s = Math.max(0.1, +size || 1), ss = Math.sqrt(s);
     const t = this.time;
@@ -2132,7 +2202,10 @@ export class Weapons {
   aircraftDeath(aircraft) {
     if (!aircraft || !aircraft.position) return;
     const p = aircraft.position, v = aircraft.velocity || _zero;
-    const px = p.x, py = p.y, pz = p.z, vx = v.x, vy = v.y, vz = v.z;
+    this._death(p.x, p.y, p.z, v.x, v.y, v.z);
+  }
+
+  _death(px, py, pz, vx, vy, vz) {
     this._tmpPos.set(px, py, pz);
     this._tmpVel.set(vx * 0.45, vy * 0.45, vz * 0.45);
     this.explode(this._tmpPos, 2.2, this._tmpVel);
@@ -2352,12 +2425,12 @@ export class Weapons {
   }
 
   _processDelayed() {
-    const D = this._delayed;
+    const D = this._delayed, f = this._frameNo;
     for (let i = 0; i < D.length; i++) {
       const e = D[i];
-      if (!e.active || e.at > this.time) continue;
+      if (!e.active || e.at > this.time || e.frame > f) continue;
       e.active = false;
-      this._explode(e.x, e.y, e.z, e.s, e.vx, e.vy, e.vz, false);   // secondary blast: no tendrils
+      this._runEffect(e.kind, e.x, e.y, e.z, e.s, e.vx, e.vy, e.vz);
     }
   }
 
@@ -2387,6 +2460,7 @@ export class Weapons {
       this._updateEmitters(dt);
     }
     this._commit();
+    this._frameNo++;
   }
 
   _syncUniforms() {
@@ -2454,6 +2528,7 @@ export class Weapons {
     for (const e of this._emitters) e.active = false;
     for (const e of this._delayed) e.active = false;
     for (const f of this._flarePool) { f.inUse = false; f.alive = false; f.health = 0; f.owner = null; }
+    this._resetFlareFree();
     this._flaresInUse = 0;
     for (const b of this._bursts) this._freeBurst(b);
   }

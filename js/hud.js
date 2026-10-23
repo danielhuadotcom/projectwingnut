@@ -644,23 +644,28 @@ export class HUD {
     ctx.beginPath(); ctx.moveTo(x0, y0 - 5 * s); ctx.lineTo(x0 + 4 * s, y0 + 4 * s); ctx.lineTo(x0, y0 + 2 * s);
     ctx.lineTo(x0 - 4 * s, y0 + 4 * s); ctx.closePath(); this._fillOutlined(COL.pale);
     const k = R / range, blips = radar.blips || EMPTY, lim = R - 4 * s;
-    // friendly contacts, under the hostiles: diamond = squadmate, square = ground unit, hull = ship (hollow at the rim)
-    const fr = radar.friendly || EMPTY;
-    for (let i = 0; i < fr.length && i < 32; i++) {
-      const b = fr[i]; if (!b) continue;
-      const dx = b.dx || 0, dz = b.dz || 0;
-      let bx = (dx * ch + dz * sh) * k, by = (-dx * sh + dz * ch) * k;
-      const d = Math.hypot(bx, by); let edge = false;
-      if (d > lim) { const f = lim / d; bx *= f; by *= f; edge = true; }
-      const sx = x0 + bx, sy = y0 + by;
+    // friendly contacts, under the hostiles: diamond = squadmate, square = ground unit, hull = ship (hollow at the rim).
+    // Batched: one path for the solid ones (one outlined fill), one for the hollow ones at the rim (one stroke)
+    const fr = radar.friendly || EMPTY, nf = Math.min(fr.length, 32);
+    for (let pass = 0; pass < 2 && nf > 0; pass++) {
+      let any = false;
       ctx.beginPath();
-      if (b.type === 'air') { const q = 3.9 * s; ctx.moveTo(sx, sy - q); ctx.lineTo(sx + q, sy); ctx.lineTo(sx, sy + q); ctx.lineTo(sx - q, sy); }
-      else if (b.type === 'naval') {
-        const hw = 4.2 * s, hh = 2.4 * s;
-        ctx.moveTo(sx - hw, sy - hh); ctx.lineTo(sx + hw, sy - hh); ctx.lineTo(sx + 0.55 * hw, sy + hh); ctx.lineTo(sx - 0.55 * hw, sy + hh);
-      } else { const q = 2.7 * s; ctx.rect(sx - q, sy - q, 2 * q, 2 * q); }
-      ctx.closePath();
-      if (edge) this._stroke(COL.ally, L.lwThin); else this._fillOutlined(COL.ally);
+      for (let i = 0; i < nf; i++) {
+        const b = fr[i]; if (!b) continue;
+        const dx = b.dx || 0, dz = b.dz || 0;
+        let bx = (dx * ch + dz * sh) * k, by = (-dx * sh + dz * ch) * k;
+        const d = Math.hypot(bx, by), edge = d > lim;
+        if (edge !== (pass === 1)) continue;
+        if (edge) { const f = lim / d; bx *= f; by *= f; }
+        const sx = x0 + bx, sy = y0 + by;
+        if (b.type === 'air') { const q = 3.9 * s; ctx.moveTo(sx, sy - q); ctx.lineTo(sx + q, sy); ctx.lineTo(sx, sy + q); ctx.lineTo(sx - q, sy); ctx.closePath(); }
+        else if (b.type === 'naval') {
+          const hw = 4.2 * s, hh = 2.4 * s;
+          ctx.moveTo(sx - hw, sy - hh); ctx.lineTo(sx + hw, sy - hh); ctx.lineTo(sx + 0.55 * hw, sy + hh); ctx.lineTo(sx - 0.55 * hw, sy + hh); ctx.closePath();
+        } else { const q = 2.7 * s; ctx.rect(sx - q, sy - q, 2 * q, 2 * q); }
+        any = true;
+      }
+      if (any) { if (pass === 0) this._fillOutlined(COL.ally); else this._stroke(COL.ally, L.lwThin); }
     }
     for (let i = 0; i < blips.length && i < 48; i++) {
       const b = blips[i]; if (!b) continue;

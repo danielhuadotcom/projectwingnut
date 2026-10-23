@@ -54,8 +54,9 @@ const PLAYER_ARMOR = 0.5;      // incoming damage multiplier for the player
 const ENEMY_HEALTH = 100;      // two missiles (65 each) kill, as for most fighters in PW; ~25 cannon hits
 const MAX_ENEMIES = 6;
 // Difficulty: player damage taken, enemy hit points and skill, how many bandits may attack at once (the rest hold
-// off), enemy missile agility, which difficulty-specific mission groups spawn, and the player's share of the armed
-// bandits while squadmates fly (the rest go after the squadmates; js/squad.js).
+// off; the same cap applies to the bandits hunting each squadmate, whose extras keep pursuing with weapons held), enemy
+// missile agility, which difficulty-specific mission groups spawn, and the player's share of the armed bandits while
+// squadmates fly (the rest go after the squadmates; js/squad.js).
 const DIFFICULTY = {
   easy:      { armor: 0.35, enemyHp: 0.8,  skill: -0.15, aggressors: 1,        missileTurn: 0.5, groups: [],                      playerShare: 0.3 },
   normal:    { armor: 0.5,  enemyHp: 1.0,  skill: 0,     aggressors: 2,        missileTurn: 0.6, groups: [],                      playerShare: 0.4 },
@@ -82,7 +83,7 @@ const _fit = new THREE.Vector3();   // ringFit result
 const _ret = new THREE.Vector3(), _rv = new THREE.Vector3();   // reticle direction scratch
 const _q = new THREE.Quaternion();
 const yawToward = (from, to) => Math.atan2(-(to.x - from.x), -(to.z - from.z)); // rotation about +Y so that -Z nose points from->to
-const byDistance = (a, b) => a._d2 - b._d2;   // sort by squared distance to the player (set beforehand)
+const byDistance = (a, b) => a._d2 - b._d2;   // sort by squared distance to the player / squadmate (set beforehand)
 
 class Game {
   constructor(root) {
@@ -150,6 +151,8 @@ class Game {
     this.post = new PostFX(renderer, this.glHost.clientWidth, this.glHost.clientHeight, this.dpr, { samples: msaa, renderScale: this.renderScale, quality: preset.sub });
     this.input = new Input(window);
     this.hud = new HUD(this.hudHost);
+    this._hudW = 1; this._hudH = 1;          // HUD host size in CSS px, cached by resize() (buildFrame never reads layout)
+    try { if (typeof ResizeObserver === 'function') (this._hudRO = new ResizeObserver(() => this.cacheHudSize())).observe(this.hudHost); } catch (e) { /* resize() keeps it */ }
     this.audio = new AudioFX();
     // Soundtrack ("Ceiling Unlimited"): decoded once after unlock, loops seamlessly
     this.music = new Music(this.audio, { volume: this.settings.music ?? 0.7 });
@@ -188,10 +191,11 @@ class Game {
     this.combatList = [this.player];
     this.hostiles = [];                    // combatList minus the player: all the player's team can hit
     this._nAir = 0;                        // hostiles[0, _nAir) are aircraft (rebuildCombatList)
-    this.teamTargets = { player: this.hostiles };   // per-team target lists for the weapons (no friendly fire)
+    this.enemyTargets = [this.player];     // the player and the flying squadmates: all that enemy fire is tested against
+    this.teamTargets = { player: this.hostiles, enemy: this.enemyTargets };   // per-team target lists (no friendly fire)
     this.killTimes = [];
     this._onFlak = (pos, hit) => {
-      this.weapons.explode(pos, 0.3);
+      this.weapons.flakPuff(pos);
       const p = this.player;
       if (hit && p.alive && !p.immortal) {   // (immortal once the mission is complete)
         this.damageFlash = Math.max(this.damageFlash, 0.5); this.post.damage(0.3); this.chase.addShake(0.2);
@@ -212,6 +216,7 @@ class Game {
     for (const o of this.scene.children) if (!o.userData.__prof) this.profiler.instrument(o, 'fx:' + (o.name || o.type));
     if (!PARAMS.has('bench')) this.profiler.setMode('pass');
     this.bench = PARAMS.has('bench') ? { dur: Number(PARAMS.get('dur') || 16), warm: Number(PARAMS.get('warm') || 4), t: 0, boomT: 0, mslT: 0, modeT: 0, done: false } : null;
+    this.syncProfilerCpu();
     // Squadmates COTTER and RIVET (js/squad.js), parked until a mission calls them up. Left out of benchmarks so runs stay
     // comparable (?bench=1&wingmen=1 adds them, to measure what they cost).
     this.squad = !this.bench || PARAMS.has('wingmen')
@@ -293,6 +298,7 @@ class Game {
       w.fireMissile(dummy, null);
       if (w.deployFlares) w.deployFlares(dummy);
       _v.copy(P).add(new THREE.Vector3(60, 0, -200)); w.explode(_v, 1.5);
+      if (w.flakPuff) w.flakPuff(_v2.copy(P).add(new THREE.Vector3(-60, 20, -220)), false);
       w.terrainImpact(_v.add(new THREE.Vector3(80, 0, 0)));
       w.aircraftDeath(dummy);
       const cam = new THREE.PerspectiveCamera(70, this.camera.aspect, 1, 60000);
@@ -333,7 +339,10 @@ class Game {
     }
     this.camera.aspect = w / h; this.camera.updateProjectionMatrix();
     this.hud.resize();
+    this.cacheHudSize();
   }
+  /** HUD host size (CSS px) for buildFrame's projections, read here on resize instead of every frame. */
+  cacheHudSize() { this._hudW = this.hudHost.clientWidth || 1; this._hudH = this.hudHost.clientHeight || 1; }
   setRenderScale(s) {
     if (Math.abs(s - this.renderScale) < 1e-3) return;
     this.renderScale = s;
@@ -387,6 +396,8 @@ class Game {
     }
     this.setRenderScale(r.scale);
   }
+  /** CPU section timings are read only by the perf overlay and benchmarks: record them only then. */
+  syncProfilerCpu() { this.profiler.cpuOn = !!this.bench || !!(this.ui.perf && !this.ui.perf.hidden); }
   updateOverlay(dt) {
     const el = this.ui.perf; if (!el || el.hidden) return;
     this._ovT = (this._ovT || 0) + dt; if (this._ovT < 0.25) return; this._ovT = 0;
@@ -472,6 +483,7 @@ class Game {
     this.spawnAllies(true);                // allied units placed beside this phase's enemies (allies[].after)
     this.rebuildCombatList();
     this.directBandits();                  // the new bandits take whichever hunting role is short
+    this._slotT = 0;                       // and attack slots (who may fire) are handed out on the next frame
     if (this.squad) this.squad.newWave();  // squadmates pick a bandit within a second
     this.wave = this.phaseIndex + 1;
     if (this.phaseIndex > 0) {
@@ -495,14 +507,17 @@ class Game {
     this.audio.ui('wave');
   }
   /** Rebuilt when units spawn or die, never per frame. combatList: the player and every live hostile (what the player
-   *  can target, what the HUD lists, what enemy fire is tested against; friendlies are immortal, so it never needs them).
-   *  hostiles: the same minus the player, all that the player's team (player, squadmates) is tested against; its first
-   *  _nAir entries are the enemy aircraft (all that allied flak looks at). */
+   *  can target, what the HUD lists). hostiles: the same minus the player, all that the player's team (player,
+   *  squadmates) is tested against; its first _nAir entries are the enemy aircraft (all that allied flak looks at).
+   *  enemyTargets: the player and the flying squadmates, all that enemy rounds, missiles and SAMs are tested against
+   *  (bandits never hit each other; squadmates are immortal: a round stops at one with a visible hit, a missile airbursts). */
   rebuildCombatList() {
-    const L = this.combatList, H = this.hostiles; L.length = 0; H.length = 0;
+    const L = this.combatList, H = this.hostiles, E = this.enemyTargets; L.length = 0; H.length = 0; E.length = 0;
     for (const a of this.allAircraft) { if (a === this.player) L.push(a); else if (a.alive && a.team !== 'player') { L.push(a); H.push(a); } }
     this._nAir = H.length;
     for (const t of this.ground.targets) if (t.alive && t.team !== 'player') { L.push(t); H.push(t); }
+    E.push(this.player);
+    for (let i = 0; i < this.allies.length; i++) if (this.allies[i].alive) E.push(this.allies[i]);
     this.combatDirty = false;
   }
   /**
@@ -659,6 +674,7 @@ class Game {
     ac.brain.gunsOnly = type.armed === false ? 'none' : null;
     if (ac.brain.passive) { ac.getForward(ac.brain.transitDir); ac.brain.transitAlt = pos.y; ac.brain.state = 'transit'; }
     ac.brain.setTransitGoal(null);                       // pooled: a leaker's goal must not carry over
+    ac.holdFire = false;                                 // pooled: attack slots (updateGame) decide who may fire
     ac.name = typeName;
     if (this._spawnAtFleet) this.allied.addLeaker(ac);   // flies at the allied fleet instead (js/allies.js)
     return ac;
@@ -969,6 +985,7 @@ class Game {
     if (input.overlayToggled && this.ui.perf && !(this.menu && this.menu.open)) {
       this.ui.perf.hidden = !this.ui.perf.hidden; this.settings.perfOverlay = !this.ui.perf.hidden;
       if (this.menu.setSetting) this.menu.setSetting('perfOverlay', this.settings.perfOverlay);
+      this.syncProfilerCpu();
     }
     this.updateDeviceHints();
 
@@ -1029,8 +1046,13 @@ class Game {
   updateDead(dt) {
     this.deadTimer += dt;
     for (let i = 0; i < this.enemies.length; i++) { const e = this.enemies[i]; if (e.alive) { e.brain.update(dt, this.player, this.world, this.weapons, this.time); e.update(dt); } }
-    if (this.squad) this.squad.update(dt, this.player, this.enemies, this.weapons, this.time);
-    if (this.allied.active) { this.profiler.cpuBegin('allies'); this.allied.update(dt, this.time, this.camera.position, this.player, this.hostiles, this._nAir); this.profiler.cpuEnd('allies'); }
+    const alliedOn = this.allied.active;
+    if (this.squad || alliedOn) {
+      this.profiler.cpuBegin('allies');
+      if (this.squad) this.squad.update(dt, this.player, this.enemies, this.weapons, this.time);
+      if (alliedOn) this.allied.update(dt, this.time, this.camera.position, this.player, this.hostiles, this._nAir);
+      this.profiler.cpuEnd('allies');
+    }
     this.weapons.update(dt, this.combatList, this.camera, this.teamTargets);
     if (this.combatDirty) this.rebuildCombatList();
     this.audio.setEngine({ throttle: 0, speedFrac: 0, afterburner: false, alive: false });
@@ -1072,16 +1094,26 @@ class Game {
     this._dirT = (this._dirT || 0) - dt;
     if (this._dirT <= 0) { this._dirT = 1; this.profiler.cpuBegin('allies'); this.directBandits(); this.profiler.cpuEnd('allies'); }
     // Attack slots (every 0.5 s): only the N closest bandits hunting the player press the attack, the rest hold off (no
-    // limit on Mercenary); bandits hunting a squadmate need no slot
+    // limit on Mercenary). The same N per squadmate: its N closest hunters may fire at it, the others keep pursuing it
+    // (they still draw bandits off the player) with weapons held (holdFire: Weapons refuses their rounds and missiles)
     this._slotT = (this._slotT || 0) - dt;
     if (this._slotT <= 0) {
       this._slotT = 0.5;
       const maxA = (this.diff || DIFFICULTY.normal).aggressors;
-      const armed = this._armed || (this._armed = []); armed.length = 0;
-      for (const e of this.enemies) if (e.alive && e.brain && !e.brain.passive) { e._d2 = e.position.distanceToSquared(p.position); armed.push(e); }
+      const armed = this._armed || (this._armed = []), sq = this._sqArmed || (this._sqArmed = []); armed.length = 0; sq.length = 0;
+      for (const e of this.enemies) {
+        if (!e.alive || !e.brain || e.brain.passive) continue;
+        const t = e.brain.target;
+        if (t && t !== p) { e._d2 = e.position.distanceToSquared(t.position); sq.push(e); }   // hunting a squadmate
+        else { e._d2 = e.position.distanceToSquared(p.position); armed.push(e); }
+      }
       armed.sort(byDistance);
-      let onPlayer = 0;
-      for (let i = 0; i < armed.length; i++) { const b = armed[i].brain; b.aggressor = b.target && b.target !== p ? true : onPlayer++ < maxA; }
+      for (let i = 0; i < armed.length; i++) { armed[i].brain.aggressor = i < maxA; armed[i].holdFire = false; }
+      if (sq.length) {
+        sq.sort(byDistance);
+        for (let i = 0; i < this.allies.length; i++) this.allies[i]._slots = 0;
+        for (let i = 0; i < sq.length; i++) { const e = sq[i], t = e.brain.target; e.brain.aggressor = true; t._slots = (t._slots || 0) + 1; e.holdFire = t._slots > maxA; }
+      }
     }
     // Enemies
     let aliveEnemies = 0;
@@ -1326,7 +1358,7 @@ class Game {
         this.applyQuality(tier, false, true);
         break;
       }
-      case 'perfOverlay': if (this.ui.perf) this.ui.perf.hidden = !v; break;
+      case 'perfOverlay': if (this.ui.perf) this.ui.perf.hidden = !v; this.syncProfilerCpu(); break;
       case 'invertPitch': this.input.setInvertPitch(!!v); if (this.touch && this.touch.setPitchInverted) this.touch.setPitchInverted(!!v); break;
       case 'touch': if (this.touch) this.touch.setMode(v || 'auto'); break;
       case 'cameraShake': this.chase.shakeScale = v === false ? 0 : 1; break;
@@ -1586,7 +1618,7 @@ class Game {
   }
   buildFrame(dt) {
     const f = this.frame, p = this.player, cam = this.camera;
-    f.w = this.hudHost.clientWidth || 1; f.h = this.hudHost.clientHeight || 1; f.dt = dt; f.time = this.time;
+    f.w = this._hudW; f.h = this._hudH; f.dt = dt; f.time = this.time;
     f.state = this.state === 'playing' && !p.alive ? 'dead' : this.state;
     p.getForward(_fwd); p.getUp(_up); p.getRight(_right);
     const pl = f.player;

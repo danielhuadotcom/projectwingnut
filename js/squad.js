@@ -14,9 +14,11 @@ import { WingmanBrain } from './ai.js';
 // Team API (HUD, allied ground forces): a squadmate is an Aircraft with isAlly = true, immortal = true, team = 'player'
 // and callsign 'COTTER' | 'RIVET'. `allies` lists the ones flying the current mission (Game.allies is this array; parked
 // squadmates are hidden with alive = false). Shooters on team 'player' only test the game's hostile list (no friendly
-// fire), immortals are in no target list (bullets never touch them; a missile reaching one airbursts harmlessly), and the
-// AI keeps at most missileCap missiles after a target that sets it. Missions choose squadmates with missions[].wingmen:
-// ['2', '3'] when absent, ['2'] or ['3'] for one, [] for solo.
+// fire). Squadmates sit in the enemy team's target list but take no damage: a bandit round that reaches one stops with
+// a visible hit, a missile airbursts harmlessly. The AI keeps at most missileCap missiles after a target that sets it,
+// and only the difficulty's attack-slot count of a squadmate's hunters (the nearest) fire at it; the rest keep pursuing
+// with weapons held (Game attack slots). Missions choose squadmates with missions[].wingmen: ['2', '3'] when absent,
+// ['2'] or ['3'] for one, [] for solo.
 
 export const WINGMEN = {
   '2': { callsign: 'COTTER', side: 1 },    // flies right of the lead
