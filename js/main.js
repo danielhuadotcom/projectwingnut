@@ -63,6 +63,7 @@ const ENEMY_MISSILE_TURN = 0.6;  // enemy shots turn at 60% of the player's rate
 const WORLD_UP = new THREE.Vector3(0, 1, 0);
 const PARAMS = new URLSearchParams(location.search);
 
+const RIDGE_MARGIN = 20;   // m of clear ground kept between a land unit's footprint and the tunnel ridge's rock
 const _v = new THREE.Vector3(), _v2 = new THREE.Vector3(), _v3 = new THREE.Vector3(), _fwd = new THREE.Vector3(), _up = new THREE.Vector3(), _right = new THREE.Vector3();
 const _ret = new THREE.Vector3(), _rv = new THREE.Vector3();   // reticle direction scratch
 const _q = new THREE.Quaternion();
@@ -539,7 +540,7 @@ class Game {
     const w = this.world, gf = this.ground, lim = WORLD_HALF * 0.9;
     const ok = naval
       ? (x, z) => gf.openWater(x, z, 1000) && (!def || gf.hullClear(def, x, z))
-      : (x, z) => { const h = w.getHeight(x, z); return h > 8 && h < 900 && Math.abs(w.getHeight(x + 40, z) - w.getHeight(x - 40, z)) < 50 && Math.abs(w.getHeight(x, z + 40) - w.getHeight(x, z - 40)) < 50; };
+      : (x, z) => { const h = w.getHeight(x, z); return h > 8 && h < 900 && Math.abs(w.getHeight(x + 40, z) - w.getHeight(x - 40, z)) < 50 && Math.abs(w.getHeight(x, z + 40) - w.getHeight(x, z - 40)) < 50 && this.ridgeClear(def, x, z, 60); };
     for (let r = 0; r <= 9000; r += 300) {
       const steps = r === 0 ? 1 : Math.max(6, Math.round(r / 250));
       for (let k = 0; k < steps; k++) {
@@ -558,6 +559,26 @@ class Game {
     }
     return best < Infinity ? out : null;
   }
+  /**
+   * Land placement test against the tunnel ridge (a separate mesh over the heightfield, so the terrain tests miss it):
+   * false if ridge rock touches def's footprint at (x, z) or within `margin` m of it (the rock test in collide() is
+   * vertical, so the clearance ring is sampled explicitly), or if rock / the bore covers the unit (a point over its roof).
+   */
+  ridgeClear(def, x, z, margin = RIDGE_MARGIN) {
+    const tn = this.tunnel;
+    if (!tn) return true;
+    const s = (def && def.size) || DEFAULT_GROUND_TYPES.tank.size;
+    const g = Math.max(this.world.getHeight(x, z), 0.5), half = 0.5 * Math.hypot(s[0], s[2]), yc = g + s[1] * 0.5;
+    if (tn.collide(_v.set(x, yc, z), half + 2) === 'wall') return false;           // body in the rock or a bore wall
+    if (tn.isInside(_v.set(x, g + 2, z))) return false;                              // in the bore
+    if (tn.collide(_v.set(x, g + s[1] + 25, z), 2) === 'wall') return false;       // roof covered by ridge rock
+    const R = half + margin;
+    for (let k = 0; k < 8; k++) {                                                    // clearance ring off the outer faces
+      const a = k * Math.PI / 4, px = x + Math.cos(a) * R, pz = z + Math.sin(a) * R;
+      if (tn.collide(_v.set(px, Math.max(this.world.getHeight(px, pz), 0.5) + s[1] * 0.5, pz), 2) === 'wall') return false;
+    }
+    return true;
+  }
   spawnSurfaceGroup(g, cx, cz) {
     const typeName = g.type || 'tank';
     const def = this.groundTypes[typeName] || DEFAULT_GROUND_TYPES[typeName] || DEFAULT_GROUND_TYPES.tank;
@@ -569,7 +590,7 @@ class Game {
     const dirA = Math.random() * Math.PI * 2;
     // ships need the whole hull afloat in open water, clear of other ships; vehicles need dry land
     const fits = naval ? (x, z, hdg) => this.ground.hullClear(def, x, z, hdg)
-                       : (x, z) => { const h = this.world.getHeight(x, z); return h > 3 && h < 1200; };
+                       : (x, z) => { const h = this.world.getHeight(x, z); return h > 3 && h < 1200 && this.ridgeClear(def, x, z); };
     let placed = 0;
     for (let i = 0; i < n; i++) {
       let x = site.x, z = site.z, ok = false;
