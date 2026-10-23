@@ -20,6 +20,7 @@ import { Menu, loadSettings } from './menu.js';
 import { TouchControls } from './touch.js';
 import { Music } from './music.js';
 import { Flights, SLOTS as FLIGHT_SLOTS, mulberry32, isHolding, orbitRadius } from './flights.js';
+import { InfinityRun } from './infinity.js';
 
 // Fallback campaign (replaced by js/missions.js data once it exists): PW-style missions made of phases of groups.
 const FALLBACK_AIR_TYPES = {
@@ -131,6 +132,7 @@ class Game {
     this.state = 'title';
     this.time = 0; this.last = performance.now();
     this.score = 0; this.wave = 0; this.kills = 0;
+    this.infinity = null; this.infT = -1;   // INFINITY run (js/infinity.js) while one is on; intermission countdown (s)
     this.messages = [];
     this.enemies = []; this.brains = [];
     this.target = null; this.lockTimer = 0; this.locked = false; this.inCone = false;
@@ -477,6 +479,7 @@ class Game {
   }
   /** Load mission i (wraps around the campaign): reset and fully rearm the player, clear the field, spawn phase 1. */
   loadMission(i) {
+    this.leaveInfinity();                  // (a campaign sortie after an INFINITY run: the difficulty setting is back)
     const list = this.missions, n = list.length;
     this.missionIndex = i;
     const M = this.mission = list[((i % n) + n) % n];
@@ -557,6 +560,97 @@ class Game {
     this.message('MISSION COMPLETE', true, 5.5);
     this.say('missionComplete', 3);
     this.audio.ui('wave');
+  }
+  // ---------- INFINITY (js/infinity.js): endless rounds, one life, both squadmates ----------
+  /** A new run from round 1. A run still going ends first (it counts toward the local best). The run's ramp stands in
+   *  for the difficulty setting until it ends (leaveInfinity). ?infseed=N fixes the run seed. */
+  startInfinity() {
+    if (this.infinity && !this.infinity.over) this.infinity.finish('ABANDONED');
+    const seed = PARAMS.has('infseed') ? Number(PARAMS.get('infseed')) : undefined;
+    const run = this.infinity = new InfinityRun({ difficulty: DIFFICULTY, missileLoad: FLIGHT.MAX_MISSILES, missileDamage: this.weapons.missileDamage, seed });
+    this.mission = run.mission;            // { name: 'Infinity', wingmen: ['2', '3'], phases: [] }: both squadmates fly
+    this.score = 0; this.kills = 0;
+    this.applyRamp(run.ramp);
+    this.resetPlayer();
+    if (this.flights) this.flights.clear();
+    (this._pending || (this._pending = [])).length = 0; this._sites = {};
+    this.chase.snap(this.player);
+    if (this.squad) this.squad.spawn(run.mission, this.player);
+    this._slotT = 0;
+    for (const e of this.enemies) e.kill();
+    this.ground.clear(); this.allied.clear();
+    for (const m of this.weapons.missiles) m.alive = false;
+    this.messages.length = 0;
+    this.target = null; this.lockTimer = 0; this.locked = false;
+    this.waveTimer = 0; this.missionDoneT = 0; this.killTimes.length = 0; this.infT = -1;
+    this.lowHealthSaid = false;
+    this.fireGrace = 0.35;                 // the button that started the run must not also fire a weapon
+    if (this.audio.setPaused) this.audio.setPaused(false);
+    this.setState('playing');
+    this.message('INFINITY', true, 4);
+    this.say('sortieStart', 3);
+    this.nextRound();
+  }
+  /** The next round of the run: its ramp becomes the difficulty; its aircraft hold at generic flight stations around the
+   *  player (spawnGenerated) and its land and sea groups are placed from the player's position and heading as the round
+   *  starts (spawnGroup), every draw from the round's seed. */
+  nextRound() {
+    const plan = this.infinity.nextRound();
+    this.applyRamp(plan.ramp);
+    this.infT = -1; this.waveTimer = 0;
+    this.wave = plan.round; this.phaseIndex = plan.round - 1;
+    this.setSortieFrame();
+    this._bossPhase = false; this.priorityPhase = false;
+    let ground = 0, naval = 0;
+    const air = [];
+    plan.groups.forEach((g, gi) => {
+      if (g.kind === 'air') { air.push(g); return; }
+      const k = this.spawnGroup(g, gi);
+      if (g.kind === 'naval') naval += k; else ground += k;
+    });
+    const nAir = this.spawnGenerated(air, plan.seed);   // also rebuilds the lists, directs bandits, wakes the squadmates
+    if (!nAir) { this.rebuildCombatList(); this.directBandits(); this._slotT = 0; if (this.squad) this.squad.newWave(); }
+    this.message(`ROUND ${plan.round}`, true, 3.5);
+    if (plan.bounty) this.message(`BOUNTY · ${plan.bounty}`, true, 4.5);
+    const parts = [];
+    if (nAir) parts.push(`${nAir} AIR`); if (ground) parts.push(`${ground} GROUND`); if (naval) parts.push(`${naval} NAVAL`);
+    if (parts.length) this.message(parts.join(' · ') + ' TARGETS', false, 4);
+    if (plan.round > 1) { if (nAir) this.say('newContacts', 2); this.audio.ui('wave'); }
+    if (ground) this.say('groundTargets'); else if (naval) this.say('navalTargets');
+  }
+  /** Round flow (updateGame, in place of the campaign's phases): AREA CLEAR once nothing hostile is left (`left` = live
+   *  enemy aircraft and surface units), a full rearm and a hull patch, then the next round after the intermission. */
+  updateRounds(dt, left) {
+    const run = this.infinity, p = this.player;
+    if (!p.alive || run.over) return;
+    if (this.infT >= 0) { this.infT -= dt; if (this.infT < 0) this.nextRound(); return; }
+    if (left > 0) { this.waveTimer = 0; return; }
+    this.waveTimer += dt;
+    if (this.waveTimer <= 0.1) return;
+    this.waveTimer = 0;
+    const I = run.clearRound();
+    p.missiles = p.maxMissiles; p.ammo = FLIGHT.AMMO; this.flareT = 0; this.hardpoints.fill(0);   // full rearm
+    p.health = run.repairedHealth(p.health, 100);                                               // hull +35 %, capped
+    if (p.health >= 35) this.lowHealthSaid = false;
+    this.infT = I.seconds;
+    this.message('AREA CLEAR', true, 2.5);
+    this.message(`REARMED · HULL ${Math.round(p.health)}%`, false, 3.5);
+    this.say('waveClear', 2); this.audio.ui('wave');
+  }
+  /** A round's ramp (js/infinity.js rampAt) as the difficulty: the fields applySetting('difficulty') sets. */
+  applyRamp(R) {
+    const d = this.diff = R.diff;
+    this.armor = d.armor; this.skillOffset = d.skill; this.enemyMissileTurn = d.missileTurn;
+    if (this.player) this.player.missileCap = d.playerMissiles;
+  }
+  /** Out of INFINITY (campaign sortie, quit to title): a run still going ends (it counts toward the local best), and the
+   *  difficulty setting applies again. */
+  leaveInfinity(reason = 'ABANDONED') {
+    const run = this.infinity;
+    if (!run) return;
+    if (!run.over) run.finish(reason);
+    this.infinity = null; this.infT = -1;
+    this.applySetting('difficulty', this.settings.difficulty);
   }
   /** Rebuilt when units spawn or die, never per frame. combatList: the player and every live hostile (what the player
    *  can target, what the HUD lists). hostiles: the same minus the player, all that the player's team (player,
@@ -656,6 +750,7 @@ class Game {
   }
   /** Seed of a campaign placement stream: fixed per mission, phase and group index gi (allies use negative ones). */
   placementSeed(gi) {
+    if (this.infinity && this.infinity.plan) return this.infinity.plan.seed ^ Math.imul(gi + 101, 83492791);   // INFINITY: per round
     const n = this.missions.length, mi = ((this.missionIndex % n) + n) % n;
     return Math.imul(mi + 1, 73856093) ^ Math.imul(this.phaseIndex + 1, 19349663) ^ Math.imul(gi + 101, 83492791);
   }
@@ -877,9 +972,10 @@ class Game {
     ac.handling.roll = THREE.MathUtils.clamp((type.roll || 180) / 170 * 0.85, 0.55, 1);
     ac.handling.yaw = THREE.MathUtils.clamp((type.yaw || 12) / 14, 0.6, 1.2);
     ac.gunRate = 12;                                     // enemy cannons fire at about half the player's rate
-    ac.speed = FLIGHT.CRUISE_SPEED * ac.speedScale; ac.missiles = type.armed === false || type.armed === 'gun' ? 0 : (this.missionIndex < 2 ? 2 : 3); ac.ammo = 9999;
+    const R = this.infinity ? this.infinity.ramp : null;   // INFINITY: the round's ramp stands in for the mission index
+    ac.speed = FLIGHT.CRUISE_SPEED * ac.speedScale; ac.missiles = type.armed === false || type.armed === 'gun' ? 0 : R ? R.enemyMissiles : (this.missionIndex < 2 ? 2 : 3); ac.ammo = 9999;
     ac.getForward(_fwd); ac.velocity.copy(_fwd).multiplyScalar(ac.speed);
-    const skill = THREE.MathUtils.clamp(0.38 + this.missionIndex * 0.06 + (type.role === 'fighter' ? 0.05 : 0) + (this.skillOffset || 0), 0.2, 0.95);
+    const skill = THREE.MathUtils.clamp((R ? R.skillBase : 0.38 + this.missionIndex * 0.06) + (type.role === 'fighter' ? 0.05 : 0) + (this.skillOffset || 0), 0.2, 0.95);
     ac.brain.skill = skill; ac.brain.state = 'pursue'; ac.brain.stateTime = 0; ac.brain.missileCooldown = 10 + Math.random() * 8;
     ac.brain.target = null; ac.brain.role = null; ac.brain.threat = null;   // pooled: the bandit director assigns a role
     ac.brain.flight = null; ac.escorts = null; ac.bornAt = this.time;      // pooled: spawnFlight / escorts set these
@@ -1140,7 +1236,7 @@ class Game {
       this.say('playerHit', 2);
       if (!this.lowHealthSaid && target.health < 35) { this.lowHealthSaid = true; this.say('lowHealth', 3); }
     } else if (shooter === this.player) {
-      this.hitFlash = 1; this.audio.impact(); this.score += kind === 'gun' ? 10 : 150;
+      this.hitFlash = 1; this.audio.impact(); if (!this.infinity) this.score += kind === 'gun' ? 10 : 150;   // (INFINITY scores kills only)
     }
   }
   onKill(target, shooter) {
@@ -1156,7 +1252,8 @@ class Game {
         if (dW < 500 && Math.random() < 0.34) this.audio.wilhelm(dW);
       }
       if (target.naval) { _v.copy(target.position); this.weapons.explode(_v, 2.5); _v.y += 8; this.weapons.explode(_v.addScaledVector(_fwd.set(Math.random() - 0.5, 0, Math.random() - 0.5).normalize(), 25), 1.8); }
-      this.score += isGround ? 300 : 1000;
+      if (this.infinity) { this.infinity.recordKill(hudKind(target), isGround ? target.type : target.name); this.score = this.infinity.score; }
+      else this.score += isGround ? 300 : 1000;
       this.message(isGround ? 'GROUND TARGET DESTROYED' : 'TARGET DESTROYED', true, 2.2); this.audio.ui('kill');
       const t = this.time; this.killTimes.push(t);
       while (this.killTimes.length && t - this.killTimes[0] > 12) this.killTimes.shift();
@@ -1359,7 +1456,7 @@ class Game {
       const h = Math.max(world.getHeight(e.position.x, e.position.z), 0);
       if (e.position.y < h + 3 * e.sizeScale || (this.tunnel && this.tunnel.collide(e.position, 6) === 'wall')) {   // (life size)
         if (this.allied.leakers.length > 0 && this.allied.crashLeak(e)) continue;   // a leaker that hit the sea at the fleet: a leak
-        weapons.aircraftDeath(e); e.kill(); this.combatDirty = true; this.score += 300; this.message('BANDIT CRASHED', false, 2);
+        weapons.aircraftDeath(e); e.kill(); this.combatDirty = true; if (!this.infinity) this.score += 300; this.message('BANDIT CRASHED', false, 2);
         if (this.target === e) { this.target = null; this.lockTimer = 0; this.locked = false; }
         continue;
       }
@@ -1422,6 +1519,8 @@ class Game {
     if (this.missionDoneT > 0) {
       this.missionDoneT += dt;
       if (this.missionDoneT > 4.5) { this.missionDoneT = 0; this.setState('complete'); this.showDebrief(true); }
+    } else if (this.infinity) {
+      this.updateRounds(dt, aliveEnemies + surfaceAlive);   // INFINITY: rounds, not phases
     } else if (aliveEnemies + surfaceAlive === 0 && p.alive && this._pending && this._pending.length) {
       this.spawnPending(true);             // the field is clear before a delayed group was due: it enters now
     } else if (aliveEnemies + surfaceAlive === 0 && p.alive) {
@@ -1629,6 +1728,7 @@ class Game {
       onQuit: () => this.quitToTitle(),
       onSetting: (key, value) => this.applySetting(key, value),
       onSound: (kind) => { unlock(); if (kind === 'select' || kind === 'back') this.audio.ui('select'); },
+      onInfinity: () => { unlock(); this.audio.ui('start'); this.startInfinity(); this.fireGrace = 0.5; },
     });
     // apply every persisted setting once (quality was applied during init)
     for (const k of Object.keys(this.settings)) if (k !== 'quality') this.applySetting(k, this.settings[k]);
@@ -1653,6 +1753,7 @@ class Game {
       case 'sfx': if (this.audio.setSfxVolume) this.audio.setSfxVolume(Number(v)); break;
       case 'voice': if (this.awacs.setVolume) this.awacs.setVolume(Number(v)); break;
       case 'difficulty': {
+        if (this.infinity) break;          // a run follows its own ramp; the setting applies again when it ends (leaveInfinity)
         const d = this.diff = DIFFICULTY[v] || DIFFICULTY.normal;
         this.armor = d.armor; this.skillOffset = d.skill; this.enemyMissileTurn = d.missileTurn;
         if (this.player) this.player.missileCap = d.playerMissiles;   // enemy missiles after the player at once
@@ -1664,13 +1765,14 @@ class Game {
   pauseGame() {
     this.setState('paused'); this.silenceGameAudio();
     this.input.exitPointerLock();
-    this.menu.show('pause', { missionIndex: this.missionIndex });
+    this.menu.show('pause', this.infinity ? { mode: 'infinity', round: this.infinity.round } : { missionIndex: this.missionIndex });
   }
   resumeGame() {
     this.setState('playing'); this.last = performance.now(); this.fireGrace = 0.3;
     if (this.audio.setPaused) this.audio.setPaused(false);
   }
   quitToTitle() {
+    this.leaveInfinity();
     for (const e of this.enemies) e.kill();
     if (this.squad) this.squad.hide();
     this.ground.clear(); this.allied.clear();
@@ -1683,10 +1785,16 @@ class Game {
     this.resetPlayer(); this.chase.snap(this.player);
     this.setState('title');
     this.input.exitPointerLock();
+    if (this.menu.refreshBest) this.menu.refreshBest();   // the title's INFINITY line, now that a run may have ended
   }
   showDebrief(success) {
     const n = this.missions.length, M = this.mission;
     this.input.exitPointerLock();
+    if (this.infinity) {                   // INFINITY: one life, so the run is over: rounds cleared, kills, score, local best
+      const r = this.infinity.finish(this.deadReason || 'SHOT DOWN');
+      this.menu.show('debrief', { mode: 'infinity', title: r.reason, round: r.round, roundsCleared: r.roundsCleared, kills: r.kills, score: r.score, best: r.best, newBest: r.newBest });
+      return;
+    }
     this.menu.show('debrief', {
       title: success ? 'MISSION COMPLETE' : (this.deadReason || 'SHOT DOWN'),
       stats: [['MISSION', `${M.id} · ${String(M.name).toUpperCase()}`], ['SCORE', this.score.toLocaleString()], ['KILLS', String(this.kills)]],
@@ -1887,7 +1995,7 @@ class Game {
       contacts: [], _contactPool: Array.from({ length: HUD_CONTACTS }, mk),
       radar: { range: RADAR_RANGE, blips: [], _pool: Array.from({ length: HUD_CONTACTS }, () => ({ dx: 0, dz: 0, type: 'enemy', isTarget: false, relAlt: 0 })) },
       warnings: { missileIncoming: false, pullUp: false, stall: false, overG: false },
-      messages: this.messages, score: 0, wave: 0, enemiesRemaining: 0, kills: 0,
+      messages: this.messages, score: 0, wave: 0, round: 0, enemiesRemaining: 0, kills: 0,
       padlock: false, lookBack: false,
       input: { gamepadConnected: false, gamepadName: null, gamepadBlocked: false, usingGamepad: false },
       hitFlash: 0, damageFlash: 0,
@@ -2052,6 +2160,7 @@ class Game {
       if (tk !== f._touchKey || this.time - f._touchT > 1) { f._touchKey = tk; f._touchT = this.time; f.touchRects = this.touch.getRects(); }
     } else { f.touchRects = null; f._touchKey = -1; }
     f.messages = this.messages; f.score = this.score; f.wave = this.wave; f.kills = this.kills; f.mission = this.mission ? this.mission.id : 0;
+    f.round = this.infinity ? this.infinity.round : 0;   // INFINITY: the HUD shows ROUND n in place of PHASE n
     f.padlock = this.camMode === 'padlock'; f.lookBack = this.camMode === 'rear';
     if (this.camMode === 'mouseaim' && p.alive) {
       const M = f._mouseAim || (f._mouseAim = { aimX: 0, aimY: 0, aimVisible: true, noseX: 0, noseY: 0, noseVisible: true, _a: {}, _n: {} });

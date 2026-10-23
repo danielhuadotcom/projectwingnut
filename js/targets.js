@@ -1,4 +1,5 @@
 import * as THREE from 'https://cdnjs.cloudflare.com/ajax/libs/three.js/0.170.0/three.module.min.js';
+import { launchAllowed, noteLaunch } from './ai.js';
 
 // Ground and naval targets for missions. Every target is drawn as an instanced box or prism (2 draw calls total) and is
 // duck-typed like an Aircraft (position, velocity, quaternion, alive, team, health, applyDamage, hitRadius, isGround),
@@ -355,8 +356,10 @@ export class GroundForces {
   }
   aliveCount() { let n = 0; for (const t of this.targets) if (t.alive) n++; return n; }
   /**
-   * Air defenses: SAM sites fire missiles at the player inside their range; AA sites throw flak bursts near the
-   * player (onFlak(position, hit) lets the game spawn the puff and apply damage). Allied props never fire.
+   * Air defenses: SAM sites fire missiles at the player inside their range, rationed like the bandits' launches (js/ai.js
+   * launchAllowed: the difficulty's cap on enemy missiles after the player, 1.5 s since the last launch at them; a held
+   * launcher keeps its missile and cooldown and looks again next frame); AA sites throw flak bursts near the player
+   * (onFlak(position, hit) lets the game spawn the puff and apply damage). Allied props never fire.
    */
   update(dt, player, weapons, onFlak) {
     if (!player || !player.alive) return;
@@ -366,6 +369,7 @@ export class GroundForces {
       if (t.cool > 0) continue;
       const d = t.position.distanceTo(player.position);
       if (d > (t.def.range || 3000)) { t.cool = 0.5; continue; }
+      if (t.def.shoots === 'missile' && !launchAllowed(player, weapons)) continue;   // rationed: hold the missile
       // terrain masking: no line of sight, no shot (re-checked shortly)
       if (!this.hasLineOfSight(t, player.position)) { t.cool = 0.4 + Math.random() * 0.3; continue; }
       if (t.def.shoots === 'missile') {
@@ -373,6 +377,7 @@ export class GroundForces {
         _v.subVectors(player.position, t.position).normalize(); _v.y = Math.max(_v.y, 0.25); _v.normalize();
         t.quaternion.setFromUnitVectors(FWD, _v);
         const m = weapons.fireMissile(t, player);
+        if (m) noteLaunch(player, weapons);
         t.quaternion.setFromAxisAngle(UP, t.heading);
         t.cool = m ? 9 + Math.random() * 6 : 2;
       } else if (t.def.shoots === 'gun') {

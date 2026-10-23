@@ -12,8 +12,9 @@
 //           retry. The end screen shows rounds cleared, kills, score and the local best. No map, economy or upgrades.
 //   Ramp    A smooth function of the round number: smoothstep from round 1 (Easy) to MERC_ROUND (Mercenary) across the
 //           rows of the game's DIFFICULTY table. Every numeric field follows it (enemy HP and skill, attacker caps,
-//           committed-flight caps, the enemy missile backstop, playerShare) except the HELD ones, then holds at
-//           Mercenary; past that only the target count and the mix keep growing.
+//           committed-flight caps, the enemy missile backstop, playerShare), then holds; player armor (damage taken) and
+//           enemy missile agility follow the same curve but top out at the Hard row (TOPS). Past MERC_ROUND only the
+//           target count and the mix keep growing.
 //   Bounty  Every 5th round adds one named ace with a boss bar (the types with bars, except Q12 MAINSPRING, which stays
 //           the campaign's final boss).
 //   Ammo    Killing everything in a round needs at most AMMO_SHARE of the full missile load: per unit, hits-to-kill at
@@ -44,9 +45,9 @@ export const INTERMISSION = Object.freeze({ seconds: 6, repair: 0.35 });        
 export const WINGMEN = Object.freeze(['2', '3']);   // squadmates every round: COTTER #2 and RIVET #3 (mission.wingmen)
 export const BEST_KEY = 'wingnut.infinity.best';
 const LEVELS = ['easy', 'normal', 'hard', 'mercenary'];
-// DIFFICULTY fields that don't ramp but stay at one level: player armor and enemy missile agility keep the Normal values
-// (the original demo's PLAYER_ARMOR and ENEMY_MISSILE_TURN). Every other numeric field ramps.
-const HELD = { armor: 'normal', missileTurn: 'normal' };
+// DIFFICULTY fields whose ramp tops out below Mercenary: the damage the player takes and enemy missile agility go from
+// Easy in round 1 to Hard at MERC_ROUND (same smooth curve, scaled), then hold. Every other numeric field ends at Mercenary.
+const TOPS = { armor: 'hard', missileTurn: 'hard' };
 // Brain skill as js/main.js spawnAircraft sets it: clamp(0.38 + 0.06 x mission index + fighter bonus + difficulty skill,
 // 0.2, 0.95). Infinity's progress term (skillBase) stands in for 0.38 + 0.06 x mission index: 0.38 at round 1, and at
 // MERC_ROUND exactly what brings the Mercenary offset to the 0.95 ceiling.
@@ -146,17 +147,18 @@ export function rampProgress(round) { return smoothstep((Math.max(1, round) - 1)
  * One row of a DIFFICULTY-shaped table at a continuous level (0 easy, 1 normal, 2 hard, 3 mercenary). Numbers are
  * interpolated between the two neighbouring rows, rounded when every row holds a whole number; a step up to Infinity
  * (no cap) is approached through twice the largest finite value and becomes Infinity only at the upper row. Other
- * values (lists, flags) come from the row at or below. `held` pins fields to one row: { field: 'normal' }.
+ * values (lists, flags) come from the row at or below. `tops` scales a field's level so that it reaches the named row
+ * instead of Mercenary when `level` reaches 3: { armor: 'hard' } puts armor at Hard for level 3, Normal for level 1.5.
  */
-export function difficultyAt(table, level, held = HELD) {
+export function difficultyAt(table, level, tops = TOPS) {
   if (!table || !LEVELS.every((l) => table[l] && typeof table[l] === 'object')) {
     throw new TypeError('infinity: DIFFICULTY table needs easy, normal, hard and mercenary rows');
   }
-  const L = clamp(level, 0, 3), i = Math.min(2, Math.floor(L)), f = L - i;
   const keys = new Set(); for (const l of LEVELS) for (const k of Object.keys(table[l])) keys.add(k);
   const out = {};
   for (const k of keys) {
-    if (held && held[k] && table[held[k]] && k in table[held[k]]) { out[k] = table[held[k]][k]; continue; }
+    const top = tops && tops[k] ? LEVELS.indexOf(tops[k]) : 3;
+    const L = clamp(level, 0, 3) * (top >= 0 ? top : 3) / 3, i = Math.min(2, Math.floor(L)), f = L - i;
     const vals = LEVELS.map((l) => table[l][k]);
     if (!vals.every((v) => typeof v === 'number' && !Number.isNaN(v))) { out[k] = vals[Math.min(3, Math.floor(L))]; continue; }
     const finite = vals.filter(Number.isFinite), whole = finite.every(Number.isInteger);

@@ -51,12 +51,12 @@ const rules = [
 const runOpts = { difficulty: DIFFICULTY, missileLoad, missileDamage, seed: runSeed };
 const fmt = (v, d = 2) => (v === Infinity ? '∞' : typeof v === 'number' ? (Number.isInteger(v) ? String(v) : v.toFixed(d)) : String(v));
 const pct = (v) => `${Math.round(v * 100)}%`;
-const SHORT = { aggressors: 'atk', playerShare: 'share', flightCap: 'flt', stagger: 'stag', playerMissiles: 'pmsl' };
-const held = Object.keys(DIFFICULTY.normal).filter((k) => {
-  const a = I.difficultyAt(DIFFICULTY, 0)[k], b = I.difficultyAt(DIFFICULTY, 3)[k];
-  return typeof DIFFICULTY.easy[k] === 'number' && DIFFICULTY.easy[k] !== DIFFICULTY.mercenary[k] && a === b;
-});
-const ramped = Object.keys(DIFFICULTY.normal).filter((k) => typeof DIFFICULTY.easy[k] === 'number' && !held.includes(k) && k !== 'enemyHp' && k !== 'skill');
+const SHORT = { aggressors: 'atk', playerShare: 'share', flightCap: 'flt', stagger: 'stag', playerMissiles: 'pmsl', armor: 'armor', missileTurn: 'mslTurn' };
+const LEVELS = ['easy', 'normal', 'hard', 'mercenary'];
+const numeric = Object.keys(DIFFICULTY.normal).filter((k) => typeof DIFFICULTY.easy[k] === 'number');
+// fields whose ramp ends on a lower row than Mercenary (js/infinity.js TOPS): { field: row }
+const tops = Object.fromEntries(numeric.map((k) => [k, LEVELS.find((l) => I.difficultyAt(DIFFICULTY, 3)[k] === DIFFICULTY[l][k] && DIFFICULTY[l][k] !== DIFFICULTY.mercenary[k])]).filter(([, l]) => l));
+const ramped = numeric.filter((k) => k !== 'enemyHp' && k !== 'skill');
 
 function composition(R) {
   const part = (kind) => R.groups.filter((g) => g.kind === kind).map((g) => `${g.bounty ? 'BOUNTY ' : ''}${g.type} x${g.count}`).join(', ') || '-';
@@ -68,8 +68,9 @@ function printTable() {
   console.log(`loadout    ${missileLoad} missiles x ${missileDamage} damage (FLIGHT.MAX_MISSILES, js/aircraft.js; Weapons.missileDamage, js/weapons.js)`);
   console.log(`ammo rule  hits x (1 - ${I.SQUAD_SHARE} squadmate share, non-boss air) / ${I.HIT_RATE} hit rate <= ${pct(I.AMMO_SHARE)} of ${missileLoad} = ` +
     `${I.AMMO_SHARE * missileLoad} missiles (bounty rounds ${pct(I.BOUNTY_AMMO_SHARE)} = ${I.BOUNTY_AMMO_SHARE * missileLoad})`);
-  console.log(`ramp       smoothstep over js/main.js DIFFICULTY: Easy at round 1, Mercenary from round ${I.MERC_ROUND}; held: ` +
-    (held.map((k) => `${k} ${fmt(DIFFICULTY.normal[k])}`).join(', ') || 'none') + `; skill = absolute brain skill (before the fighter bonus)`);
+  console.log(`ramp       smoothstep over js/main.js DIFFICULTY: Easy at round 1, Mercenary from round ${I.MERC_ROUND}; topping out lower: ` +
+    (Object.entries(tops).map(([k, l]) => `${k} at ${l[0].toUpperCase() + l.slice(1)} (${fmt(DIFFICULTY[l][k])})`).join(', ') || 'none') +
+    `; skill = absolute brain skill (before the fighter bonus)`);
   console.log(`caps       ${I.CAPS.airGroup} per air group, ${I.CAPS.airRound} aircraft per round, ${I.CAPS.surfaceGroup} per surface group · ` +
     `bounty every ${I.BOUNTY_EVERY}th round: ${I.BOUNTIES.join(', ')} · squadmates every round: COTTER #2, RIVET #3`);
   console.log(`main.js    ${rules.map(([n, ok]) => `${n} ${ok ? 'ok' : 'NOT FOUND (re-check js/infinity.js unitHp / rampAt)'}`).join(' · ')}`);
@@ -124,13 +125,18 @@ function check() {
       if (seed === 1 && r <= 30) ok(JSON.stringify(R) === JSON.stringify(I.generateRound(r, { ...runOpts, seed })), `${tag}: not deterministic`);
     }
   }
-  // ramp end points: Easy row in round 1, Mercenary from MERC_ROUND, held fields at Normal, groups empty
+  // ramp end points: Easy row in round 1, Mercenary (or the field's top row) from MERC_ROUND on, groups empty
   const first = I.rampAt(1, DIFFICULTY).diff, top = I.rampAt(I.MERC_ROUND, DIFFICULTY).diff, late = I.rampAt(500, DIFFICULTY).diff;
   for (const k of Object.keys(DIFFICULTY.easy)) {
     if (k === 'groups') { ok(first.groups.length === 0 && late.groups.length === 0, 'ramp: generated rounds have no difficulty groups'); continue; }
-    if (held.includes(k)) { ok(first[k] === DIFFICULTY.normal[k] && late[k] === DIFFICULTY.normal[k], `ramp: ${k} held at Normal`); continue; }
+    const end = DIFFICULTY[tops[k] || 'mercenary'][k];
     ok(first[k] === DIFFICULTY.easy[k], `ramp: ${k} starts at Easy (${first[k]} vs ${DIFFICULTY.easy[k]})`);
-    ok(top[k] === DIFFICULTY.mercenary[k] && late[k] === DIFFICULTY.mercenary[k], `ramp: ${k} reaches Mercenary (${top[k]} vs ${DIFFICULTY.mercenary[k]})`);
+    ok(top[k] === end && late[k] === end, `ramp: ${k} reaches ${tops[k] || 'mercenary'} (${top[k]} vs ${end})`);
+  }
+  ok(tops.armor === 'hard' && tops.missileTurn === 'hard', `ramp: armor and missileTurn top out at Hard ${JSON.stringify(tops)}`);
+  for (let r = 2; r <= 40; r++) {
+    const a = I.rampAt(r - 1, DIFFICULTY).diff, b = I.rampAt(r, DIFFICULTY).diff;
+    ok(b.armor >= a.armor && b.missileTurn >= a.missileTurn && b.enemyHp >= a.enemyHp, `ramp: armor / missileTurn / enemyHp fall at round ${r}`);
   }
   ok(I.rampAt(1, DIFFICULTY).enemySkill === Math.max(0.2, 0.38 + DIFFICULTY.easy.skill), 'ramp: skill starts at the campaign opener on Easy');
   ok(Math.abs(I.rampAt(I.MERC_ROUND, DIFFICULTY).enemySkill - 0.95) < 1e-9, 'ramp: skill reaches the 0.95 ceiling');

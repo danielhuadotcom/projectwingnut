@@ -352,6 +352,10 @@ export class Menu {
   /** Force the hint glyph set: 'kb' (keyboard + mouse) | 'pad' | 'touch' (hints hidden). Normally automatic. */
   setDevice(kind) { this._setDevice(kind); }
 
+  /** Re-read the local best on the title's INFINITY entry (the title refreshes it when it opens; call this after a run
+   *  ends while the title is already showing). */
+  refreshBest() { this._refreshInfinity(); }
+
   dispose() {
     this._flushSave();
     const el = this.el, h = this._h;

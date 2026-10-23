@@ -14,6 +14,21 @@ const WORLD_UP = new THREE.Vector3(0, 1, 0);
 const controls = { pitch: 0, roll: 0, yaw: 0, throttleDelta: 0 };
 const LAUNCH_GAP = 1.5;   // s: the AI never launches at one target within this of its previous launch at it
 
+/** Missile rationing for every enemy launcher (bandits, SAM sites, ships; O(1)): no launch at a target within max(its
+ *  `missileGap`, LAUNCH_GAP) s of the last enemy launch at it (`_missileAt`), and a target with `missileCap` (the player
+ *  per difficulty, squadmates 1) has at most that many enemy missiles after it (`_inboundCount`: the game counts the
+ *  player's every frame; a squadmate's own scan counts its decoyed ones too). A refused launcher keeps its missile and
+ *  its cooldown and tries again; noteLaunch(T) books a launch that went out. */
+export function launchAllowed(T, weapons) {
+  if (!T) return true;
+  if (T._missileAt !== undefined && weapons.time - T._missileAt < Math.max(T.missileGap || 0, LAUNCH_GAP)) return false;
+  return T.missileCap === undefined || (T._inboundCount || 0) < T.missileCap;
+}
+export function noteLaunch(T, weapons) {
+  T._missileAt = weapons.time;
+  if (T.missileCap !== undefined) T._inboundCount = (T._inboundCount || 0) + 1;
+}
+
 export class EnemyBrain {
   constructor(aircraft, { skill = 0.5, worldHalf = 20000 } = {}) {
     this.ac = aircraft;
@@ -90,15 +105,8 @@ export class EnemyBrain {
     return _pFwd.dot(_tmp) > 0.9 && _rel.dot(_fwd) > 0;
   }
 
-  /** Missile rationing (O(1)): no launch at a target within max(its `missileGap`, LAUNCH_GAP) s of the last enemy launch
-   *  at it (`_missileAt`), and a target with `missileCap` (the player per difficulty, squadmates 1) has at most that many
-   *  enemy missiles after it (`_inboundCount`: the game counts the player's every frame; a squadmate's own scan counts
-   *  its decoyed ones too). A refused shot keeps the missile and the cooldown for the next chance. */
-  canLaunchAt(T, weapons) {
-    if (!T) return true;
-    if (T._missileAt !== undefined && weapons.time - T._missileAt < Math.max(T.missileGap || 0, LAUNCH_GAP)) return false;
-    return T.missileCap === undefined || (T._inboundCount || 0) < T.missileCap;
-  }
+  /** Missile rationing (launchAllowed above). */
+  canLaunchAt(T, weapons) { return launchAllowed(T, weapons); }
 
   /** One pass over the live missiles: those guiding on us (_inbound, the soonest time to impact _minTti and its missile
    *  _threatMsl, the closest range _minRange). countAll also counts ones our flares decoyed into ac._inboundCount. */
@@ -335,8 +343,7 @@ export class EnemyBrain {
         if (angleOff < this.shotAngle && dist > this.shotMin && dist < this.shotMax && this.missileCooldown <= 0 && ac.missiles > 0 && this.canLaunchAt(target, weapons)) {
           if (weapons.fireMissile(ac, target)) {
             this.missileCooldown = this.missileReload || (14 + (1 - this.skill) * 10);
-            target._missileAt = weapons.time;
-            if (target.missileCap !== undefined) target._inboundCount = (target._inboundCount || 0) + 1;
+            noteLaunch(target, weapons);
           }
         }
       }

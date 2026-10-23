@@ -81,7 +81,7 @@ function fDec1(v) {           // one decimal, e.g. 4.2
   else str = (k / 10).toFixed(1);
   return neg ? '-' + str : str;
 }
-const WAVE_STR = [], ENEMY_STR = [], KILL_STR = [], PCT_STR = [];
+const WAVE_STR = [], ROUND_STR = [], ENEMY_STR = [], KILL_STR = [], PCT_STR = [];
 function fPrefixed(table, prefix, n) {
   n = Math.max(0, Math.round(n) || 0);
   if (n < 10000) return table[n] || (table[n] = prefix + n);
@@ -759,12 +759,14 @@ export class HUD {
     ctx.font = L.fTiny; this._text('SCORE', x, y, COL.greenSoft, 'left', 'top');
     ctx.font = L.fBig; this._text(fInt(f.score || 0), x, y + 11 * ts, COL.pale, 'left', 'top');
     let yy = y + 11 * ts + 26 * ts;
+    // campaign phase, or the INFINITY round (frame.round > 0)
+    const wave = f.round > 0 ? fPrefixed(ROUND_STR, 'ROUND ', f.round) : fPrefixed(WAVE_STR, 'PHASE ', f.wave || 0);
     if (L.compact) {
-      ctx.font = L.fTiny; this._text(fPrefixed(WAVE_STR, 'PHASE ', f.wave || 0), x, yy, COL.green, 'left', 'top');
+      ctx.font = L.fTiny; this._text(wave, x, yy, COL.green, 'left', 'top');
       return;
     }
     ctx.font = L.fSmall;
-    this._text(fPrefixed(WAVE_STR, 'PHASE ', f.wave || 0), x, yy, COL.green, 'left', 'top'); yy += 14 * ts;
+    this._text(wave, x, yy, COL.green, 'left', 'top'); yy += 14 * ts;
     this._text(fPrefixed(ENEMY_STR, 'TARGETS ', f.enemiesRemaining || 0), x, yy, COL.green, 'left', 'top'); yy += 14 * ts;
     this._text(fPrefixed(KILL_STR, 'KILLS ', f.kills || 0), x, yy, COL.green, 'left', 'top');
   }
