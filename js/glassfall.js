@@ -94,7 +94,7 @@ export class Glassfall {
       this.blasts.push({ dome, ring, t: -1 });
     }
     // Q12 MAINSPRING: one pooled airframe, parked (hidden) until M20's ending
-    const q = this.q12 = new Aircraft(scene, { team: 'glass', bodyColor: 0x7d1212, accentColor: 0x151515, fxQuality });
+    const q = this.q12 = new Aircraft(scene, { team: 'glass', bodyColor: 0x7d1212, accentColor: 0xe0a020, fxQuality });
     q.mesh.name = 'aircraft-q12';
     q.name = 'Q12 MAINSPRING'; q.immortal = true; q.untargetable = true; q.applyDamage = () => false; q.missiles = 999; q.ammo = 0;
     q.setSize(1, true);
@@ -365,6 +365,7 @@ export class Glassfall {
   _detonate(x, z) {
     const g = this.game, y = Math.max(g.world.getHeight(x, z), 0);
     this.det++; this.lastDet = this.t; this.stats.detonations++;
+    if (g.onGlassfallDetonation) g.onGlassfallDetonation(this.det, this.mode);   // the radio script's detonation lines and music cut
     // pooled blast: the free one, else the oldest
     let B = this.blasts[0];
     for (const o of this.blasts) { if (o.t < 0) { B = o; break; } if (o.t > B.t) B = o; }

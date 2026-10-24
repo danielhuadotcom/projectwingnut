@@ -33,6 +33,8 @@ const WANT = [
   ['Percussion/Glock'],
   ['Percussion', /^(TB_hit_|Claves1_Hit_|Ratchet1-Crank_|Anvil_Hit1_|BrakeDrum1_Hammer_|gongscrape_)/],
   ['VSCO 1 Percussion/varWood', /^wood_click/],
+  // epic v2 (score_epic_v2.mjs): solo violin
+  ['Strings/Solo Violin/Arco Vib'],
 ];
 
 const tree = JSON.parse(readFileSync(TREE, 'utf8')).tree.filter((x) => x.type === 'blob' && /\.wav$/i.test(x.path));

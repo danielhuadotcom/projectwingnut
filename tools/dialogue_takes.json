@@ -1,0 +1,1867 @@
+{
+ "m01_1": {
+  "pick": 2,
+  "takes": [
+   {
+    "k": 1,
+    "rate": 3.87,
+    "artic": 5,
+    "maxPause": 440,
+    "score": 3.11
+   },
+   {
+    "k": 2,
+    "rate": 3.93,
+    "artic": 4.93,
+    "maxPause": 280,
+    "score": 3.81
+   },
+   {
+    "k": 3,
+    "rate": 4.12,
+    "artic": 5.07,
+    "maxPause": 380,
+    "score": 3.6
+   }
+  ]
+ },
+ "m01_4": {
+  "pick": 2,
+  "takes": [
+   {
+    "k": 1,
+    "rate": 3.71,
+    "artic": 5.42,
+    "maxPause": 660,
+    "score": 2.07
+   },
+   {
+    "k": 2,
+    "rate": 4.56,
+    "artic": 5.67,
+    "maxPause": 400,
+    "score": 3.96
+   },
+   {
+    "k": 3,
+    "rate": 4.16,
+    "artic": 5.3,
+    "maxPause": 340,
+    "score": 3.8
+   }
+  ]
+ },
+ "m02_2": {
+  "pick": 3,
+  "takes": [
+   {
+    "k": 1,
+    "rate": 4.17,
+    "artic": 5.47,
+    "maxPause": 350,
+    "score": 3.77
+   },
+   {
+    "k": 2,
+    "rate": 3.48,
+    "artic": 5.04,
+    "maxPause": 520,
+    "score": 2.4
+   },
+   {
+    "k": 3,
+    "rate": 4.14,
+    "artic": 5.47,
+    "maxPause": 260,
+    "score": 4.1
+   }
+  ]
+ },
+ "m02_3": {
+  "pick": 2,
+  "takes": [
+   {
+    "k": 1,
+    "rate": 3.74,
+    "artic": 5.28,
+    "maxPause": 720,
+    "score": 1.86
+   },
+   {
+    "k": 2,
+    "rate": 3.85,
+    "artic": 4.8,
+    "maxPause": 550,
+    "score": 2.65
+   },
+   {
+    "k": 3,
+    "rate": 3.41,
+    "artic": 4.29,
+    "maxPause": 650,
+    "score": 1.81
+   }
+  ]
+ },
+ "m03_1": {
+  "pick": 2,
+  "takes": [
+   {
+    "k": 1,
+    "rate": 4.88,
+    "artic": 6.82,
+    "maxPause": 480,
+    "score": 3.96
+   },
+   {
+    "k": 2,
+    "rate": 5.41,
+    "artic": 6.38,
+    "maxPause": 220,
+    "score": 5.41
+   },
+   {
+    "k": 3,
+    "rate": 4.8,
+    "artic": 6.03,
+    "maxPause": 440,
+    "score": 4.04
+   }
+  ]
+ },
+ "m03_3": {
+  "pick": 3,
+  "takes": [
+   {
+    "k": 1,
+    "rate": 3.54,
+    "artic": 5.69,
+    "maxPause": 620,
+    "score": 2.06
+   },
+   {
+    "k": 2,
+    "rate": 3.2,
+    "artic": 4.39,
+    "maxPause": 420,
+    "score": 2.52
+   },
+   {
+    "k": 3,
+    "rate": 4.26,
+    "artic": 5.74,
+    "maxPause": 620,
+    "score": 2.78
+   }
+  ]
+ },
+ "m04_2": {
+  "pick": 2,
+  "takes": [
+   {
+    "k": 1,
+    "rate": 3.01,
+    "artic": 4.19,
+    "maxPause": 670,
+    "score": 1.33
+   },
+   {
+    "k": 2,
+    "rate": 3.37,
+    "artic": 4.11,
+    "maxPause": 320,
+    "score": 3.09
+   },
+   {
+    "k": 3,
+    "rate": 3.07,
+    "artic": 3.88,
+    "maxPause": 490,
+    "score": 2.11
+   }
+  ]
+ },
+ "m04_3": {
+  "pick": 1,
+  "takes": [
+   {
+    "k": 1,
+    "rate": 5.17,
+    "artic": 6.64,
+    "maxPause": 390,
+    "score": 4.61
+   },
+   {
+    "k": 2,
+    "rate": 4.88,
+    "artic": 6.39,
+    "maxPause": 560,
+    "score": 3.64
+   },
+   {
+    "k": 3,
+    "rate": 4.73,
+    "artic": 5.79,
+    "maxPause": 350,
+    "score": 4.33
+   }
+  ]
+ },
+ "m05_2": {
+  "pick": 3,
+  "takes": [
+   {
+    "k": 1,
+    "rate": 4.13,
+    "artic": 6.54,
+    "maxPause": 600,
+    "score": 2.73
+   },
+   {
+    "k": 2,
+    "rate": 3.91,
+    "artic": 5.59,
+    "maxPause": 540,
+    "score": 2.75
+   },
+   {
+    "k": 3,
+    "rate": 4.26,
+    "artic": 5.85,
+    "maxPause": 350,
+    "score": 3.86
+   }
+  ]
+ },
+ "m05_4": {
+  "pick": 3,
+  "takes": [
+   {
+    "k": 1,
+    "rate": 3.76,
+    "artic": 6.03,
+    "maxPause": 1060,
+    "score": 0.52
+   },
+   {
+    "k": 2,
+    "rate": 3.52,
+    "artic": 5.53,
+    "maxPause": 1040,
+    "score": 0.36
+   },
+   {
+    "k": 3,
+    "rate": 3.93,
+    "artic": 6.78,
+    "maxPause": 900,
+    "score": 1.33
+   }
+  ]
+ },
+ "m06_1": {
+  "pick": 1,
+  "takes": [
+   {
+    "k": 1,
+    "rate": 3.59,
+    "artic": 4.49,
+    "maxPause": 500,
+    "score": 2.59
+   },
+   {
+    "k": 2,
+    "rate": 3.65,
+    "artic": 4.78,
+    "maxPause": 550,
+    "score": 2.45
+   },
+   {
+    "k": 3,
+    "rate": 3.16,
+    "artic": 4.33,
+    "maxPause": 760,
+    "score": 1.12
+   }
+  ]
+ },
+ "m06_3": {
+  "source": "assets/voice_audition/mainspring2/m06_3_xy.mp3"
+ },
+ "m06_4": {
+  "source": "assets/voice_audition/mainspring2/m06_4_xy.mp3"
+ },
+ "m07_2": {
+  "pick": 3,
+  "takes": [
+   {
+    "k": 1,
+    "rate": 2.36,
+    "artic": 3.44,
+    "maxPause": 800,
+    "score": 0.16
+   },
+   {
+    "k": 2,
+    "rate": 2.28,
+    "artic": 3.18,
+    "maxPause": 620,
+    "score": 0.8
+   },
+   {
+    "k": 3,
+    "rate": 2.82,
+    "artic": 3.36,
+    "maxPause": 240,
+    "score": 2.82
+   }
+  ]
+ },
+ "m07_4": {
+  "pick": 2,
+  "takes": [
+   {
+    "k": 1,
+    "rate": 3.23,
+    "artic": 4.55,
+    "maxPause": 530,
+    "score": 2.11
+   },
+   {
+    "k": 2,
+    "rate": 4.11,
+    "artic": 5.19,
+    "maxPause": 410,
+    "score": 3.47
+   },
+   {
+    "k": 3,
+    "rate": 3.28,
+    "artic": 4.41,
+    "maxPause": 620,
+    "score": 1.8
+   }
+  ]
+ },
+ "m08_1": {
+  "pick": 3,
+  "takes": [
+   {
+    "k": 1,
+    "rate": 2.79,
+    "artic": 3.51,
+    "maxPause": 540,
+    "score": 1.63
+   },
+   {
+    "k": 2,
+    "rate": 3.16,
+    "artic": 4.27,
+    "maxPause": 430,
+    "score": 2.44
+   },
+   {
+    "k": 3,
+    "rate": 2.87,
+    "artic": 4.08,
+    "maxPause": 330,
+    "score": 2.55
+   }
+  ]
+ },
+ "m08_3": {
+  "pick": 1,
+  "takes": [
+   {
+    "k": 1,
+    "rate": 5.7,
+    "artic": 6.67,
+    "maxPause": 210,
+    "score": 5.7
+   },
+   {
+    "k": 2,
+    "rate": 5.21,
+    "artic": 5.7,
+    "maxPause": 120,
+    "score": 5.21
+   },
+   {
+    "k": 3,
+    "rate": 5.53,
+    "artic": 6.08,
+    "maxPause": 120,
+    "score": 5.53
+   }
+  ]
+ },
+ "m08_4": {
+  "pick": 2,
+  "takes": [
+   {
+    "k": 1,
+    "rate": 4.9,
+    "artic": 5.76,
+    "maxPause": 280,
+    "score": 4.78
+   },
+   {
+    "k": 2,
+    "rate": 5.07,
+    "artic": 6.28,
+    "maxPause": 320,
+    "score": 4.79
+   },
+   {
+    "k": 3,
+    "rate": 4.38,
+    "artic": 6.28,
+    "maxPause": 740,
+    "score": 2.42
+   }
+  ]
+ },
+ "m09_1": {
+  "pick": 1,
+  "takes": [
+   {
+    "k": 1,
+    "rate": 3.24,
+    "artic": 4.91,
+    "maxPause": 310,
+    "score": 3
+   },
+   {
+    "k": 2,
+    "rate": 3.32,
+    "artic": 4.6,
+    "maxPause": 430,
+    "score": 2.6
+   },
+   {
+    "k": 3,
+    "rate": 3.07,
+    "artic": 4.55,
+    "maxPause": 590,
+    "score": 1.71
+   }
+  ]
+ },
+ "m09_3": {
+  "pick": 2,
+  "takes": [
+   {
+    "k": 1,
+    "rate": 4.61,
+    "artic": 4.61,
+    "maxPause": 0,
+    "score": 4.61
+   },
+   {
+    "k": 2,
+    "rate": 4.9,
+    "artic": 5.56,
+    "maxPause": 170,
+    "score": 4.9
+   },
+   {
+    "k": 3,
+    "rate": 4.86,
+    "artic": 5.88,
+    "maxPause": 200,
+    "score": 4.86
+   }
+  ]
+ },
+ "m10_2": {
+  "pick": 2,
+  "takes": [
+   {
+    "k": 1,
+    "rate": 3.38,
+    "artic": 5.52,
+    "maxPause": 830,
+    "score": 1.06
+   },
+   {
+    "k": 2,
+    "rate": 3.8,
+    "artic": 5.81,
+    "maxPause": 570,
+    "score": 2.52
+   },
+   {
+    "k": 3,
+    "rate": 3.35,
+    "artic": 4.71,
+    "maxPause": 500,
+    "score": 2.35
+   }
+  ]
+ },
+ "m11_1": {
+  "pick": 1,
+  "takes": [
+   {
+    "k": 1,
+    "rate": 3.89,
+    "artic": 4.78,
+    "maxPause": 320,
+    "score": 3.61
+   },
+   {
+    "k": 2,
+    "rate": 3.61,
+    "artic": 4.95,
+    "maxPause": 400,
+    "score": 3.01
+   },
+   {
+    "k": 3,
+    "rate": 4.02,
+    "artic": 5.32,
+    "maxPause": 360,
+    "score": 3.58
+   }
+  ]
+ },
+ "m11_4": {
+  "source": "assets/voice_audition/mainspring2/m11_4_xy.mp3"
+ },
+ "m11_5": {
+  "pick": 3,
+  "takes": [
+   {
+    "k": 1,
+    "rate": 3.23,
+    "artic": 3.23,
+    "maxPause": 0,
+    "score": 3.23
+   },
+   {
+    "k": 2,
+    "rate": 3.08,
+    "artic": 3.08,
+    "maxPause": 0,
+    "score": 3.08
+   },
+   {
+    "k": 3,
+    "rate": 3.45,
+    "artic": 3.45,
+    "maxPause": 0,
+    "score": 3.45
+   }
+  ]
+ },
+ "m11_6": {
+  "source": "assets/voice_audition/mainspring2/m11_6_xy.mp3"
+ },
+ "m11_7": {
+  "pick": 3,
+  "takes": [
+   {
+    "k": 1,
+    "rate": 4.69,
+    "artic": 4.69,
+    "maxPause": 0,
+    "score": 4.69
+   },
+   {
+    "k": 2,
+    "rate": 4.17,
+    "artic": 4.17,
+    "maxPause": 0,
+    "score": 4.17
+   },
+   {
+    "k": 3,
+    "rate": 4.76,
+    "artic": 4.76,
+    "maxPause": 0,
+    "score": 4.76
+   }
+  ]
+ },
+ "m11_8": {
+  "source": "assets/voice_audition/mainspring2/m11_8_xy.mp3"
+ },
+ "m12_1": {
+  "pick": 3,
+  "takes": [
+   {
+    "k": 1,
+    "rate": 2.8,
+    "artic": 3.96,
+    "maxPause": 650,
+    "score": 1.2
+   },
+   {
+    "k": 2,
+    "rate": 2.75,
+    "artic": 3.45,
+    "maxPause": 670,
+    "score": 1.07
+   },
+   {
+    "k": 3,
+    "rate": 3.28,
+    "artic": 4.14,
+    "maxPause": 480,
+    "score": 2.36
+   }
+  ]
+ },
+ "m12_3": {
+  "source": "assets/voice_audition/mainspring2/m12_3_xy.mp3"
+ },
+ "m12_4": {
+  "source": "assets/voice_audition/mainspring2/m12_4_xy.mp3"
+ },
+ "m12_5": {
+  "source": "assets/voice_audition/mainspring2/m12_5_xy.mp3"
+ },
+ "m13_2": {
+  "pick": 1,
+  "takes": [
+   {
+    "k": 1,
+    "rate": 4.12,
+    "artic": 6.22,
+    "maxPause": 420,
+    "score": 3.44
+   },
+   {
+    "k": 2,
+    "rate": 4.21,
+    "artic": 6.56,
+    "maxPause": 560,
+    "score": 2.97
+   },
+   {
+    "k": 3,
+    "rate": 4.38,
+    "artic": 6.19,
+    "maxPause": 590,
+    "score": 3.02
+   }
+  ]
+ },
+ "m13_3": {
+  "pick": 1,
+  "takes": [
+   {
+    "k": 1,
+    "rate": 2.94,
+    "artic": 4.05,
+    "maxPause": 380,
+    "score": 2.42
+   },
+   {
+    "k": 2,
+    "rate": 3.3,
+    "artic": 4.72,
+    "maxPause": 810,
+    "score": 1.06
+   },
+   {
+    "k": 3,
+    "rate": 3.42,
+    "artic": 5.7,
+    "maxPause": 520,
+    "score": 2.34
+   }
+  ]
+ },
+ "m14_1": {
+  "pick": 3,
+  "takes": [
+   {
+    "k": 1,
+    "rate": 4.48,
+    "artic": 6.09,
+    "maxPause": 540,
+    "score": 3.32
+   },
+   {
+    "k": 2,
+    "rate": 4.2,
+    "artic": 5.66,
+    "maxPause": 530,
+    "score": 3.08
+   },
+   {
+    "k": 3,
+    "rate": 4.6,
+    "artic": 5.97,
+    "maxPause": 360,
+    "score": 4.16
+   }
+  ]
+ },
+ "m14_3": {
+  "pick": 2,
+  "takes": [
+   {
+    "k": 1,
+    "rate": 3.6,
+    "artic": 5.24,
+    "maxPause": 940,
+    "score": 0.84
+   },
+   {
+    "k": 2,
+    "rate": 3.63,
+    "artic": 4.56,
+    "maxPause": 600,
+    "score": 2.23
+   },
+   {
+    "k": 3,
+    "rate": 3.83,
+    "artic": 5.44,
+    "maxPause": 880,
+    "score": 1.31
+   }
+  ]
+ },
+ "m15_3": {
+  "pick": 1,
+  "takes": [
+   {
+    "k": 1,
+    "rate": 3.88,
+    "artic": 5.26,
+    "maxPause": 130,
+    "score": 3.88
+   },
+   {
+    "k": 2,
+    "rate": 3.33,
+    "artic": 4.35,
+    "maxPause": 260,
+    "score": 3.29
+   },
+   {
+    "k": 3,
+    "rate": 3.46,
+    "artic": 4.52,
+    "maxPause": 240,
+    "score": 3.46
+   }
+  ]
+ },
+ "m15_4": {
+  "pick": 3,
+  "takes": [
+   {
+    "k": 1,
+    "rate": 2.19,
+    "artic": 4.27,
+    "maxPause": 1250,
+    "score": -1.81
+   },
+   {
+    "k": 2,
+    "rate": 2.2,
+    "artic": 3.68,
+    "maxPause": 1070,
+    "score": -1.08
+   },
+   {
+    "k": 3,
+    "rate": 2.99,
+    "artic": 5.26,
+    "maxPause": 910,
+    "score": 0.35
+   }
+  ]
+ },
+ "m15_7": {
+  "pick": 3,
+  "takes": [
+   {
+    "k": 1,
+    "rate": 2.22,
+    "artic": 4.86,
+    "maxPause": 900,
+    "score": -0.38
+   },
+   {
+    "k": 2,
+    "rate": 2.32,
+    "artic": 4.67,
+    "maxPause": 780,
+    "score": 0.2
+   },
+   {
+    "k": 3,
+    "rate": 2.37,
+    "artic": 4.38,
+    "maxPause": 720,
+    "score": 0.49
+   }
+  ]
+ },
+ "m16_1": {
+  "pick": 1,
+  "takes": [
+   {
+    "k": 1,
+    "rate": 4.78,
+    "artic": 7.36,
+    "maxPause": 710,
+    "score": 2.94
+   },
+   {
+    "k": 2,
+    "rate": 3.93,
+    "artic": 6.12,
+    "maxPause": 690,
+    "score": 2.17
+   },
+   {
+    "k": 3,
+    "rate": 3.31,
+    "artic": 5.69,
+    "maxPause": 1070,
+    "score": 0.03
+   }
+  ]
+ },
+ "m16_2": {
+  "source": "assets/voice_audition/mainspring2/m16_2_xy.mp3"
+ },
+ "m16_3": {
+  "pick": 1,
+  "takes": [
+   {
+    "k": 1,
+    "rate": 4.8,
+    "artic": 5.82,
+    "maxPause": 240,
+    "score": 4.8
+   },
+   {
+    "k": 2,
+    "rate": 4.31,
+    "artic": 4.93,
+    "maxPause": 250,
+    "score": 4.31
+   },
+   {
+    "k": 3,
+    "rate": 4.38,
+    "artic": 5.47,
+    "maxPause": 440,
+    "score": 3.62
+   }
+  ]
+ },
+ "m16_4": {
+  "pick": 1,
+  "takes": [
+   {
+    "k": 1,
+    "rate": 3.37,
+    "artic": 3.93,
+    "maxPause": 260,
+    "score": 3.33
+   },
+   {
+    "k": 2,
+    "rate": 3.32,
+    "artic": 4.25,
+    "maxPause": 270,
+    "score": 3.24
+   },
+   {
+    "k": 3,
+    "rate": 3.64,
+    "artic": 4.69,
+    "maxPause": 430,
+    "score": 2.92
+   }
+  ]
+ },
+ "m17_2": {
+  "pick": 1,
+  "takes": [
+   {
+    "k": 1,
+    "rate": 4.25,
+    "artic": 5.33,
+    "maxPause": 460,
+    "score": 3.41
+   },
+   {
+    "k": 2,
+    "rate": 3.9,
+    "artic": 5.56,
+    "maxPause": 730,
+    "score": 1.98
+   },
+   {
+    "k": 3,
+    "rate": 3.78,
+    "artic": 5.28,
+    "maxPause": 780,
+    "score": 1.66
+   }
+  ]
+ },
+ "m17_3": {
+  "pick": 1,
+  "takes": [
+   {
+    "k": 1,
+    "rate": 4.8,
+    "artic": 5.91,
+    "maxPause": 250,
+    "score": 4.8
+   },
+   {
+    "k": 2,
+    "rate": 3.29,
+    "artic": 4.4,
+    "maxPause": 720,
+    "score": 1.41
+   },
+   {
+    "k": 3,
+    "rate": 3.42,
+    "artic": 4.25,
+    "maxPause": 430,
+    "score": 2.7
+   }
+  ]
+ },
+ "m18_1": {
+  "pick": 1,
+  "takes": [
+   {
+    "k": 1,
+    "rate": 2.71,
+    "artic": 5.75,
+    "maxPause": 960,
+    "score": -0.13
+   },
+   {
+    "k": 2,
+    "rate": 2.37,
+    "artic": 5.03,
+    "maxPause": 1050,
+    "score": -0.83
+   },
+   {
+    "k": 3,
+    "rate": 2.53,
+    "artic": 5.92,
+    "maxPause": 1080,
+    "score": -0.79
+   }
+  ]
+ },
+ "m18_3": {
+  "source": "assets/voice_audition/mainspring2/m18_3_xy.mp3"
+ },
+ "m18_4": {
+  "pick": 1,
+  "takes": [
+   {
+    "k": 1,
+    "rate": 3.06,
+    "artic": 3.21,
+    "maxPause": 60,
+    "score": 3.06
+   },
+   {
+    "k": 2,
+    "rate": 2.76,
+    "artic": 3.55,
+    "maxPause": 250,
+    "score": 2.76
+   },
+   {
+    "k": 3,
+    "rate": 3.03,
+    "artic": 3.89,
+    "maxPause": 300,
+    "score": 2.83
+   }
+  ]
+ },
+ "m19_2": {
+  "pick": 2,
+  "takes": [
+   {
+    "k": 1,
+    "rate": 2.94,
+    "artic": 4.56,
+    "maxPause": 670,
+    "score": 1.26
+   },
+   {
+    "k": 2,
+    "rate": 3.15,
+    "artic": 4.44,
+    "maxPause": 400,
+    "score": 2.55
+   },
+   {
+    "k": 3,
+    "rate": 3,
+    "artic": 4.4,
+    "maxPause": 600,
+    "score": 1.6
+   }
+  ]
+ },
+ "m19_4": {
+  "pick": 2,
+  "takes": [
+   {
+    "k": 1,
+    "rate": 3.06,
+    "artic": 4.45,
+    "maxPause": 1130,
+    "score": -0.46
+   },
+   {
+    "k": 2,
+    "rate": 3.56,
+    "artic": 4.55,
+    "maxPause": 670,
+    "score": 1.88
+   },
+   {
+    "k": 3,
+    "rate": 3.61,
+    "artic": 4.8,
+    "maxPause": 760,
+    "score": 1.57
+   }
+  ]
+ },
+ "m20_1": {
+  "pick": 2,
+  "takes": [
+   {
+    "k": 1,
+    "rate": 3.2,
+    "artic": 4.85,
+    "maxPause": 760,
+    "score": 1.16
+   },
+   {
+    "k": 2,
+    "rate": 3.16,
+    "artic": 4.97,
+    "maxPause": 670,
+    "score": 1.48
+   },
+   {
+    "k": 3,
+    "rate": 3.4,
+    "artic": 5.93,
+    "maxPause": 870,
+    "score": 0.92
+   }
+  ]
+ },
+ "m20_4": {
+  "pick": 2,
+  "takes": [
+   {
+    "k": 1,
+    "rate": 5.19,
+    "artic": 6.14,
+    "maxPause": 110,
+    "score": 5.19
+   },
+   {
+    "k": 2,
+    "rate": 6.31,
+    "artic": 7.78,
+    "maxPause": 210,
+    "score": 6.31
+   },
+   {
+    "k": 3,
+    "rate": 4.9,
+    "artic": 6.67,
+    "maxPause": 270,
+    "score": 4.82
+   }
+  ]
+ },
+ "m20_5": {
+  "source": "assets/voice_audition/mainspring2/m20_5_xy.mp3"
+ },
+ "m21_1": {
+  "pick": 3,
+  "takes": [
+   {
+    "k": 1,
+    "rate": 2.86,
+    "artic": 6.63,
+    "maxPause": 1200,
+    "score": -0.94
+   },
+   {
+    "k": 2,
+    "rate": 2.9,
+    "artic": 6.36,
+    "maxPause": 1730,
+    "score": -3.02
+   },
+   {
+    "k": 3,
+    "rate": 2.81,
+    "artic": 6.36,
+    "maxPause": 1100,
+    "score": -0.59
+   }
+  ]
+ },
+ "m21_2": {
+  "source": "assets/voice_audition/mainspring2/m21_2_xy.mp3"
+ },
+ "m21_3": {
+  "pick": 2,
+  "takes": [
+   {
+    "k": 1,
+    "rate": 2.9,
+    "artic": 5.16,
+    "maxPause": 520,
+    "score": 1.82
+   },
+   {
+    "k": 2,
+    "rate": 3.83,
+    "artic": 5.06,
+    "maxPause": 180,
+    "score": 3.83
+   },
+   {
+    "k": 3,
+    "rate": 2.59,
+    "artic": 4.82,
+    "maxPause": 720,
+    "score": 0.71
+   }
+  ]
+ },
+ "m21_4": {
+  "source": "assets/voice_audition/mainspring2/m21_4_xy.mp3"
+ },
+ "m21_5": {
+  "source": "assets/voice_audition/mainspring2/m21_5_xy.mp3"
+ },
+ "m21_6": {
+  "source": "assets/voice_audition/mainspring2/m21_6_xy.mp3"
+ },
+ "tunnel_1": {
+  "pick": 2,
+  "takes": [
+   {
+    "k": 1,
+    "rate": 5.33,
+    "artic": 5.33,
+    "maxPause": 0,
+    "score": 5.33
+   },
+   {
+    "k": 2,
+    "rate": 5.84,
+    "artic": 6.3,
+    "maxPause": 50,
+    "score": 5.84
+   },
+   {
+    "k": 3,
+    "rate": 5.23,
+    "artic": 5.63,
+    "maxPause": 60,
+    "score": 5.23
+   }
+  ]
+ },
+ "tunnel_2": {
+  "pick": 1,
+  "takes": [
+   {
+    "k": 1,
+    "rate": 5,
+    "artic": 5.31,
+    "maxPause": 70,
+    "score": 5
+   },
+   {
+    "k": 2,
+    "rate": 4.84,
+    "artic": 5.61,
+    "maxPause": 90,
+    "score": 4.84
+   },
+   {
+    "k": 3,
+    "rate": 5,
+    "artic": 5.45,
+    "maxPause": 100,
+    "score": 5
+   }
+  ]
+ },
+ "tunnel_3": {
+  "pick": 2,
+  "takes": [
+   {
+    "k": 1,
+    "rate": 3.3,
+    "artic": 3.85,
+    "maxPause": 260,
+    "score": 3.26
+   },
+   {
+    "k": 2,
+    "rate": 3.64,
+    "artic": 4,
+    "maxPause": 80,
+    "score": 3.64
+   },
+   {
+    "k": 3,
+    "rate": 3.05,
+    "artic": 3.28,
+    "maxPause": 80,
+    "score": 3.05
+   }
+  ]
+ },
+ "wso_1": {
+  "pick": 1,
+  "takes": [
+   {
+    "k": 1,
+    "rate": 4.52,
+    "artic": 5.74,
+    "maxPause": 90,
+    "score": 4.52
+   },
+   {
+    "k": 2,
+    "rate": 4.27,
+    "artic": 5.07,
+    "maxPause": 140,
+    "score": 4.27
+   },
+   {
+    "k": 3,
+    "rate": 4.09,
+    "artic": 4.9,
+    "maxPause": 140,
+    "score": 4.09
+   }
+  ]
+ },
+ "wso_10": {
+  "pick": 3,
+  "takes": [
+   {
+    "k": 1,
+    "rate": 3.93,
+    "artic": 5.39,
+    "maxPause": 430,
+    "score": 3.21
+   },
+   {
+    "k": 2,
+    "rate": 3.72,
+    "artic": 5.03,
+    "maxPause": 310,
+    "score": 3.48
+   },
+   {
+    "k": 3,
+    "rate": 5.17,
+    "artic": 5.81,
+    "maxPause": 110,
+    "score": 5.17
+   }
+  ]
+ },
+ "wso_11": {
+  "pick": 2,
+  "takes": [
+   {
+    "k": 1,
+    "rate": 5.5,
+    "artic": 6.28,
+    "maxPause": 180,
+    "score": 5.5
+   },
+   {
+    "k": 2,
+    "rate": 6.06,
+    "artic": 6.82,
+    "maxPause": 130,
+    "score": 6.06
+   },
+   {
+    "k": 3,
+    "rate": 4.76,
+    "artic": 5.63,
+    "maxPause": 100,
+    "score": 4.76
+   }
+  ]
+ },
+ "wso_12": {
+  "pick": 3,
+  "takes": [
+   {
+    "k": 1,
+    "rate": 3.91,
+    "artic": 5.88,
+    "maxPause": 90,
+    "score": 3.91
+   },
+   {
+    "k": 2,
+    "rate": 4.1,
+    "artic": 6.41,
+    "maxPause": 170,
+    "score": 4.1
+   },
+   {
+    "k": 3,
+    "rate": 4.17,
+    "artic": 5.95,
+    "maxPause": 160,
+    "score": 4.17
+   }
+  ]
+ },
+ "wso_13": {
+  "pick": 2,
+  "takes": [
+   {
+    "k": 1,
+    "rate": 4.59,
+    "artic": 5.77,
+    "maxPause": 350,
+    "score": 4.19
+   },
+   {
+    "k": 2,
+    "rate": 5.42,
+    "artic": 6,
+    "maxPause": 160,
+    "score": 5.42
+   },
+   {
+    "k": 3,
+    "rate": 5.23,
+    "artic": 5.63,
+    "maxPause": 120,
+    "score": 5.23
+   }
+  ]
+ },
+ "wso_14": {
+  "pick": 3,
+  "takes": [
+   {
+    "k": 1,
+    "rate": 6.67,
+    "artic": 7.55,
+    "maxPause": 70,
+    "score": 6.67
+   },
+   {
+    "k": 2,
+    "rate": 6.35,
+    "artic": 6.35,
+    "maxPause": 0,
+    "score": 6.35
+   },
+   {
+    "k": 3,
+    "rate": 6.78,
+    "artic": 7.55,
+    "maxPause": 60,
+    "score": 6.78
+   }
+  ]
+ },
+ "wso_15": {
+  "pick": 2,
+  "takes": [
+   {
+    "k": 1,
+    "rate": 3.76,
+    "artic": 4.85,
+    "maxPause": 180,
+    "score": 3.76
+   },
+   {
+    "k": 2,
+    "rate": 4.67,
+    "artic": 6.1,
+    "maxPause": 140,
+    "score": 4.67
+   },
+   {
+    "k": 3,
+    "rate": 4.35,
+    "artic": 6.49,
+    "maxPause": 170,
+    "score": 4.35
+   }
+  ]
+ },
+ "wso_16": {
+  "pick": 2,
+  "takes": [
+   {
+    "k": 1,
+    "rate": 3.62,
+    "artic": 4.27,
+    "maxPause": 150,
+    "score": 3.62
+   },
+   {
+    "k": 2,
+    "rate": 4.39,
+    "artic": 4.72,
+    "maxPause": 80,
+    "score": 4.39
+   },
+   {
+    "k": 3,
+    "rate": 4.24,
+    "artic": 4.63,
+    "maxPause": 100,
+    "score": 4.24
+   }
+  ]
+ },
+ "wso_17": {
+  "pick": 1,
+  "takes": [
+   {
+    "k": 1,
+    "rate": 3.68,
+    "artic": 4.55,
+    "maxPause": 170,
+    "score": 3.68
+   },
+   {
+    "k": 2,
+    "rate": 3.45,
+    "artic": 4.13,
+    "maxPause": 160,
+    "score": 3.45
+   },
+   {
+    "k": 3,
+    "rate": 3.45,
+    "artic": 3.97,
+    "maxPause": 120,
+    "score": 3.45
+   }
+  ]
+ },
+ "wso_2": {
+  "pick": 1,
+  "takes": [
+   {
+    "k": 1,
+    "rate": 5,
+    "artic": 5.76,
+    "maxPause": 130,
+    "score": 5
+   },
+   {
+    "k": 2,
+    "rate": 4.3,
+    "artic": 5.06,
+    "maxPause": 180,
+    "score": 4.3
+   },
+   {
+    "k": 3,
+    "rate": 4.57,
+    "artic": 5.37,
+    "maxPause": 140,
+    "score": 4.57
+   }
+  ]
+ },
+ "wso_3": {
+  "pick": 1,
+  "takes": [
+   {
+    "k": 1,
+    "rate": 5.11,
+    "artic": 7.37,
+    "maxPause": 200,
+    "score": 5.11
+   },
+   {
+    "k": 2,
+    "rate": 4.44,
+    "artic": 5.98,
+    "maxPause": 220,
+    "score": 4.44
+   },
+   {
+    "k": 3,
+    "rate": 4.86,
+    "artic": 6.67,
+    "maxPause": 280,
+    "score": 4.74
+   }
+  ]
+ },
+ "wso_4": {
+  "pick": 3,
+  "takes": [
+   {
+    "k": 1,
+    "rate": 4.73,
+    "artic": 5.1,
+    "maxPause": 120,
+    "score": 4.73
+   },
+   {
+    "k": 2,
+    "rate": 4.76,
+    "artic": 5.63,
+    "maxPause": 170,
+    "score": 4.76
+   },
+   {
+    "k": 3,
+    "rate": 4.91,
+    "artic": 5.88,
+    "maxPause": 170,
+    "score": 4.91
+   }
+  ]
+ },
+ "wso_5": {
+  "pick": 3,
+  "takes": [
+   {
+    "k": 1,
+    "rate": 4.49,
+    "artic": 5.74,
+    "maxPause": 210,
+    "score": 4.49
+   },
+   {
+    "k": 2,
+    "rate": 4.29,
+    "artic": 5.88,
+    "maxPause": 240,
+    "score": 4.29
+   },
+   {
+    "k": 3,
+    "rate": 5.22,
+    "artic": 6.36,
+    "maxPause": 100,
+    "score": 5.22
+   }
+  ]
+ },
+ "wso_7": {
+  "pick": 1,
+  "takes": [
+   {
+    "k": 1,
+    "rate": 4.72,
+    "artic": 5.68,
+    "maxPause": 130,
+    "score": 4.72
+   },
+   {
+    "k": 2,
+    "rate": 4.27,
+    "artic": 5.15,
+    "maxPause": 200,
+    "score": 4.27
+   },
+   {
+    "k": 3,
+    "rate": 4.2,
+    "artic": 4.72,
+    "maxPause": 130,
+    "score": 4.2
+   }
+  ]
+ },
+ "wso_8": {
+  "pick": 1,
+  "takes": [
+   {
+    "k": 1,
+    "rate": 3.36,
+    "artic": 4.24,
+    "maxPause": 250,
+    "score": 3.36
+   },
+   {
+    "k": 2,
+    "rate": 3.23,
+    "artic": 3.94,
+    "maxPause": 230,
+    "score": 3.23
+   },
+   {
+    "k": 3,
+    "rate": 3.33,
+    "artic": 3.82,
+    "maxPause": 120,
+    "score": 3.33
+   }
+  ]
+ },
+ "wso_9": {
+  "pick": 1,
+  "takes": [
+   {
+    "k": 1,
+    "rate": 3.51,
+    "artic": 3.88,
+    "maxPause": 110,
+    "score": 3.51
+   },
+   {
+    "k": 2,
+    "rate": 3.13,
+    "artic": 3.77,
+    "maxPause": 170,
+    "score": 3.13
+   },
+   {
+    "k": 3,
+    "rate": 2.82,
+    "artic": 3.81,
+    "maxPause": 280,
+    "score": 2.7
+   }
+  ]
+ },
+ "wso_lock_1": {
+  "pick": 3,
+  "takes": [
+   {
+    "k": 1,
+    "rate": 5.26,
+    "artic": 7.14,
+    "maxPause": 90,
+    "score": 5.26
+   },
+   {
+    "k": 2,
+    "rate": 7.69,
+    "artic": 10,
+    "maxPause": 90,
+    "score": -92.31
+   },
+   {
+    "k": 3,
+    "rate": 6.25,
+    "artic": 6.25,
+    "maxPause": 0,
+    "score": 6.25
+   }
+  ]
+ },
+ "wso_lock_2": {
+  "pick": 2,
+  "takes": [
+   {
+    "k": 1,
+    "rate": 4.44,
+    "artic": 5.06,
+    "maxPause": 60,
+    "score": 4.44
+   },
+   {
+    "k": 2,
+    "rate": 4.6,
+    "artic": 5.06,
+    "maxPause": 80,
+    "score": 4.6
+   },
+   {
+    "k": 3,
+    "rate": 3.74,
+    "artic": 4.82,
+    "maxPause": 180,
+    "score": 3.74
+   }
+  ]
+ },
+ "wso_lock_3": {
+  "pick": 3,
+  "takes": [
+   {
+    "k": 1,
+    "rate": 3.13,
+    "artic": 4.23,
+    "maxPause": 250,
+    "score": 3.13
+   },
+   {
+    "k": 2,
+    "rate": 3.23,
+    "artic": 4.05,
+    "maxPause": 190,
+    "score": 3.23
+   },
+   {
+    "k": 3,
+    "rate": 3.45,
+    "artic": 4.84,
+    "maxPause": 250,
+    "score": 3.45
+   }
+  ]
+ },
+ "wso_lock_4": {
+  "pick": 3,
+  "takes": [
+   {
+    "k": 1,
+    "rate": 4.12,
+    "artic": 5.26,
+    "maxPause": 100,
+    "score": 4.12
+   },
+   {
+    "k": 2,
+    "rate": 4.44,
+    "artic": 5.19,
+    "maxPause": 130,
+    "score": 4.44
+   },
+   {
+    "k": 3,
+    "rate": 5,
+    "artic": 5.48,
+    "maxPause": 70,
+    "score": 5
+   }
+  ]
+ },
+ "wso_lock_5": {
+  "pick": 3,
+  "takes": [
+   {
+    "k": 1,
+    "rate": 3.81,
+    "artic": 4.65,
+    "maxPause": 190,
+    "score": 3.81
+   },
+   {
+    "k": 2,
+    "rate": 4.3,
+    "artic": 4.94,
+    "maxPause": 120,
+    "score": 4.3
+   },
+   {
+    "k": 3,
+    "rate": 4.4,
+    "artic": 6.15,
+    "maxPause": 260,
+    "score": 4.36
+   }
+  ]
+ },
+ "wso_lock_6": {
+  "pick": 1,
+  "takes": [
+   {
+    "k": 1,
+    "rate": 4.31,
+    "artic": 5.38,
+    "maxPause": 230,
+    "score": 4.31
+   },
+   {
+    "k": 2,
+    "rate": 3.91,
+    "artic": 5.32,
+    "maxPause": 290,
+    "score": 3.75
+   },
+   {
+    "k": 3,
+    "rate": 4.17,
+    "artic": 5.32,
+    "maxPause": 260,
+    "score": 4.13
+   }
+  ]
+ },
+ "wso_lock_7": {
+  "pick": 1,
+  "takes": [
+   {
+    "k": 1,
+    "rate": 3.9,
+    "artic": 4.23,
+    "maxPause": 60,
+    "score": 3.9
+   },
+   {
+    "k": 2,
+    "rate": 2.83,
+    "artic": 3.09,
+    "maxPause": 90,
+    "score": 2.83
+   },
+   {
+    "k": 3,
+    "rate": 2.83,
+    "artic": 3.12,
+    "maxPause": 100,
+    "score": 2.83
+   }
+  ]
+ },
+ "wso_lock_8": {
+  "pick": 1,
+  "takes": [
+   {
+    "k": 1,
+    "rate": 4.84,
+    "artic": 5.45,
+    "maxPause": 90,
+    "score": 4.84
+   },
+   {
+    "k": 2,
+    "rate": 4.72,
+    "artic": 5.56,
+    "maxPause": 140,
+    "score": 4.72
+   },
+   {
+    "k": 3,
+    "rate": 4.69,
+    "artic": 5.36,
+    "maxPause": 100,
+    "score": 4.69
+   }
+  ]
+ }
+}

@@ -5,8 +5,13 @@
 // The standalone page (the one GitHub Pages serves) also gets the home-screen web app tags: manifest.webmanifest and
 // icons/ (made by tools/make_icons.mjs) are copied next to it into dist/. The artifact body stays without them: the
 // claude.ai artifact has no such files next to it.
+// Streamed audio is copied next to the page too (the page fetches it per mission, relative to itself):
+//   dist/assets/dialogue/<id>.mp3     story dialogue clips (tools/build_dialogue.mjs; js/radio.js)
+//   dist/assets/music/<track>.opus|mp3  soundtrack tracks other than the embedded theme (js/music_tracks.js)
+// Without them (the old single-file artifact) the game still runs: lines play as subtitles, cues keep the embedded theme.
 import { buildSync } from 'esbuild'; // devDependency, pinned in package.json (npm ci)
-import { readFileSync, writeFileSync, mkdirSync, cpSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, cpSync, readdirSync, rmSync } from 'node:fs';
+import { MUSIC_TRACKS } from '../js/music_tracks.js';
 mkdirSync('dist', { recursive: true });
 const pageArg = process.argv.indexOf('--page');
 const page = readFileSync(pageArg > 0 ? process.argv[pageArg + 1] : 'src/page.html', 'utf8');
@@ -33,5 +38,10 @@ if (!artifact.includes(BLANK_ICON)) throw new Error('src/page.html: expected ' +
 writeFileSync('dist/wingnut_local.html', skeletonHead.replace('</head>', appHead + '</head>') + artifact.replace(BLANK_ICON, '') + skeletonTail);
 cpSync('manifest.webmanifest', 'dist/manifest.webmanifest');
 cpSync('icons', 'dist/icons', { recursive: true });
+rmSync('dist/assets', { recursive: true, force: true });
+mkdirSync('dist/assets/dialogue', { recursive: true }); mkdirSync('dist/assets/music', { recursive: true });
+let streamed = 0;
+for (const f of readdirSync('assets/dialogue')) if (f.endsWith('.mp3')) { cpSync(`assets/dialogue/${f}`, `dist/assets/dialogue/${f}`); streamed++; }
+for (const t of Object.values(MUSIC_TRACKS)) for (const u of [t.opusUrl, t.mp3Url]) if (u) { cpSync(u, `dist/${u}`); streamed++; }
 writeFileSync('dev.html', skeletonHead + page.replace('<!--SCRIPT-->', '<script type="module" src="js/main.js"></script>') + skeletonTail);
-console.log(`bundle ${(bundle.length / 1024).toFixed(0)} KB, artifact ${(artifact.length / 1024).toFixed(0)} KB`);
+console.log(`bundle ${(bundle.length / 1024).toFixed(0)} KB, artifact ${(artifact.length / 1024).toFixed(0)} KB, ${streamed} streamed audio files in dist/assets/`);

@@ -103,6 +103,7 @@ function check() {
   let n = 0, fails = 0;
   const ok = (cond, what) => { n++; if (!cond) { fails++; if (fails <= 30) console.log('CHECK FAIL ' + what); } };
   const known = new Set(I.poolTypes().map(([k, t]) => k + '|' + t));
+  ok(JSON.stringify(I.BOUNTIES) === JSON.stringify(['Q04 MAINSPRING', 'Q10 MAINSPRING']), `bounty roster ${I.BOUNTIES.join(', ')} (Mainspring's Q04 and Q10)`);
   for (let seed = 1; seed <= 40; seed++) {
     for (let r = 1; r <= 120; r++) {
       const R = I.generateRound(r, { ...runOpts, seed });

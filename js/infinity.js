@@ -17,8 +17,8 @@
 //           then holds; player armor (damage taken) follows the same
 //           curve but tops out at the Hard row (TOPS). Missiles fly the same in every round (no difficulty field): later
 //           rounds only throw more of them. Past MERC_ROUND only the target count and the mix keep growing.
-//   Bounty  Every 5th round adds one named ace with a boss bar (the types with bars, except Q12 MAINSPRING, which stays
-//           the campaign's final boss).
+//   Bounty  Every 5th round adds one named ace with a boss bar: Mainspring, back in one of her earlier jets (the types
+//           with bars, the Q04 and Q10 MAINSPRING, but not her Q12, which stays the campaign's final boss).
 //   Ammo    Killing everything in a round needs at most AMMO_SHARE of the full missile load: per unit, hits-to-kill at
 //           the round's HP scaling over a HIT_RATE of 0.6, less the squadmates' ~5 % of non-boss air kills (nothing is
 //           added for them). Loadout and damage come from the game (FLIGHT.MAX_MISSILES, Weapons.missileDamage), never
@@ -106,7 +106,7 @@ export function poolTypes() {
   return [...AIR_POOL.map(([t]) => ['air', t]), ...GROUND_POOL.map(([t]) => ['ground', t]), ...NAVAL_POOL.map(([t]) => ['naval', t])]
     .filter(([kind, t]) => typeOf(kind, t));
 }
-/** The bounty roster: types with a boss bar except the campaign's final boss, weakest first. */
+/** The bounty roster: types with a boss bar (Mainspring's Q04 and Q10) except the campaign's final boss, weakest first. */
 export const BOUNTIES = Object.freeze(Object.keys(AIRCRAFT_TYPES)
   .filter((k) => AIRCRAFT_TYPES[k].bars > 0 && k !== 'Q12 MAINSPRING')
   .sort((a, b) => AIRCRAFT_TYPES[a].hp - AIRCRAFT_TYPES[b].hp));

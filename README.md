@@ -91,7 +91,8 @@ hardware GPU under WSL2, so the Chrome path and GPU flags in `tools/lock.mjs` ma
 
 ### Regenerating assets (optional)
 
-The game ships with prebuilt audio embedded in `js/sfx_data.js`, `js/music_data.js` and `js/awacs_clips.js`.
+The game ships with prebuilt audio: embedded in `js/sfx_data.js`, `js/music_data.js` and `js/awacs_clips.js`, and
+streamed per mission from `assets/dialogue/` (story dialogue) and `assets/music/` (the Mainspring and night tracks).
 You only need the generators in `tools/` if you want to change those assets:
 
 - `tools/build_sfx.mjs`: downloads and processes the sound effects (needs ffmpeg).
@@ -99,6 +100,9 @@ You only need the generators in `tools/` if you want to change those assets:
 - `tools/gen_awacs_tts.mjs` and `tools/build_awacs.mjs`: regenerate the AWACS voice clips. The raw TTS takes are not
   in the repo; `tools/gen_awacs_tts.mjs` regenerates them into `assets/awacs/raw/` (it reads `GEMINI_API_KEY` from your
   environment), then `tools/build_awacs.mjs --retrim` trims them into `assets/awacs/` and rebuilds `js/awacs_clips.js`.
+- Story dialogue: `tools/dialogue_lines.mjs` is the script (voices and prompts in `tools/dialogue_voices.mjs`);
+  `tools/gen_dialogue_tts.mjs` generates raw takes into `assets/dialogue/raw/`, `tools/build_dialogue.mjs` trims them into
+  `assets/dialogue/` and rebuilds `js/dialogue_data.js`, and `tools/dialogue_check.mjs` checks that every line has a clip.
 
 ## Fan project notice
 

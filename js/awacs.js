@@ -6,6 +6,8 @@
 //   audioFX.unlock(); awacs.preload();   // after the user gesture; idempotent (say() also starts it lazily)
 //   awacs.say('kill', { priority: 2 });   // event keys = Object.keys(AWACS_CLIPS), see awacs.keys
 //   awacs.update(dt);                     // every frame: advances the queue
+// The game schedules its radio with js/radio.js, which uses only the direct calls (clipBuffer, transmit,
+// cutTransmission): one channel for AWACS, the WSO and Mainspring. say() and its queue remain for simple use and tests.
 //
 // Radio chain (built once per AudioContext):
 //   voice + squelch noise ─► highpass 320 Hz ─► presence +3 dB @ 1.8 kHz ─► lowpass 3200 Hz ─► tanh drive ─► lowpass 3600 Hz (Q 0.5) ─► out ─► AudioFX master
@@ -259,9 +261,35 @@ export class Awacs {
     if (!this._chain) return false;
     const vi = this._pickVariant(e);
     if (vi < 0) return false;
-    const clip = e.clips[vi], ctx = this._ctx, input = this._chain.input, cur = this._cur;
-    const t0 = now + LEAD + delay, tv = t0 + KEY_UP, dur = clip.buffer.duration, tEnd = tv + dur + TAIL;
-    const src = ctx.createBufferSource(); src.buffer = clip.buffer;
+    const clip = e.clips[vi];
+    this._transmit(clip.buffer, e.key, pr, now, delay);
+    e.last = vi; e.lastAt = now;
+    if (this.onSubtitle) { try { this.onSubtitle(clip.text, clip.buffer.duration, e.key); } catch (err) { console.error(err); } }
+    return true;
+  }
+
+  // ---- direct transmissions (js/radio.js schedules them; no queue, cooldown or subtitle here) ----------------------
+  /** Decoded buffer of AWACS event `key`, variant i (0-based), or null (not decoded yet / no such clip). */
+  clipBuffer(key, i) { const e = this._events[key]; const c = e && e.clips[i]; return (c && c.buffer) || null; }
+  /** The AudioContext the radio chain plays on (null before unlock), creating the chain if needed. */
+  context() { const ctx = this.fx && this.fx.ctx; if (!ctx || this._disposed) return null; this._ensureGraph(ctx); return ctx; }
+  /** Put `buffer` on air now through the radio chain (squelch click, voice, squelch tail), first breaking off whatever
+   *  is on air (breakIn: with a short squelch burst before the new key-up). Returns the voice length (s), 0 if no audio. */
+  transmit(buffer, { breakIn = false, label = 'radio' } = {}) {
+    const ctx = this.context();
+    if (!ctx || !buffer || !this._chain) return 0;
+    const now = ctx.currentTime, onAir = this._cur.active && now < this._cur.voiceEnd + TAIL;
+    if (onAir) this._cut(now);
+    this._transmit(buffer, label, 9, now, onAir && breakIn ? PREEMPT : 0);
+    return buffer.duration;
+  }
+  /** Break off the transmission on air (short squelch burst). */
+  cutTransmission() { if (this._ctx && this._cur.active) this._cut(this._ctx.currentTime); }
+
+  _transmit(buffer, key, pr, now, delay) {
+    const ctx = this._ctx, input = this._chain.input, cur = this._cur;
+    const t0 = now + LEAD + delay, tv = t0 + KEY_UP, dur = buffer.duration, tEnd = tv + dur + TAIL;
+    const src = ctx.createBufferSource(); src.buffer = buffer;
     const vg = ctx.createGain();
     src.connect(vg); vg.connect(input);
     src.start(tv);
@@ -278,12 +306,9 @@ export class Awacs {
     ns.start(t0, Math.random() * 0.4);
     ns.stop(tEnd + 0.01);
     ns.onended = () => { for (const n of [src, vg, ns, ng]) { try { n.disconnect(); } catch (err) { /* ignore */ } } };
-    e.last = vi; e.lastAt = now;
-    cur.active = true; cur.key = e.key; cur.priority = pr; cur.voiceEnd = tv + dur; cur.free = tEnd + GAP;
+    cur.active = true; cur.key = key; cur.priority = pr; cur.voiceEnd = tv + dur; cur.free = tEnd + GAP;
     cur.src = src; cur.vg = vg; cur.ns = ns; cur.ng = ng;
     this._busy = true;
-    if (this.onSubtitle) { try { this.onSubtitle(clip.text, dur, e.key); } catch (err) { console.error(err); } }
-    return true;
   }
 
   /** Break off the line on air: 30 ms voice fade and a short squelch burst. */

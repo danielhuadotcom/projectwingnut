@@ -19,7 +19,8 @@ import { Tunnel } from './tunnel.js';
 import { Menu, loadSettings } from './menu.js';
 import { fullscreenSupported, onFullscreenChange } from './fullscreen.js';
 import { TouchControls } from './touch.js';
-import { Music } from './music.js';
+import { MusicDirector } from './music.js';
+import { Radio } from './radio.js';
 import { Flights, SLOTS as FLIGHT_SLOTS, mulberry32, isHolding, orbitRadius, HOLD_MAX, SCRAMBLE_MAX } from './flights.js';
 import { InfinityRun, timeForRound } from './infinity.js';
 import { applyTimeOfDay, prewarmTimeOfDay, timePreset } from './timeofday.js';
@@ -97,6 +98,8 @@ const PARAMS = new URLSearchParams(location.search);
 
 const AIR_SLACK = 6000;    // m: a later phase's air groups, or a wave entering mid-phase, re-centre on a player this far
                            //   from the phase's anchor (else the authored, identical layout)
+/** A mission's soundtrack track (js/music.js TRACKS): its own, else the night track at night, else the main theme. */
+const missionTrack = (M) => (M && M.music) || (M && M.time === 'night' ? 'night' : 'epic');
 const START_BACK = 2500;   // m: the player starts this far behind the sortie frame (missions[].startBack overrides)
 const RIDGE_MARGIN = 20;   // m of clear ground kept between a land unit's footprint and the tunnel ridge's rock
 // Allied story units (missions[].allies; js/allies.js): placement
@@ -209,12 +212,16 @@ class Game {
     this._hudW = 1; this._hudH = 1;          // HUD host size in CSS px, cached by resize() (buildFrame never reads layout)
     try { if (typeof ResizeObserver === 'function') (this._hudRO = new ResizeObserver(() => this.cacheHudSize())).observe(this.hudHost); } catch (e) { /* resize() keeps it */ }
     this.audio = new AudioFX();
-    // Soundtrack ("Ceiling Unlimited"): decoded once after unlock, loops seamlessly
-    this.music = new Music(this.audio, { volume: this.settings.music ?? 0.7 });
-    this.music.setMuffled(true);   // title screen: muffled until the first sortie
-    // AWACS Claude: pre-generated radio lines, decoded once after the first user gesture unlocks audio
+    // Soundtrack (js/music.js MusicDirector): named tracks, each decoded once after unlock (streamed ones fetched when a
+    // mission first needs them), switched by the mission's track and the radio script's MUSIC cues
+    // The title and menus play "Ceiling Unlimited" (from the first gesture that unlocks audio, faded in), each mission its
+    // own track (missionTrack), crossfading both ways
+    this.music = new MusicDirector(this.audio, { volume: this.settings.music ?? 0.7, track: 'ceiling' });
+    // The radio (js/radio.js): one channel for AWACS Claude, the WSO and Mainspring. AWACS clips are decoded once after
+    // the first user gesture unlocks audio; story clips are fetched per mission
     this.radio = null;   // current radio subtitle { speaker, text, age, duration }
-    this.awacs = new Awacs(this.audio, { onSubtitle: (text, secs) => { if (this.settings.subtitles !== false) this.radio = { speaker: 'AWACS CLAUDE', text, age: 0, duration: Math.max(2.6, (secs || 2) + 0.9) }; } });
+    this.awacs = new Awacs(this.audio);
+    this.comms = new Radio(this.awacs, this.music, { wso: this.settings.wso !== false, onSubtitle: (label, text, secs) => { if (this.settings.subtitles !== false) this.radio = { speaker: label, text, age: 0, duration: Math.max(2.6, (secs || 2) + 0.9) }; } });
     this.chase = new ChaseCamera(this.camera);
 
     this.player = new Aircraft(this.scene, { team: 'player', accentColor: 0xff6a1a, position: new THREE.Vector3(0, 800, 0), heading: 0, fxQuality: PRESETS[this.quality].sub });
@@ -303,7 +310,7 @@ class Game {
     const refit = () => { if (this.glHost.clientWidth !== this.post.width || this.glHost.clientHeight !== this.post.height) this.resize(); };
     onFullscreenChange(() => { refit(); requestAnimationFrame(refit); });
     document.addEventListener('visibilitychange', () => { this.last = performance.now(); this.tabHidden(document.hidden); });
-    const gesture = () => { this.audio.unlock(); this.awacs.preload(); this.music.play(); };
+    const gesture = () => { this.audio.unlock(); this.awacs.preload(); this.music.play({ fadeIn: 1.5 }); };
     // capture phase: menu panels stop propagation of their clicks, but audio must still unlock on the first gesture
     window.addEventListener('pointerdown', () => {
       gesture();
@@ -560,7 +567,7 @@ class Game {
     if (u.pause) u.pause.hidden = s !== 'paused';
     if (u.dead) u.dead.hidden = s !== 'dead';
     if (this.touch) this.touch.setVisible(s === 'playing' ? true : s === 'paused' ? 'paused' : false);
-    if (this.music) this.music.setMuffled(s !== 'playing');
+    if (this.music) this.music.setMuffled(s === 'paused');   // the pause menu muffles the mission's track
   }
   /** Load mission i (wraps around the campaign): reset and fully rearm the player, clear the field, spawn phase 1. */
   loadMission(i) {
@@ -598,7 +605,13 @@ class Game {
     this.setState('playing');
     this.message(`MISSION ${M.id}: ${String(M.name).toUpperCase()}`, true, 4.5);
     if (M.briefing) for (const line of String(M.briefing).split(/(?<=[.!?])\s+/).slice(0, 3)) this.message(line, false, 7);
+    // radio and soundtrack: the mission's script and clips (js/radio.js), its track and the ones its phases or cues use
+    this._bossMark = null;
+    this.comms.resetMission(M, this);
+    this.music.setTrack(missionTrack(M));
+    this.music.prefetch(M.phases.map((P) => P.music).concat(this.comms.script.filter((e) => e.music && e.music.track).map((e) => e.music.track)).filter(Boolean));
     this.say('sortieStart', 3);
+    this.comms.missionStart();
     this.nextPhase();
     this.stepDown.reset();                 // the step-down judges this sortie afresh, after its load and bakes
   }
@@ -619,10 +632,12 @@ class Game {
     this.phaseIndex++;
     if (this.phaseIndex >= M.phases.length) {
       // M20: clearing the last phase starts the Glassfall ending in place of the completion (it completes the mission)
-      if (M.glassfall === 'mainspring' && !this.glassfall.played) { this.glassfall.startMainspring(); return; }
+      if (M.glassfall === 'mainspring' && !this.glassfall.played) { this.glassfall.startMainspring(); this.comms.glassfall(); return; }
       this.missionComplete(); return;
     }
     const P = M.phases[this.phaseIndex];
+    this.comms.phaseStart(this.phaseIndex + 1);   // the script's phase lines (js/radio.js), ahead of the AWACS chatter below
+    if (P.music) this.music.play(P.music, { fade: 2 });   // Mainspring's entrance: her theme
     let air = 0, ground = 0, naval = 0;
     const allowed = (this.diff || DIFFICULTY.normal).groups;
     const spawns = (g) => !g.difficulty || allowed.includes(g.difficulty);
@@ -674,15 +689,52 @@ class Game {
     const parts = [];
     if (air) parts.push(`${air} AIR`); if (ground) parts.push(`${ground} GROUND`); if (naval) parts.push(`${naval} NAVAL`);
     if (parts.length) this.message(parts.join(' · ') + ' TARGETS', false, 4);
-    if (P.glassfall) this.glassfall.startSalvos(P.glassfall);   // M15: the Thunderhead salvos (js/glassfall.js)
+    if (P.glassfall) { this.glassfall.startSalvos(P.glassfall); this.comms.glassfall(); }   // M15: the Thunderhead salvos (js/glassfall.js)
   }
   missionComplete() {
     this.missionDoneT = 0.001;
     this.player.immortal = true;           // nothing can shoot the player down from here on (Weapons: immortals take no hits)
     this.score += 3000 + 1000 * this.missionIndex;
     this.message('MISSION COMPLETE', true, 5.5);
-    this.say('missionComplete', 3);
+    // the script's completion lines replace the stock AWACS call; queued flavor and chatter are dropped (js/radio.js)
+    this.comms.complete(Math.min(this.phaseIndex + 1, this.mission.phases.length));
+    if (!this.comms.hasCompleteLines) this.say('missionComplete', 3);
     this.audio.ui('wave');
+  }
+  /** The phase is won early (phases[].endAtRemaining): every enemy still up stops fighting and flies off (no target, no
+   *  HUD count, no fire), despawning out of sight; surface units still standing stop counting. */
+  withdrawRemaining() {
+    const p = this.player;
+    let n = 0;
+    for (const e of this.enemies) {
+      if (!e.alive || e.withdrawing) continue;
+      const b = e.brain;
+      e.withdrawing = true; e.untargetable = true; e.optional = true; e.holdFire = true; e.withdrawT = this.time + 6;
+      b.passive = true; b.evasive = false; b.gunsOnly = 'none'; b.target = null; b.role = null; b.flight = null;
+      _v.subVectors(e.position, p.position); _v.y = 0;
+      if (_v.lengthSq() < 1) e.getForward(_v);
+      b.transitDir.copy(_v.normalize()); b.transitAlt = Math.max(e.position.y, 900); b.state = 'transit'; b.stateTime = 0;
+      b.setTransitGoal(null);
+      e.throttle = 1; n++;
+    }
+    for (const t of this.ground.targets) if (t.alive && t.team !== 'player') t.optional = true;
+    if (this.target && this.target.withdrawing) { this.target = null; this.lockTimer = 0; this.locked = false; }
+    this.rebuildCombatList();
+    if (n) this.message(n > 1 ? 'BANDITS WITHDRAWING' : 'BANDIT WITHDRAWING', false, 3);
+  }
+  /** Glassfall detonation n (js/glassfall.js calls this): the script's detonation lines and cues. */
+  onGlassfallDetonation(n, mode) { this.comms.detonation(n, mode); }
+  /** Mainspring is in this fight: a live MAINSPRING jet, or a phase marked mainspring (js/missions.js). */
+  mainspringInFight() {
+    const P = this.mission && this.mission.phases && this.mission.phases[this.phaseIndex];
+    if (P && P.mainspring && !this.infinity) return true;
+    for (const e of this.enemies) if (e.alive && !e.withdrawing && /MAINSPRING/.test(e.name || '')) return true;
+    return false;
+  }
+  /** Radio gate 'alone' (js/radio.js): only the boss is left flying (her wingmen are down). */
+  radioAlone() {
+    for (const e of this.enemies) if (e.alive && !e.withdrawing && !(e.bossBars > 0)) return false;
+    return true;
   }
   // ---------- INFINITY (js/infinity.js): endless rounds, one life, both squadmates ----------
   /** A new run from round 1. A run still going ends first (it counts toward the local best). The run's ramp stands in
@@ -712,6 +764,8 @@ class Game {
     if (this.audio.setPaused) this.audio.setPaused(false);
     this.setState('playing');
     this.message('INFINITY', true, 4);
+    this.comms.resetMission(null, this);
+    this.music.setTrack('epic');
     this.say('sortieStart', 3);
     this.nextRound();
   }
@@ -814,7 +868,7 @@ class Game {
    *  (bandits never hit each other; squadmates are immortal: a round stops at one with a visible hit, a missile airbursts). */
   rebuildCombatList() {
     const L = this.combatList, H = this.hostiles, E = this.enemyTargets; L.length = 0; H.length = 0; E.length = 0;
-    for (const a of this.allAircraft) { if (a === this.player) L.push(a); else if (a.alive && a.team !== 'player') { L.push(a); H.push(a); } }
+    for (const a of this.allAircraft) { if (a === this.player) L.push(a); else if (a.alive && a.team !== 'player' && !a.withdrawing) { L.push(a); H.push(a); } }
     this._nAir = H.length;
     for (const t of this.ground.targets) if (t.alive && t.team !== 'player') { L.push(t); H.push(t); }
     E.push(this.player);
@@ -1157,6 +1211,7 @@ class Game {
     if (ac.brain.passive) { ac.getForward(ac.brain.transitDir); ac.brain.transitAlt = pos.y; ac.brain.state = 'transit'; }
     ac.brain.setTransitGoal(null);                       // pooled: a leaker's goal must not carry over
     ac.holdFire = false;                                 // pooled: attack slots (updateGame) decide who may fire
+    ac.withdrawing = false; ac.untargetable = false;     // pooled: a phase won early sends its survivors home (withdrawRemaining)
     ac.name = typeName;
     if (this._spawnAtFleet) this.allied.addLeaker(ac);   // flies at the allied fleet instead (js/allies.js)
     return ac;
@@ -1382,11 +1437,11 @@ class Game {
     for (const t of this.ground.targets) if (t.alive && t.team !== 'player' && t.type === type) { x += t.position.x; z += t.position.z; n++; }
     return n ? out.set(x / n, 0, z / n) : null;
   }
-  /** AWACS radio line (wired to js/awacs.js when present). */
-  say(key, priority = 1, cooldown) {
-    if (!this.awacs) return;
-    const urgent = key === 'missileIncoming' || key === 'pullUp' || key === 'playerDown' || key === 'tunnelCrash';
-    this.awacs.say(key, cooldown !== undefined ? { priority: urgent ? 4 : priority, cooldown } : { priority: urgent ? 4 : priority });
+  /** An AWACS radio event (js/awacs_clips.js key), scheduled by js/radio.js: the WSO may take it, and its priority class
+   *  comes from the key. priority is kept for the call sites' readability; subject = the aircraft the call is about. */
+  say(key, priority = 1, cooldown, subject = null) {
+    if (!this.comms) return;
+    this.comms.say(key, cooldown !== undefined ? { cooldown, subject } : { subject });
   }
   die(reason, fxDone = false) {
     if (!this.player.alive) return;
@@ -1396,7 +1451,7 @@ class Game {
     this.post.flash(0.8); this.post.damage(1);
     this.audio.ui('dead');
     this.deadTimer = 0; this.deadReason = reason;
-    this.say('playerDown', 3);
+    this.comms.playerDown(this.mainspringInFight());   // "Typical." while Mainspring is in the fight, else AWACS
     this.audio.lockTone('none'); this.audio.missileWarning(false); this.audio.pullUpWarning(false);
   }
   message(text, big = false, duration = 2.5) {
@@ -1438,7 +1493,8 @@ class Game {
       this.message(isGround ? 'GROUND TARGET DESTROYED' : 'TARGET DESTROYED', true, 2.2); this.audio.ui('kill');
       const t = this.time; this.killTimes.push(t);
       while (this.killTimes.length && t - this.killTimes[0] > 12) this.killTimes.shift();
-      if (this.killTimes.length === 3) this.say('streak', 2); else this.say(isGround ? 'groundKill' : 'kill', 2);
+      if (this.killTimes.length === 3) this.say('streak', 2); else this.say(isGround ? 'groundKill' : 'kill', 2, undefined, target);
+      if (!isGround) this.comms.firstKill();   // the script's first-kill line, on the first aircraft (M1: "Scratch one floatplane")
     } else this.message(target.isGround ? 'TARGET DESTROYED' : 'BANDIT DOWN', false, 2);
     if (this.target === target) { this.target = null; this.lockTimer = 0; this.locked = false; }
   }
@@ -1479,9 +1535,9 @@ class Game {
     const prof = this.profiler; prof.cpuBegin('logic');
     const input = this.input; input.update(dt);
     const titleReady = performance.now() - this.bootAt > 600;
-    if (input.anyPressed) { this.audio.unlock(); this.awacs.preload(); this.music.play(); }
+    if (input.anyPressed) { this.audio.unlock(); this.awacs.preload(); this.music.play({ fadeIn: 1.5 }); }   // (gamepad presses too)
     this.awacs.update(dt);
-    this.music.duck(!!this.awacs.speaking);
+    this.comms.update(dt, this.state !== 'paused' && this.state !== 'title');   // (it ducks the music while a line is on air)
 
     // Global state input: the menu module owns title/pause/debrief/settings navigation
     if (this.menu && this.menu.open) this.menu.update(dt, input);
@@ -1657,6 +1713,9 @@ class Game {
     let aliveEnemies = 0;
     for (let i = 0; i < this.enemies.length; i++) {
       const e = this.enemies[i]; if (!e.alive) continue;
+      if (e.withdrawing && (this.time > e.withdrawT || e.position.distanceToSquared(p.position) > 7000 * 7000)) {   // gone home
+        e.kill(); e.withdrawing = false; this.combatDirty = true; continue;
+      }
       e.brain.update(dt, e.brain.target || p, world, weapons, this.time);
       e.update(dt);
       const h = Math.max(world.getHeight(e.position.x, e.position.z), 0);
@@ -1687,7 +1746,7 @@ class Game {
       for (const e of this.enemies) {
         if (!e.alive || (e.brain && e.brain.passive)) continue;
         _v.subVectors(e.position, p.position); const d = _v.length();
-        if (d < 900 && _v.dot(_fwd) < -0.6 * d) { this.say('checkSix', 2, 14); break; }
+        if (d < 900 && _v.dot(_fwd) < -0.6 * d) { this.say('checkSix', 2, 14, e); break; }
       }
     }
     // Weapons (ignored briefly after launch so the start button doesn't fire)
@@ -1725,9 +1784,28 @@ class Game {
     // Mission progression: a phase is cleared when no enemy aircraft or ground/naval targets remain (friendlies don't count)
     let surfaceAlive = 0;
     for (const t of this.ground.targets) if (t.alive && !t.optional && t.team !== 'player') surfaceAlive++;
+    // a phase won early (phases[].endAtRemaining, M6 and M11): with that many required enemies left, they withdraw
+    { const P = !this.infinity && this.missionDoneT <= 0 && this.mission.phases[this.phaseIndex], left = aliveEnemies + surfaceAlive;
+      if (P && P.endAtRemaining && p.alive && this._phaseLive && left > 0 && left <= P.endAtRemaining && !(this._pending && this._pending.length) && !this.glassfall.active) {
+        this.withdrawRemaining(); aliveEnemies = 0; surfaceAlive = 0;
+      } }
+    // the boss's health marks for the radio script (js/radio.js: 50 % and 25 %)
+    { let boss = null;
+      for (const e of this.enemies) if (e.alive && e.bossBars > 0 && !e.withdrawing) { boss = e; break; }
+      if (boss) {
+        if (this._bossMark !== boss.bornAt) { this._bossMark = boss.bornAt; this.comms.bossMarks = {}; }   // a new boss: fresh marks
+        const f = boss.health / (boss.maxHealth || 1);
+        if (f <= 0.5) this.comms.boss(50);
+        if (f <= 0.25) this.comms.boss(25);
+      } }
     if (this.missionDoneT > 0) {
       this.missionDoneT += dt;
-      if (this.missionDoneT > 4.5) { this.missionDoneT = 0; this.setState('complete'); this.showDebrief(true); }
+      // the debrief waits for the script's completion lines (up to the radio's cap), then the queue goes
+      if (this.missionDoneT > 4.5 && (!this.comms.plotPending || this.missionDoneT > 4.5 + this.comms.debriefCap)) {
+        this.missionDoneT = 0; this.comms.flush(); this.setState('complete'); this.showDebrief(true);
+        for (const e of this.enemies) if (e.alive && e.withdrawing) { e.kill(); e.withdrawing = false; this.combatDirty = true; }   // gone home
+        if (this.music.cut) this.music.cue({ action: 'resume', fade: 4 });   // back from a Glassfall cut
+      }
     } else if (this.glassfall.active) {
       // a Glassfall event runs: no phase clears (its Thunderheads are optional); it calls missionComplete when it ends
     } else if (this.infinity) {
@@ -1737,7 +1815,7 @@ class Game {
     } else if (aliveEnemies + surfaceAlive === 0 && p.alive) {
       this.waveTimer += dt;
       const last = this.phaseIndex >= this.mission.phases.length - 1;
-      if (this.waveTimer > 0.1 && this.waveTimer - dt <= 0.1 && !last) { this.score += 1000; this.message('AREA CLEAR', true, 2.5); this.say('waveClear', 2); }
+      if (this.waveTimer > 0.1 && this.waveTimer - dt <= 0.1 && !last) { this.score += 1000; this.message('AREA CLEAR', true, 2.5); this.say('waveClear', 2); this.comms.phaseClear(this.phaseIndex + 1); }
       if (this.waveTimer > (last ? 1.2 : 3.5)) { this.waveTimer = 0; this.nextPhase(); }
     } else { this.waveTimer = 0; this._phaseLive = true; }
     // Warnings & audio
@@ -1804,7 +1882,11 @@ class Game {
       this.inCone = inCone;
       this.lockTimer = (inCone || holding) ? Math.min(LOCK_TIME, this.lockTimer + dt) : Math.max(0, this.lockTimer - dt * 2.5);
       const was = this.locked; this.locked = this.lockTimer >= LOCK_TIME - 1e-6;
-      if (this.locked && !was) { this.audio.ui('select'); this.target._lockedOnce = true; }
+      if (this.locked && !was) {
+        this.audio.ui('select');
+        if (!this.target._lockedOnce) this.say('lockOn', 1, undefined, this.target);   // first lock on this target: the WSO (rate-limited in js/radio.js)
+        this.target._lockedOnce = true;
+      }
     } else { this.lockTimer = 0; this.locked = false; }
     // An evasive brain (the Glassfall's Thunderheads) weaves while the player holds or builds a lock on it
     const lk = this.target && this.target.alive && this.target.brain && (this.locked || this.lockTimer > 0.25) ? this.target.brain : null;
@@ -1932,7 +2014,7 @@ class Game {
 
   // ---------- menus, settings, touch ----------
   createMenuAndTouch() {
-    const unlock = () => { this.audio.unlock(); this.awacs.preload(); this.music.play(); };
+    const unlock = () => { this.audio.unlock(); this.awacs.preload(); this.music.play({ fadeIn: 1.5 }); };
     this.touch = new TouchControls(this.root, { onAnyTouch: unlock });
     this.input.touch = this.touch;
     this.menu = new Menu(this.root.querySelector('#ui'), {
@@ -1974,6 +2056,7 @@ class Game {
       case 'music': if (this.music && this.music.setVolume) this.music.setVolume(Number(v)); break;
       case 'sfx': if (this.audio.setSfxVolume) this.audio.setSfxVolume(Number(v)); break;
       case 'voice': if (this.awacs.setVolume) this.awacs.setVolume(Number(v)); break;
+      case 'wso': if (this.comms) this.comms.wsoOn = v !== false; break;   // WSO voice Off: AWACS makes the calls
       case 'difficulty': {
         if (this.infinity) break;          // a run follows its own ramp; the setting applies again when it ends (leaveInfinity)
         const d = this.diff = DIFFICULTY[v] || DIFFICULTY.normal;
@@ -2003,6 +2086,8 @@ class Game {
     for (const m of this.weapons.missiles) m.alive = false;
     this.messages.length = 0; this.radio = null; this.target = null;
     if (this.awacs.stop) this.awacs.stop();
+    this.comms.resetMission(null, this);
+    this.music.setTrack('ceiling', { fade: 2 });   // back to the title theme
     this.stopWarnings();                   // only the flight loop switches warning / lock tones off otherwise
     if (this.audio.setPaused) this.audio.setPaused(false);
     this.resetPlayer(); this.chase.snap(this.player);
@@ -2037,6 +2122,7 @@ class Game {
   /** Pause: no engine, tones or warnings (AudioFX.setPaused does a fast fade when available). */
   silenceGameAudio() {
     if (this.awacs && this.awacs.stop) this.awacs.stop();
+    if (this.comms) this.comms.pause();     // the line on air breaks off; the queue waits
     const a = this.audio;
     if (a.setPaused) { a.setPaused(true); return; }
     a.setEngine({ throttle: 0, speedFrac: 0, afterburner: false, alive: false });
@@ -2365,6 +2451,8 @@ class Game {
         _v.y += 0.5 * 9.81 * 0.3 * tof * tof;                    // bullet drop (weapons apply 0.3 g)
         _v.sub(gun).normalize();
         T.leadHot = _v.dot(_fwd) > Math.cos(Math.atan2(14, gd));  // gun line within the hit radius of the lead
+        if (T.leadHot && !this._gunHot && this.state === 'playing' && p.alive && !t.isGround) this.say('gunSolution', 1, undefined, t);   // the WSO: "guns!" (rate-limited)
+        this._gunHot = T.leadHot;
         _v.multiplyScalar(gd).add(gun);
         this.project(_v, T._lead);
         // smooth the marker on screen (target jitter + camera shake)
@@ -2435,7 +2523,7 @@ class Game {
     }
     // Boss health bar: the first live enemy whose type has bars (segments drain one at a time)
     let boss = null;
-    if (this.state !== 'title') for (const e of this.enemies) if (e.alive && e.bossBars > 0) { boss = e; break; }
+    if (this.state !== 'title') for (const e of this.enemies) if (e.alive && e.bossBars > 0 && !e.withdrawing) { boss = e; break; }
     if (boss) {
       const B = f._boss || (f._boss = { name: '', frac: 1, bars: 1 });
       B.name = boss.name; B.bars = boss.bossBars; B.frac = THREE.MathUtils.clamp(boss.health / (boss.maxHealth || 1), 0, 1);

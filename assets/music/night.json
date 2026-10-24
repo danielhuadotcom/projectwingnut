@@ -1,0 +1,53 @@
+{
+  "title": "Night Shift",
+  "bpm": 100,
+  "loopStart": 0,
+  "loopEnd": 153.6,
+  "duration": 154.1,
+  "sampleRate": 48000,
+  "lufs": -13.23,
+  "sections": {
+    "dusk": [
+      0,
+      19.2
+    ],
+    "patrol": [
+      19.2,
+      38.4
+    ],
+    "motif": [
+      38.4,
+      57.6
+    ],
+    "develop": [
+      57.6,
+      76.8
+    ],
+    "break": [
+      76.8,
+      96
+    ],
+    "pursuit": [
+      96,
+      115.2
+    ],
+    "peak": [
+      115.2,
+      134.4
+    ],
+    "return": [
+      134.4,
+      153.6
+    ]
+  },
+  "files": {
+    "opus": {
+      "bytes": 1870186,
+      "kbps": 96
+    },
+    "mp3": {
+      "bytes": 2466499,
+      "kbps": 128
+    }
+  }
+}

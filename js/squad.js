@@ -127,7 +127,7 @@ export class Squadron {
     if (p.alive) {
       for (let i = 0; i < enemies.length; i++) {
         const e = enemies[i];
-        if (!e.alive || isHolding(e)) continue;
+        if (!e.alive || isHolding(e) || e.withdrawing) continue;   // (withdrawing: a phase won early, js/main.js)
         any = true;
         if (e.bossBars > 0) continue;
         const d = e.position.distanceToSquared(p.position);

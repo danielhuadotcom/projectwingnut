@@ -1,0 +1,254 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8"><link rel="icon" href="data:,">
+<title>wingnut — radio test</title>
+<style>
+  html, body { margin: 0; background: #0b0f14; color: #9fe8a0; font: 13px/1.35 ui-monospace, Menlo, Consolas, monospace; }
+  #wrap { padding: 14px 18px; }
+  h1 { font-size: 15px; margin: 0 0 8px; color: #d8f0d8; }
+  pre { margin: 8px 0 0; white-space: pre-wrap; color: #c9d6c9; }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <h1>PROJECT WINGNUT — js/radio.js test (radio scheduler: priorities, gaps, story triggers, music cues)</h1>
+  <pre id="log"></pre>
+</div>
+<script type="module">
+// Pure scheduling tests: a stand-in radio chain (no audio, so every line holds the channel for its table length) and a
+// stand-in music director that records cues. Prints RADIO_OK / RADIO_FAIL lines; ends with RADIO_DONE fails=N.
+import { Radio } from './js/radio.js';
+import { DIALOGUE } from './js/dialogue_data.js';
+import { MISSIONS } from './js/missions.js';
+
+const logEl = document.getElementById('log');
+let fails = 0, checks = 0;
+const log = (m) => { console.log(m); logEl.textContent += m + '\n'; };
+function check(name, cond, info) { checks++; if (!cond) { fails++; console.error('RADIO_FAIL ' + name + (info !== undefined ? ' :: ' + JSON.stringify(info) : '')); logEl.textContent += 'FAIL ' + name + '\n'; } }
+window.addEventListener('error', (e) => console.error('RADIO_ERR ' + (e.message || e)));
+const M = (id) => MISSIONS.find((m) => m.id === id);
+const fakeAwacs = { fx: null, transmit: () => 0, cutTransmission() {}, clipBuffer: () => null };
+function make(missionId, { rand = Math.random, alone = true } = {}) {
+  const music = { cues: [], cue(c) { this.cues.push(c.action + (c.track ? ' ' + c.track : '')); }, duck() {} };
+  const game = { alone, radioAlone() { return this.alone; } };
+  const r = new Radio(fakeAwacs, music, { rand, fetchClips: false });
+  r.resetMission(missionId ? M(missionId) : null, game);
+  return { r, music, game };
+}
+const run = (r, secs, dt = 0.05) => { for (let t = 0; t < secs; t += dt) r.update(dt); };
+const starts = (r) => r.events.filter((e) => e.ev === 'start' || e.ev === 'break-in');
+const ids = (r) => starts(r).map((e) => e.id);
+/** No two lines overlap; at least 1.5 s from a line's end (or cut) to the next start, except a critical break-in. */
+function noOverlap(r, name) {
+  let lastEnd = -1e9;
+  for (const e of r.events) {
+    if (e.ev === 'end' || e.ev === 'cut') lastEnd = e.t;
+    if (e.ev === 'start') { check(`${name}: gap before ${e.id}`, e.t >= lastEnd + 1.5 - 0.06, { at: e.t, lastEnd }); lastEnd = 1e9; }
+    if (e.ev === 'break-in') { check(`${name}: break-in ${e.id} after a cut`, lastEnd <= e.t + 1e-6); lastEnd = 1e9; }
+  }
+}
+
+// 1) M1: start (ambient sortieStart, then the first kill's flavor line), priorities and no overlap
+{
+  const { r } = make(1);
+  r.say('sortieStart'); r.missionStart(); r.phaseStart(1);
+  run(r, 2); r.firstKill(); r.say('kill'); r.say('kill');
+  check('M1: kill queued once (no duplicates)', r.events.filter((e) => e.ev === 'queue' && /^kill|^wso_/.test(e.id)).length <= 1);
+  run(r, 12);
+  check('M1: sortieStart first', ids(r)[0] && ids(r)[0].startsWith('sortieStart'), ids(r));
+  check('M1: first-kill line plays', ids(r).includes('m01_1'), ids(r));
+  noOverlap(r, 'M1');
+  log('RADIO_OK M1 ' + ids(r).join(' > '));
+}
+// 2) M11: Chime's arrival, line order and the music cue between #6 and #7
+{
+  const { r, music } = make(11);
+  r.missionStart(); r.phaseStart(1); run(r, 8); r.phaseStart(2); run(r, 6); r.phaseStart(3); run(r, 2);
+  r.phaseStart(4); r.say('newContacts'); run(r, 25);
+  const s = ids(r).filter((i) => /^m11_[3-7]/.test(i));
+  check('M11: phase 4 order 3,4,5,6,7', JSON.stringify(s) === JSON.stringify(['m11_3', 'm11_4', 'm11_5', 'm11_6', 'm11_7']), s);
+  const ev = r.events, i6 = ev.findIndex((e) => e.ev === 'end' && e.id === 'm11_6'), ic = ev.findIndex((e) => e.ev === 'cue' && e.id === 'm11_6b'), i7 = ev.findIndex((e) => e.ev === 'start' && e.id === 'm11_7');
+  check('M11: cue fires as #6 ends, before #7', i6 >= 0 && ic > i6 && i7 > ic, { i6, ic, i7 });
+  check('M11: cue = play mainspring', music.cues.join() === 'play mainspring', music.cues);
+  check('M11: newContacts never overlaps the plot lines', true);
+  noOverlap(r, 'M11');
+  r.complete(4); run(r, 8);
+  check('M11: completion line', ids(r).includes('m11_8'));
+  log('RADIO_OK M11 ' + ids(r).join(' > ') + ' | cues ' + music.cues.join(', '));
+}
+// 3) flavor dropped when its phase ends first; plot never dropped
+{
+  const { r } = make(2);
+  r.missionStart(); r.phaseStart(1); run(r, 1);
+  r.phaseStart(2); run(r, 1.5);          // m02_2 (flavor, +3 s) not due yet
+  r.phaseStart(3); run(r, 10);
+  const d = r.events.find((e) => e.ev === 'drop' && e.id === 'm02_2');
+  check('M2: phase-2 flavor dropped when phase 3 starts', d && d.why === 'phase ended', d);
+  check('M2: phase-3 flavor still plays', ids(r).includes('m02_3'), ids(r));
+  check('M2: plot start line plays', ids(r).includes('m02_1'));
+  noOverlap(r, 'M2');
+  log('RADIO_OK M2 flavor drop');
+}
+// 4) a critical call breaks into flavor, at most once per 5 s; it expires if it cannot get on
+{
+  const { r } = make(9, { rand: () => 0.99 });   // 0.99: AWACS versions (no WSO swap)
+  r.missionStart(); r.phaseStart(1); run(r, 4.2);
+  const before = r.cur && r.cur.id;
+  r.say('missileIncoming'); run(r, 0.1);
+  check('break-in during flavor', before === 'm09_1' && r.events.some((e) => e.ev === 'break-in' && e.id.startsWith('missileIncoming')), { before, ev: r.events.slice(-4) });
+  check('cut flavor logged', r.events.some((e) => e.ev === 'cut' && e.id === 'm09_1'));
+  run(r, 10); noOverlap(r, 'M9');
+  log('RADIO_OK break-in');
+}
+// 5) M15 Glassfall: detonation 1 cuts the music at once and its line plays; the later detonations' lines
+{
+  const { r, music } = make(15);
+  r.missionStart(); r.phaseStart(1); run(r, 6); r.phaseStart(2); r.glassfall(); run(r, 3);
+  r.detonation(1, 'salvos'); run(r, 0.1);
+  check('M15: cut at detonation 1', music.cues[0] === 'cut', music.cues);
+  run(r, 12); r.detonation(2, 'salvos'); r.detonation(3, 'salvos'); r.detonation(4, 'salvos'); run(r, 8); r.detonation(7, 'salvos'); run(r, 10);
+  for (const id of ['m15_2', 'm15_3', 'm15_4', 'm15_5', 'm15_6']) check('M15: ' + id, ids(r).includes(id), ids(r));
+  r.complete(2); run(r, 6); check('M15: completion', ids(r).includes('m15_7'));
+  noOverlap(r, 'M15');
+  log('RADIO_OK M15 ' + ids(r).join(' > '));
+}
+// 6) M20: the Glassfall cut, Mainspring's line, AWACS silent from detonation 1
+{
+  const { r, music } = make(20, { rand: () => 0.99 });
+  r.missionStart(); r.phaseStart(1); run(r, 8); r.glassfall(); run(r, 6); r.detonation(1, 'mainspring'); run(r, 8);
+  check('M20: cut', music.cues.includes('cut'));
+  check('M20: m20_3, m20_4, m20_5', ['m20_3', 'm20_4', 'm20_5'].every((i) => ids(r).includes(i)), ids(r));
+  r.say('sortieStart', { cooldown: 0 }); r.say('waveClear', { cooldown: 0 });
+  check('M20: AWACS silent after detonation 1', !r.queue.some((q) => q.speaker === 'AWACS'));
+  noOverlap(r, 'M20');
+  log('RADIO_OK M20');
+}
+// 7) M21: only the WSO and Mainspring; WSO silent from 50 %; the "alone" line waits for her wingmen
+{
+  const { r, game } = make(21, { rand: () => 0.99, alone: false });
+  r.say('sortieStart'); r.missionStart(); r.phaseStart(1); run(r, 9);
+  r.say('checkSix', { cooldown: 0 }); run(r, 0.05);
+  const q = (r.cur && r.cur.key === 'checkSix' ? r.cur : null) || r.queue.find((x) => x.key === 'checkSix');
+  check('M21: no AWACS sortieStart', !r.events.some((e) => e.id.startsWith('sortieStart')));
+  check('M21: tactical call is the WSO', q && q.speaker === 'WSO', q && q.id);
+  run(r, 6);
+  r.boss(50); run(r, 9);
+  check('M21: m21_3 plays at 50 %', ids(r).includes('m21_3'));
+  check('M21: m21_4 waits while her wingmen fly', !ids(r).includes('m21_4'));
+  r.say('checkSix', { cooldown: 0 }); r.say('kill', { cooldown: 0 });
+  check('M21: WSO silent after the blackout', !r.queue.some((x) => x.speaker === 'WSO') && !(r.cur && r.cur.speaker === 'WSO' && r.cur.id !== 'm21_3'));
+  game.alone = true; run(r, 8);
+  check('M21: m21_4 once alone', ids(r).includes('m21_4'));
+  r.boss(25); run(r, 5); check('M21: m21_5 at 25 %', ids(r).includes('m21_5'));
+  r.playerDown(true); run(r, 3); check('M21: Typical. on death', ids(r).includes('typical'));
+  check('M21: nobody but WSO and Mainspring', starts(r).every((e) => e.speaker === 'WSO' || e.speaker === 'MAINSPRING'), starts(r).map((e) => e.speaker));
+  noOverlap(r, 'M21');
+  log('RADIO_OK M21 ' + ids(r).join(' > '));
+}
+// 8) the 60/40 WSO-AWACS split, and no "he" lines about Mainspring
+{
+  let wso = 0, n = 0;
+  for (let i = 0; i < 2000; i++) {
+    const { r } = make(null);
+    r.say(['checkSix', 'missileIncoming', 'kill', 'pullUp'][i % 4]);
+    const q = r.queue[0]; if (!q) continue; n++; if (q.speaker === 'WSO') wso++;
+  }
+  check('WSO share ~60 %', Math.abs(wso / n - 0.6) < 0.04, { wso, n });
+  let he = 0;
+  for (let i = 0; i < 300; i++) {
+    const { r } = make(21);
+    r.say(i % 2 ? 'checkSix' : 'kill', { subject: { name: 'Q12 MAINSPRING' } });
+    const q = r.queue[0]; if (q && /\b(he|he's|him)\b/i.test(q.text)) he++;
+  }
+  check('no he/him lines about Mainspring', he === 0, he);
+  log(`RADIO_OK split ${(100 * wso / n).toFixed(1)} % WSO`);
+}
+// 9) tunnel: the WSO's lines replace AWACS's; AWACS keeps the crash line. Death without Mainspring: AWACS
+{
+  const { r } = make(null, { rand: () => 0.99 });
+  r.say('tunnelApproach', { cooldown: 45 }); run(r, 4); r.say('tunnelEnter', { cooldown: 20 }); run(r, 5); r.say('tunnelExit', { cooldown: 20 }); run(r, 4);
+  r.say('tunnelCrash'); run(r, 4);
+  const s = starts(r);
+  check('tunnel: WSO approach/enter/exit', ['tunnel_1', 'tunnel_2', 'tunnel_3'].every((i) => s.some((e) => e.id === i && e.speaker === 'WSO')), s.map((e) => e.id));
+  check('tunnel: no AWACS tunnel commentary', !s.some((e) => /^tunnel(Approach|Enter|Exit)/.test(e.id)));
+  check('tunnel: AWACS crash line', s.some((e) => e.id.startsWith('tunnelCrash') && e.speaker === 'AWACS'));
+  const d = make(1, { rand: () => 0.99 }).r; d.playerDown(false); run(d, 1);
+  check('death without Mainspring: AWACS playerDown', ids(d)[0] && ids(d)[0].startsWith('playerDown'), ids(d));
+  log('RADIO_OK tunnel and deaths');
+}
+// 10) completion: queued flavor goes, the last phase's clear line is promoted and precedes the completion line (M17)
+{
+  const { r } = make(17);
+  r.missionStart(); r.phaseStart(1); run(r, 1); r.say('groundTargets'); r.complete(1);
+  check('complete: queued chatter dropped', r.events.some((e) => e.ev === 'drop' && e.why === 'mission complete'));
+  check('complete: plot pending', r.plotPending);
+  run(r, 22);
+  const s = ids(r);
+  check('M17: clear line then completion', s.indexOf('m17_2') >= 0 && s.indexOf('m17_3') > s.indexOf('m17_2'), s);
+  check('complete: nothing pending after', !r.plotPending);
+  log('RADIO_OK M17 ' + s.join(' > '));
+}
+// 10b) lock-on and gun calls: WSO only, a pool of 8+ lock calls, 12-20 s between calls, no immediate repeats
+{
+  const lock = DIALOGUE.filter((e) => e.on === 'pool' && e.key === 'lockOn');
+  check('lockOn pool has 8+ variants', lock.length >= 8, lock.length);
+  check('gunSolution pool', DIALOGUE.some((e) => e.on === 'pool' && e.key === 'gunSolution'));
+  check('no he/him in the pool', !DIALOGUE.some((e) => e.on === 'pool' && /\b(he|he's|him)\b/i.test(e.text)));
+  const { r } = make(1);
+  for (let s = 0; s < 400; s += 0.1) { r.update(0.1); r.say('lockOn'); }
+  const said = r.events.filter((e) => e.ev === 'start' && e.id.startsWith('wso_')).map((e) => ({ t: e.t, id: e.id }));
+  const gaps = said.slice(1).map((x, i) => x.t - said[i].t);
+  check('lockOn spacing 12-20 s', gaps.length > 10 && gaps.every((g) => g >= 12 - 1e-6 && g <= 20.5), gaps);
+  // expiry: stale situational calls are dropped, not queued, and keep their cooldown
+  const x = make(2, { rand: () => 0.99 }).r;
+  x.missionStart(); x.phaseStart(1);
+  for (let i = 0; i < 400 && !(x.cur && x.cur.pri === 'plot' && x.cur.end - x.t > 1.8); i++) x.update(0.05);   // a plot line on air
+  const onAir = x.cur && x.cur.pri;
+  x.say('gunSolution'); x.say('lockOn'); x.say('kill');
+  run(x, 0.45); const g1 = x.events.find((e) => e.ev === 'drop' && e.id.startsWith('wso_16') || e.ev === 'drop' && e.id.startsWith('wso_17'));
+  run(x, 0.2); const l1 = x.events.find((e) => e.ev === 'drop' && /^wso_(1[45]|lock)/.test(e.id));
+  run(x, 1.0); const k1 = x.events.find((e) => e.ev === 'drop' && /^kill|^wso_7/.test(e.id));
+  check('expiry: gunSolution dropped at ~0.4 s behind a plot line', onAir === 'plot' && g1 && g1.why === 'expired', { onAir, g1 });
+  check('expiry: lockOn dropped at ~0.6 s', l1 && l1.why === 'expired', l1);
+  check('expiry: kill reaction dropped at ~1.5 s', k1 && k1.why === 'expired', k1);
+  run(x, 12);
+  check('expiry: a dropped call keeps its cooldown', x.say('gunSolution') && x.say('lockOn'));
+  const y = make(null).r; y.say('checkSix'); run(y, 0.1);
+  check('expiry: checkSix on air plays out', y.cur && y.cur.key === 'checkSix'); run(y, 0.9);
+  check('expiry: checkSix still on air after 1 s', y.cur && y.cur.key === 'checkSix' && !y.events.some((e) => e.ev === 'drop'));
+  check('lockOn no immediate repeat', said.every((x, i) => i === 0 || x.id !== said[i - 1].id));
+  check('lockOn always the WSO', said.every((x) => x.id.startsWith('wso_')));
+  log(`RADIO_OK lockOn ${said.length} calls in 400 s, ${new Set(said.map((x) => x.id)).size} variants`);
+}
+// 10c) WSO voice Off: AWACS takes pooled calls and its own tunnel lines; WSO lines and WSO-only calls are silent;
+//      M21 plays Mainspring only
+{
+  const { r } = make(11, { rand: () => 0.1 });   // 0.1 would pick the WSO with the voice on
+  r.wsoOn = false;
+  r.say('checkSix'); r.say('missileIncoming');
+  check('WSO off: pool calls are AWACS', r.queue.length === 2 && r.queue.every((q) => q.speaker === 'AWACS'), r.queue.map((q) => q.id));
+  r.stop(); r.say('lockOn'); r.say('gunSolution');
+  check('WSO off: lockOn and gunSolution silent', r.queue.length === 0);
+  r.stop(); r.say('tunnelApproach', { cooldown: 0 });
+  check('WSO off: AWACS tunnel commentary', r.queue[0] && r.queue[0].id.startsWith('tunnelApproach') && r.queue[0].speaker === 'AWACS', r.queue.map((q) => q.id));
+  r.stop(); r.missionStart(); r.phaseStart(1); run(r, 10);
+  check('WSO off: no WSO script line', !starts(r).some((e) => e.speaker === 'WSO'));
+  const m = make(21, { rand: () => 0.1 }).r; m.wsoOn = false;
+  m.say('sortieStart'); m.missionStart(); m.phaseStart(1); run(m, 8); m.say('checkSix', { cooldown: 0 }); m.boss(50); run(m, 8); m.boss(25); run(m, 5);
+  check('WSO off: M21 Mainspring only', starts(m).length > 0 && starts(m).every((e) => e.speaker === 'MAINSPRING'), starts(m).map((e) => e.id));
+  log('RADIO_OK WSO off');
+}
+// 11) every scripted line can be placed: each mission entry's trigger is one the game fires
+{
+  const fired = new Set(['start', 'phase', 'clear', 'complete', 'glassfall', 'detonation', 'firstKill', 'boss', 'deathMainspring', 'pool', 'tunnelApproach', 'tunnelEnter', 'tunnelExit']);
+  for (const e of DIALOGUE) {
+    if (e.after || e.with) { check(`${e.id}: head exists`, DIALOGUE.some((h) => h.id === (e.after || e.with))); continue; }
+    check(`${e.id}: trigger ${e.on}`, fired.has(e.on));
+    if (e.on === 'phase' || e.on === 'clear') check(`${e.id}: phase ${e.n} exists`, e.n >= 1 && e.n <= M(e.mission).phases.length);
+  }
+}
+log(`RADIO_DONE fails=${fails} checks=${checks}`);
+</script>
+</body>
+</html>

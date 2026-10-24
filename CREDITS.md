@@ -45,9 +45,12 @@ Warning tones and fallback sounds are synthesized at runtime with the Web Audio 
 
 ## Music
 
-- "Ceiling Unlimited" is an original theme composed in code for Project Wingnut (`tools/music/`).
-- It is rendered from samples of **VSCO 2 Community Edition** by Versilian Studios LLC / Sam Gossner, with
-  Ivy Audio / Simon Dalzell, licensed under [CC0 1.0](https://creativecommons.org/publicdomain/zero/1.0/).
+- "Ceiling Unlimited" (the title theme), "Sortie" (the main battle theme, `assets/music/epic.*`) and "Mainspring"
+  (Mainspring's leitmotif, `assets/music/mainspring.*`) are original pieces composed in code for Project Wingnut
+  (`tools/music/`). "Night Shift" (`assets/music/night.*`, the night missions) is original too, synthesised entirely
+  in code with no samples.
+- "Ceiling Unlimited", "Sortie" and "Mainspring" are rendered from samples of **VSCO 2 Community Edition** by Versilian
+  Studios LLC / Sam Gossner, with Ivy Audio / Simon Dalzell, licensed under [CC0 1.0](https://creativecommons.org/publicdomain/zero/1.0/).
   Homepage: http://vis.versilstudios.net/vsco-community.html. Source: https://github.com/sgossner/VSCO-2-CE.
   The samples themselves aren't in this repository. `tools/music/fetch_samples.mjs` downloads them at build time.
   See [tools/music/LICENSES.txt](tools/music/LICENSES.txt).
@@ -57,6 +60,10 @@ Warning tones and fallback sounds are synthesized at runtime with the Web Audio 
 - The AWACS radio calls (`assets/awacs/`, embedded in `js/awacs_clips.js`) were generated with
   **Google Gemini text-to-speech** (Gemini API, prebuilt voice "Ludo") from original lines written for this game
   (`tools/awacs_lines.mjs`). Use of the generated audio is subject to Google's Gemini API terms.
+- The story dialogue (`assets/dialogue/`: AWACS Claude, the WSO and Mainspring) was generated the same way with
+  **Google Gemini text-to-speech** (Gemini API, prebuilt voices "Ludo" for AWACS Claude, "Call Center Agent 7"
+  (en-za-csagent-7) for the WSO and "Kira" (with British English) for Mainspring) from original lines written for this game
+  (`tools/dialogue_lines.mjs`). Use of the generated audio is subject to Google's Gemini API terms.
 
 ## Mission data
 

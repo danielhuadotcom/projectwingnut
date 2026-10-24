@@ -8,9 +8,14 @@
 // and explosions should not pump it. Use setVolume() to balance it against AudioFX.setMaster().
 //
 // Every method is safe before unlock (no context yet -> no-op), idempotent, and a no-op after dispose().
+// A track's data may instead name files (opusUrl / mp3Url: js/music_tracks.js), fetched when first needed.
+//
+// MusicDirector (below) owns one Music per named track (TRACKS) and switches between them: the mission's track, story
+// cues from the radio script (crossfade to a track, cut to silence, resume), title-screen muffling and radio ducking.
 // Typical use:  const music = new Music(audioFX);  ...on first gesture: audioFX.unlock(); music.play();
 //               pause menu: music.setMuffled(true) · radio chatter: music.duck(true/false) · game over: music.stop()
 import { MUSIC } from './music_data.js';
+import { MUSIC_TRACKS } from './music_tracks.js';
 
 const DEFAULT_VOLUME = 0.5;   // the track is mastered to about -13 LUFS; 0.5 sits it under the SFX
 const DUCK_GAIN = 0.5;        // -6 dB while radio chatter plays
@@ -66,7 +71,19 @@ export class Music {
     this._nodes = null;          // { lp, duck, vol }
     this._voice = null;          // { src, fade, startedAt, offset }
     this._decoding = null;       // in-flight decode promise
+    this._bytes = {};            // streamed track (data.opusUrl / mp3Url): format -> Promise<ArrayBuffer | null>
+    this.failed = false;         // true once every format failed to load or decode
     this._disposed = false;
+  }
+
+  /** A streamed track's file (data.<fmt>Url), fetched once; resolves null on failure. Works before unlock (prefetch). */
+  fetchBytes(fmt = 'opus') {
+    const url = this.data && this.data[fmt + 'Url'];
+    if (!url || typeof fetch !== 'function') return Promise.resolve(null);
+    if (!this._bytes[fmt]) {
+      this._bytes[fmt] = fetch(url).then((r) => (r.ok ? r.arrayBuffer() : null)).catch(() => null);
+    }
+    return this._bytes[fmt];
   }
 
   /** true once the track is decoded and can start instantly */
@@ -123,10 +140,13 @@ export class Music {
     if (this._decoding) return this._decoding;
     this._decoding = (async () => {
       for (const fmt of ['opus', 'mp3']) {
-        const b64 = this.data[fmt];
-        if (!b64) continue;
+        const b64 = this.data[fmt], url = this.data[fmt + 'Url'];
+        if (!b64 && !url) continue;
         try {
-          const buf = await decode(ctx, base64ToArrayBuffer(b64));
+          const bytes = b64 ? base64ToArrayBuffer(b64) : await this.fetchBytes(fmt);
+          if (!bytes || this._disposed) throw new Error('no data');
+          const buf = await decode(ctx, bytes);
+          this._bytes[fmt] = null;                 // (decodeAudioData detached it)
           if (!buf || !(buf.duration > 1)) throw new Error('empty buffer');
           if (this._disposed) return false;
           this.buffer = buf; this.format = fmt;
@@ -134,7 +154,7 @@ export class Music {
         } catch (e) { /* try the next format */ }
       }
       this._decoding = null;
-      if (!this.buffer) return false;
+      if (!this.buffer) { this.failed = true; return false; }
       if (this._wantPlay && !this._voice) this._startVoice();
       return true;
     })();
@@ -224,4 +244,109 @@ export class Music {
     this._disposed = true;
     this.data = null; this._decoding = null;
   }
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+/** Named soundtrack tracks. 'ceiling' = "Ceiling Unlimited" (embedded: the title and menus, M2, M3); 'epic' = "Sortie"
+ *  (the main theme: most missions and INFINITY), 'night' = "Night Shift" (night missions) and 'mainspring' (her theme)
+ *  stream from assets/music/ (js/music_tracks.js). A track that cannot load (offline, the old single-file build) plays
+ *  FALLBACK instead. */
+export const TRACKS = ['ceiling', 'night', 'mainspring', 'epic'];
+const FALLBACK = 'ceiling';
+
+/**
+ * The soundtrack: which track plays, and the switches between tracks. Same surface as Music for the game's everyday
+ * calls (play / stop / duck / setMuffled / setVolume / dispose; play() with no name is the "make sure something plays"
+ * call of the first-gesture handlers, a no-op while a cue holds the music cut), plus:
+ *   setTrack(name, { fade })  the mission's track: crossfade to it (no-op if it already plays) and remember it
+ *   cue(action)               a radio-script MUSIC cue: { action: 'play', track, fade } | { action: 'cut', fade } |
+ *                             { action: 'resume', fade } (back to the mission's track)
+ *   prefetch(names)           fetch streamed tracks' files ahead of need (before unlock too)
+ * A track still loading keeps the current one playing and takes over (crossfade) once decoded, if still wanted; a track
+ * that has no data or fails to load resolves to 'ceiling' (embedded), so a cue never errors and never leaves silence.
+ */
+export class MusicDirector {
+  constructor(audioFX, opts = {}) {
+    this.audioFX = audioFX || null;
+    this._volume = clamp01(opts.volume ?? DEFAULT_VOLUME);
+    this._data = Object.assign({ ceiling: MUSIC }, MUSIC_TRACKS, opts.tracks || {});
+    this._players = {};          // track -> Music (created on first use)
+    this._ducked = false; this._muffled = false;
+    this.track = opts.track || 'epic';   // the mission's track (requested name)
+    this.current = null;         // resolved track name whose Music plays (or is starting)
+    this.wanted = null;          // resolved track name we are switching to (may still be loading)
+    this.cut = false;            // a cue silenced the music (Glassfall)
+    this.log = [];               // recent switches { t, what } for tests and tools (capped)
+    this._disposed = false;
+  }
+  /** Track names with data that has not failed to load. */
+  get available() { return TRACKS.filter((t) => this._data[t] && !(this._players[t] && this._players[t].failed)); }
+  /** The track a name plays: itself when available, else 'ceiling'. */
+  resolve(name) { return this.available.includes(name) ? name : FALLBACK; }
+  get playing() { const m = this.current && this._players[this.current]; return !!(m && m.playing); }
+  get ready() { const m = this.current && this._players[this.current]; return !!(m && m.ready); }
+  get title() { const d = this._data[this.current || this.resolve(this.track)]; return (d && d.title) || ''; }
+  _player(name) {
+    let m = this._players[name];
+    if (!m && this._data[name]) {
+      m = this._players[name] = new Music(this.audioFX, { volume: this._volume, data: this._data[name] });
+      m.duck(this._ducked); m.setMuffled(this._muffled);
+    }
+    return m || null;
+  }
+  _note(what) { this.log.push({ t: Math.round(performance.now()), what }); if (this.log.length > 40) this.log.shift(); }
+  prefetch(names) { for (const n of names || []) { const r = this.resolve(n), m = this._player(r); if (m) m.fetchBytes('opus'); } }
+
+  /** No name: keep (or start) what should play. A name: crossfade to that track (see the class comment). */
+  play(name, opts = {}) {
+    if (this._disposed) return;
+    if (typeof name === 'object' && name !== null) { opts = name; name = undefined; }
+    if (name === undefined) {
+      if (this.cut) return;
+      if (!this.current) { this.current = this.wanted || this.resolve(this.track); this.wanted = null; }
+      const m = this._player(this.current);   // (a track still loading takes over by itself once decoded)
+      if (m && !m.playing) m.play(opts);
+      return;
+    }
+    this.cut = false;
+    this._switch(this.resolve(name), opts.fade ?? 2, opts);
+  }
+  setTrack(name, opts = {}) {
+    this.track = name || 'epic';
+    if (this._disposed) return;
+    this.cut = false;
+    this._switch(this.resolve(this.track), opts.fade ?? 2, opts);
+  }
+  /** A radio-script MUSIC cue. */
+  cue(c) {
+    if (!c || this._disposed) return;
+    if (c.action === 'cut') { this.cut = true; this.wanted = null; const m = this.current && this._players[this.current]; if (m) m.stop({ fade: c.fade ?? 0.15 }); this._note('cut'); return; }
+    if (c.action === 'resume') { this.cut = false; this._switch(this.resolve(this.track), c.fade ?? 4, { skipIntro: true, force: true }); this._note('resume ' + this.track); return; }
+    if (c.action === 'play') { this.cut = false; this._switch(this.resolve(c.track), c.fade ?? 2, {}); this._note('play ' + c.track); }
+  }
+  _switch(r, fade, opts) {
+    const cur = this.current && this._players[this.current];
+    if (r === this.current && cur && cur.playing && !this.wanted) return;          // already playing it
+    const m = this._player(r);
+    if (!m) return;
+    this.wanted = r;
+    const go = () => {
+      if (this._disposed || this.wanted !== r || this.cut) return;
+      const old = this.current && this.current !== r ? this._players[this.current] : null;
+      if (old) old.stop({ fade: Math.max(0.05, fade) });
+      this.current = r; this.wanted = null;
+      if (!m.playing) m.play({ fadeIn: Math.max(0.03, fade), skipIntro: !!opts.skipIntro });
+      this._note('now ' + r);
+    };
+    if (m.ready || !this.audioFX || !this.audioFX.ctx) { go(); return; }        // decoded (or no context yet: play() defers)
+    m.preload().then((ok) => {
+      if (ok) go();
+      else if (this.wanted === r) { this.wanted = null; if (r !== FALLBACK) this._switch(FALLBACK, fade, opts); }   // failed: fall back
+    });
+  }
+  stop(opts = {}) { this.wanted = null; for (const k in this._players) this._players[k].stop(opts); }
+  duck(on) { this._ducked = !!on; for (const k in this._players) this._players[k].duck(on); }
+  setMuffled(on) { this._muffled = !!on; for (const k in this._players) this._players[k].setMuffled(on); }
+  setVolume(v) { if (!Number.isFinite(+v)) return; this._volume = clamp01(+v); for (const k in this._players) this._players[k].setVolume(v); }
+  dispose() { if (this._disposed) return; for (const k in this._players) this._players[k].dispose(); this._players = {}; this._disposed = true; }
 }

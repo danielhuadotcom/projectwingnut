@@ -134,7 +134,8 @@ export function layerWeights(layers, d) {
 /**
  * Render one voice (one region) into out = [L, R] (Float32Array at outSr).
  * v = { region, sample, midi, tOn (s, sample onset lands here), tOff (s, release starts), release (s), gainFn(tSec)->linear,
- *       offset (s into the sample after onset), attack (s fade-in), pan (-1..1), width (0..1+), detune (cents), loop (bool), hardEnd (s) }
+ *       offset (s into the sample after onset), attack (s fade-in), pan (-1..1), width (0..1+), detune (cents), loop (bool), hardEnd (s),
+ *       vib (optional delayed pitch vibrato, see below) }
  */
 export function renderVoice(out, outSr, v) {
   const s = v.sample, r = v.region, src = s.sr;
@@ -187,8 +188,13 @@ export function renderVoice(out, outSr, v) {
     const w0 = 2 * Math.PI * Math.min(fc, outSr * 0.45) / outSr, al = Math.sin(w0) / (2 * 0.6), cw = Math.cos(w0), a0 = 1 + al;
     fb0 = (1 - cw) / 2 / a0; fb1 = (1 - cw) / a0; fb2 = fb0; fa1 = -2 * cw / a0; fa2 = (1 - al) / a0;
   };
+  // v.vib = { t0, delay, rise, depth (cents), rate (Hz), phase }: vibrato fading in `delay` s after t0 over `rise` s
+  const vib = v.vib;
+  const vibMul = (t) => { const tt = t - vib.t0 - vib.delay; if (tt <= 0) return 1; const k = Math.min(1, tt / vib.rise);
+    return Math.pow(2, vib.depth * k * Math.sin(2 * Math.PI * vib.rate * (t - vib.t0) + (vib.phase || 0)) / 1200); };
   for (let i = i0; i < iEnd; i += CB) {
     const n = Math.min(CB, iEnd - i);
+    const rat = vib ? ratio * vibMul(i / outSr) : ratio; // optional delayed vibrato (pitch), per control block
     const t1 = (i + n) / outSr;
     const env = (t) => {
       let g = v.gainFn ? v.gainFn(t) : 1;
@@ -198,7 +204,7 @@ export function renderVoice(out, outSr, v) {
     };
     const ga = gPrev ?? env(i / outSr), gb = env(t1); gPrev = gb;
     if (lpFn) setLp(lpFn(i / outSr));
-    if (ga === 0 && gb === 0) { pos += n * ratio; if (loopEnd > 0) while (pos >= loopEnd) pos -= loopEnd - loopStart; continue; }
+    if (ga === 0 && gb === 0) { pos += n * rat; if (loopEnd > 0) while (pos >= loopEnd) pos -= loopEnd - loopStart; continue; }
     for (let j = 0; j < n; j++) {
       if (pos >= endPos) return;
       const g = ga + (gb - ga) * (j / n);
@@ -217,7 +223,7 @@ export function renderVoice(out, outSr, v) {
       const idx = i + j;
       oL[idx] += g * (aLL * xl + aLR * xr);
       oR[idx] += g * (aRL * xl + aRR * xr);
-      pos += ratio;
+      pos += rat;
       if (loopEnd > 0 && pos >= loopEnd) pos -= loopEnd - loopStart;
     }
   }

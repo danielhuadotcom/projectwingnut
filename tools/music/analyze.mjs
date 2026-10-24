@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { readWav } from './lib/wav.mjs';
 import { parseSfz } from './lib/sfz.mjs';
 import { analyzeSample } from './lib/analysis.mjs';
+import { namedKey } from './lib/orchestra_ext.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(HERE, 'downloads', 'vsco2ce');
@@ -31,7 +32,7 @@ for (const p of walk(ROOT)) {
   if (prev[rel] && prev[rel].bytes === bytes && prev[rel].v === VERSION) { res[rel] = prev[rel]; continue; }
   let w; try { w = readWav(p); } catch (e) { console.log('skip', rel, e.message); continue; }
   const isShort = /spic|stac|pizz/i.test(rel) && !/sus/i.test(rel);
-  res[rel] = { v: VERSION, bytes, ...analyzeSample(w.channels, w.sampleRate, keyOf.get(rel), isShort) };
+  res[rel] = { v: VERSION, bytes, ...analyzeSample(w.channels, w.sampleRate, keyOf.get(rel) ?? namedKey(rel), isShort) };
   n++;
 }
 mkdirSync(dirname(OUT), { recursive: true });

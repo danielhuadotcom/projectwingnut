@@ -39,6 +39,8 @@ jobs:
           # home-screen install: the web app manifest and its icons (committed PNGs, copied into dist/ by the build)
           cp dist/manifest.webmanifest _site/
           cp -r dist/icons _site/icons
+          # streamed audio, fetched per mission relative to the page: dialogue clips and the extra soundtrack tracks
+          cp -r dist/assets _site/assets
           touch _site/.nojekyll
 
       - uses: actions/configure-pages@v5

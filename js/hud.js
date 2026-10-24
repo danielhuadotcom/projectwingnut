@@ -25,7 +25,11 @@ const COL = {
   seg: 'rgba(0,0,0,0.45)',     // empty gauge segments
   ally: '#7CFF6A',             // friendlies: squadmates on screen and on the radar, allied ground/naval on the radar
   allySoft: 'rgba(124,255,106,0.72)',
+  wso: '#C3A6FF',              // radio speaker labels: the WSO (violet), Mainspring (crimson); AWACS keeps amber
+  mainspring: '#FF5C6C',
 };
+/** Radio subtitle speaker label -> colour (frame.radio.speaker). */
+const RADIO_COL = { 'AWACS CLAUDE': COL.amber, WSO: COL.wso, MAINSPRING: COL.mainspring };
 
 const NO_DASH = [];
 const EMPTY = [];
@@ -1157,7 +1161,8 @@ export class HUD {
     this._stroke(COL.greenSoft, L.lwThin);
   }
 
-  /** Radio subtitles: speaker label (amber) on its own line above the spoken text (white, dark outline). */
+  /** Radio subtitles: speaker label (AWACS amber, WSO violet, Mainspring crimson) on its own line above the spoken text
+   *  (white, dark outline). */
   _drawRadio(r) {
     if (!r || !r.text) return;
     const age = r.age || 0, dur = r.duration || 3;
@@ -1182,7 +1187,7 @@ export class HUD {
     let y = L.h - Math.round(26 * s) - (lines.length - 1) * lh;
     ctx.globalAlpha = this.alpha * a;
     ctx.font = L.fPill;
-    this._text(r.speaker || 'RADIO', cx, y - Math.round(lh * 1.05), COL.amber, 'center', 'middle');
+    this._text(r.speaker || 'RADIO', cx, y - Math.round(lh * 1.05), RADIO_COL[r.speaker] || COL.amber, 'center', 'middle');
     ctx.font = L.fMsg;
     for (let i = 0; i < lines.length; i++) { this._text(lines[i], cx, y, COL.white, 'center', 'middle'); y += lh; }
     ctx.globalAlpha = this.alpha;

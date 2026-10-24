@@ -13,22 +13,26 @@
 //   Skerry League      island towns, fishing ports and lighthouse keepers who want their mountains back. Short on jets,
 //                      so it hires mercenaries.
 //   Saltjaw Corsairs   sea-stack pirates who rob both sides and sell to whoever is buying.
-//   Loose Screws       the player's mercenary squadron: second-hand jets, questionable judgment. Wingnut (player),
-//                      Socket (lead), Torque (heavy strike), Shim (rookie), Cotter (ex-navy); AWACS Claude on radar.
-//   Chime Squadron     the Concord's clockwork elite in Orrery Works prototypes: Mainspring (commander), Pendulum (a
-//                      bounty-hunting ace who always swings back), Tick and Tock (interceptor twins), Cuckoo Flight
-//                      (cadets), plus Shearpin Squadron (turncoat mercenaries on Chime's payroll).
+//   Loose Screws       the player's mercenary squadron: second-hand jets, questionable judgment. Wingnut (player) with
+//                      Cotter (#2, ex-navy) and Rivet (#3); a WSO in Wingnut's back seat; AWACS Claude on radar.
+//   Chime Squadron     the Concord's clockwork elite in Orrery Works prototypes: Mainspring (commander and recurring ace:
+//                      each time she is shot down she comes back in a newer Orrery jet, always in her oxblood-and-gold
+//                      paint), Tick and Tock (interceptor twins), Cuckoo Flight (cadets), plus Shearpin Squadron
+//                      (turncoat mercenaries on Chime's payroll).
 //   Story beats: the League capital Lanternport falls (M5) and is retaken (M20); League sailors steal the Concord's newest
 //   battleship and rename her the Hand-Me-Down (M7, M19); the Concord answers the push on Kelderwick with thunderglass
-//   warheads, the Glassfall (M15).
+//   warheads, the Glassfall (M15); as the Concord asks for terms at Lanternport, Mainspring's Q12 delivers a second
+//   Glassfall over the capital, which takes Cotter, Rivet and every ally (M20).
 //
-// AIRCRAFT MAKERS (type keys double as HUD labels: upper case, at most 14 characters). Types with a numbered real-world
-// counterpart keep the maker's prefix but take the real-world number (NV-16 = F-16-class, EIDER-8B = AV-8B-class):
-//   Nordvane Aerowerk    Concord state fighter works          NV-<real number>        NV-15C, NV-14; Bodkin missiles
-//   Halde Windworks      the Concord's rival house            WIND-<real number>      SQUALL-27, FALLWIND-31, HAILSTONE-25
-//   Orrery Works         Concord black-budget prototypes      Q + hour on a dial      Q07, Q09, Q11; Q12 tops the dial
-//   Tidewright Yards     League boatbuilders                  SEABIRD-<real number>   EIDER-8B; SCAUP II (Roman mark)
-//   Kettle & Daughters   heavy and utility airframes          KD-<number> + role      KD-17, KD-28H (rotor); KD-480E, KD-12U
+// AIRCRAFT MAKERS (type keys double as HUD labels: upper case, at most 14 characters). Numbering: our maker's prefix with
+// the real-world number. Each maker names its jets its own way, and a type with a numbered real-world counterpart puts
+// that real-world number (and suffix) after our prefix (NV-16 = F-16-class, SQUALL-27 = Su-27-class, EIDER-8B =
+// AV-8B-class):
+//   Nordvane Aerowerk    Concord state fighter works          NV-<real number>               NV-4, NV-15C, NV-14; Bodkin missiles
+//   Halde Windworks      the Concord's rival house            <weather word>-<real number>   SLEET-21, GUST-37, SQUALL-27, FALLWIND-31
+//   Orrery Works         Concord black-budget prototypes      Q + hour on a dial             Q07, Q09, Q11; Q12 tops the dial
+//   Tidewright Yards     League boatbuilders                  <seabird>-<real number>        EIDER-8B; SCAUP II (Roman mark: no counterpart)
+//   Kettle & Daughters   heavy and utility airframes          KD-<real number> + role        KD-17, KD-52, KD-28H (rotor); KD-480E, KD-12U
 //   Aces fly a base type with extra durability; their key is base code + callsign ('Q09 TICK', 'Q12 MAINSPRING').
 //
 // CONVENTIONS (as js/main.js and js/targets.js consume them):
@@ -49,7 +53,17 @@
 //     header: Flak. As in PW, cruisers carry only a couple of AA mounts and battleships are mostly AA.
 //   MISSIONS: main.js shows the name, up to three briefing sentences and each phase label (upper-cased). location, setting
 //     and clock (local, 24 h; the source mission's listed time) are flavor.
-//     red (optional) = true: the preset's red Glassfall variant (js/timeofday.js glassfallPreset; M21, after the M20 ending).
+//     red (optional) = true: the preset's red Glassfall variant (js/timeofday.js glassfallPreset): only the missions right
+//     after a Glassfall, M16 (after M15) and M21 (after M20).
+//     music (optional) = the soundtrack track (js/music.js TRACKS): on a mission, its track (default 'night' for time
+//     'night', else 'epic'); on a phase, a crossfade to that track as the phase starts (Mainspring's encounters).
+//     noAwacs (optional) = true: AWACS stays off the radio, and the WSO takes every call it would make (M21).
+//     wsoBlackout (optional) = boss health fraction (0-1) below which the WSO says nothing more (M21: 0.5).
+//     phases[].endAtRemaining (optional) = N (1-8): the phase is won once N or fewer of its required enemies are left;
+//     those (and any optional ones still flying) withdraw: they turn away, can no longer be targeted and despawn (M6,
+//     M11: the last two of Chime pull out).
+//     phases[].mainspring (optional) = true: Mainspring is in the fight although none of her jets is (M18: on the radio).
+//     Any phase with a live MAINSPRING-type jet counts too (the "Typical." line on a death).
 //     glassfall (optional) = a Glassfall story event (js/glassfall.js): on a phase, { impacts } runs the Thunderhead
 //     salvos for that phase (M15); on a mission, 'mainspring' replaces the completion after the last phase (M20).
 //     time (optional) = the lighting preset (js/timeofday.js): one of TIMES below, default 'day'. From the source
@@ -121,7 +135,7 @@ export const AIRCRAFT_TYPES = {
   // ---- Orrery Works prototypes ----
   'Q07':         { role: 'prototype',   hp: 70, speedKmh: 3200, roll: 180, pitch: 95,  yaw: 15, color: 0x353a42, accent: 0xe0a020, ai: { kmh: [300, 1000, 1800], roll: 300, pitch: 85, yaw: 25 }, note: 'Orrery Works thrust-vectoring canard prototype (Su-37-class); carries four missiles.' },
   'Q09':         { role: 'prototype',   hp: 70, speedKmh: 3200, roll: 190, pitch: 110, yaw: 15, color: 0x353a42, accent: 0xe0a020, ai: { kmh: [300, 1000, 1800], roll: 200, pitch: 82.5, yaw: 25 }, note: 'Orrery Works canard and vectored-nozzle demonstrator (F-15 S/MTD-class), now in limited service.' },
-  'Q10':         { role: 'prototype',   hp: 100, speedKmh: 3600, roll: 250, pitch: 120, yaw: 20, color: 0x353a42, accent: 0xe0a020, ai: { kmh: [400, 950, 1800], roll: 250, pitch: 60, yaw: 25 }, note: "Orrery Works closed-canopy prototype, the airframe under Pendulum's second jet. Unmarked ones (no IFF) fly with Mainspring on Mercenary (Unwound) and can fire missiles backwards. hp = reference AI value (about 3 missiles); speed, pitch and yaw estimated as for Q10 PENDULUM." },
+  'Q10':         { role: 'prototype',   hp: 100, speedKmh: 3600, roll: 250, pitch: 120, yaw: 20, color: 0x353a42, accent: 0xe0a020, ai: { kmh: [400, 950, 1800], roll: 250, pitch: 60, yaw: 25 }, note: "Orrery Works closed-canopy prototype, the airframe under Mainspring's Backswing jet. Unmarked ones (no IFF) fly with her on Mercenary (Unwound) and can fire missiles backwards. hp = reference AI value (about 3 missiles); speed, pitch and yaw estimated as for Q10 MAINSPRING." },
   'Q11':         { role: 'prototype',   hp: 70, speedKmh: 3200, roll: 180, pitch: 105, yaw: 20, color: 0x353a42, accent: 0xe0a020, ai: { kmh: [300, 1000, 1800], roll: 300, pitch: 50, yaw: 25 }, note: 'Orrery Works stealth air-dominance prototype; an original shape with no real-world counterpart.' },
   // ---- support and utility (AI-only types: agility = reference AI values unless marked estimated) ----
   'KD-480E':     { role: 'awacs',       armed: false, hp: 100, speedKmh: 850, roll: 20, pitch: 5,  yaw: 5,  color: 0xb4b9bf, accent: 0x4f565e, ai: { kmh: [300, 450, 1800], roll: 20, pitch: 5, yaw: 5 }, note: "Kettle & Daughters airborne radar picket (737 AEW&C-class), the Concord's eye in the sky. Speed estimated." },
@@ -138,10 +152,12 @@ export const AIRCRAFT_TYPES = {
   'Q11 CHIME':      { role: 'prototype', ace: true, hp: 200, speedKmh: 3200, roll: 180, pitch: 105, yaw: 20, color: 0x7d1212, accent: 0x151515, ai: { kmh: [300, 1000, 1800], roll: 300, pitch: 50, yaw: 25 }, note: 'Chime Squadron in oxblood-and-black Q11s: about 6 missiles each (200 HP); post-stall flips to dodge missiles.' },
   'Q09 TICK':       { role: 'prototype', ace: true, hp: 130, speedKmh: 3200, roll: 190, pitch: 110, yaw: 15, color: 0x353a42, accent: 0xe0a020, ai: { kmh: [300, 1000, 1800], roll: 200, pitch: 82.5, yaw: 25 }, note: 'Tick, of the interceptor twins Tick and Tock (Rush Hour), never more than a beat apart: about 4 missiles (130 HP).' },
   'Q09 TOCK':       { role: 'prototype', ace: true, hp: 130, speedKmh: 3200, roll: 190, pitch: 110, yaw: 15, color: 0x353a42, accent: 0xe0a020, ai: { kmh: [300, 1000, 1800], roll: 200, pitch: 82.5, yaw: 25 }, note: 'Tock, the other half of the interceptor twins (Rush Hour): about 4 missiles (130 HP).' },
-  'Q09 SHEARPIN':   { role: 'prototype', ace: true, hp: 70,  speedKmh: 3200, roll: 190, pitch: 110, yaw: 15, color: 0x2a2a2f, accent: 0xd0473f, ai: { kmh: [300, 1000, 1800], roll: 200, pitch: 82.5, yaw: 25 }, note: "Shearpin Squadron (Backswing), the Loose Screws' old hangar-mates, now paid in Orrery jets to escort Pendulum. Built to snap under load: they withdraw once Pendulum falls; post-stall dodging." },
-  'Q04 PENDULUM':   { role: 'prototype', ace: true, armed: 'gun', bars: 3, hp: 530, speedKmh: 2500, roll: 200, pitch: 100, yaw: 12, color: 0x2a2a2f, accent: 0xd0473f, ai: { kmh: [null, 1000, 1800], roll: 250, pitch: 65, yaw: 25 }, note: "Pendulum's first jet (Graveyard Shift boss), a gun-only Orrery duelist. Reference AI HP 150; fought as 3 bars of about 3 missiles on Normal (530 HP, not doubled: 9 missiles). Heavy gun barrages, plus a rapid railgun from bar 2. Only cruise and max AI speeds are set." },
-  'Q10 PENDULUM':   { role: 'prototype', ace: true, bars: 3, hp: 710, speedKmh: 3600, roll: 250, pitch: 120, yaw: 20, color: 0x2a2a2f, accent: 0xd0473f, ai: { kmh: [400, 950, 1800], roll: 250, pitch: 60, yaw: 25 }, note: 'Pendulum swings back (Backswing boss) in the gunmetal-and-red Q10. Reference AI HP 100; 3 bars of about 3.6 missiles on Normal (710 HP, not doubled: 11 missiles). Guns, then micromissile swarms; post-stall tricks. Speed, pitch and yaw estimated.' },
-  'Q12 MAINSPRING': { role: 'prototype', ace: true, bars: 4, missileReload: 5 / 3, hp: 1540, speedKmh: 4000, roll: 350, pitch: 150, yaw: 15, color: 0x7d1212, accent: 0x151515, ai: { kmh: [300, 1000, 1800], roll: 300, pitch: 70, yaw: 25 }, note: "Mainspring, Chime Squadron's commander, in the Q12 at the top of the Orrery's dial (Unwound final boss). Reference AI HP 400; 1540 HP, not doubled: on Normal 4 bars of about 6 missiles (24 total; Easy 19, Hard 28, Mercenary 31). Micromissiles, railgun bursts, then area and railgun cluster bombs." },
+  'Q09 SHEARPIN':   { role: 'prototype', ace: true, hp: 70,  speedKmh: 3200, roll: 190, pitch: 110, yaw: 15, color: 0x2a2a2f, accent: 0xd0473f, ai: { kmh: [300, 1000, 1800], roll: 200, pitch: 82.5, yaw: 25 }, note: "Shearpin Squadron (Backswing), the Loose Screws' old hangar-mates, now paid in Orrery jets to escort Mainspring. Built to snap under load: they withdraw once she falls; post-stall dodging." },
+  // Mainspring's jets: every airframe she flies wears her paint (Chime oxblood with Orrery gold); shot down, she comes back in a newer one
+  'Q07 MAINSPRING': { role: 'prototype', ace: true, hp: 260, speedKmh: 3200, roll: 180, pitch: 95,  yaw: 15, color: 0x7d1212, accent: 0xe0a020, ai: { kmh: [300, 1000, 1800], roll: 300, pitch: 85, yaw: 25 }, note: "Mainspring leading Chime in a Q07 (Su-37-class) painted as hers (Lightning Rod, Icebreaker): an ace, not a boss: about 8 missiles (260 HP); post-stall flips to dodge missiles. She pulls out with the last of Chime." },
+  'Q04 MAINSPRING': { role: 'prototype', ace: true, armed: 'gun', bars: 3, hp: 530, speedKmh: 2500, roll: 200, pitch: 100, yaw: 12, color: 0x7d1212, accent: 0xe0a020, ai: { kmh: [null, 1000, 1800], roll: 250, pitch: 65, yaw: 25 }, note: "Mainspring in a gun-only Orrery duelist, launched off a Morrow Deep rig (Graveyard Shift boss); shot down, she ejects. Reference AI HP 150; fought as 3 bars of about 3 missiles on Normal (530 HP, not doubled: 9 missiles). Heavy gun barrages. Only cruise and max AI speeds are set." },
+  'Q10 MAINSPRING': { role: 'prototype', ace: true, bars: 3, hp: 710, speedKmh: 3600, roll: 250, pitch: 120, yaw: 20, color: 0x7d1212, accent: 0xe0a020, ai: { kmh: [400, 950, 1800], roll: 250, pitch: 60, yaw: 25 }, note: 'Mainspring back in a new Q10 over the Toolshed ruins (Backswing boss). Reference AI HP 100; 3 bars of about 3.6 missiles on Normal (710 HP, not doubled: 11 missiles). Guns, then micromissile swarms; post-stall tricks. Speed, pitch and yaw estimated.' },
+  'Q12 MAINSPRING': { role: 'prototype', ace: true, bars: 4, missileReload: 5 / 3, hp: 1540, speedKmh: 4000, roll: 350, pitch: 150, yaw: 15, color: 0x7d1212, accent: 0xe0a020, ai: { kmh: [300, 1000, 1800], roll: 300, pitch: 70, yaw: 25 }, note: "Mainspring, Chime Squadron's commander, in the Q12 at the top of the Orrery's dial (Unwound final boss). Reference AI HP 400; 1540 HP, not doubled: on Normal 4 bars of about 6 missiles (24 total; Easy 19, Hard 28, Mercenary 31). Micromissiles, then cluster bombs." },
 };
 
 // ------------------------------------------------------------------------------------------------------------------------
@@ -227,7 +243,7 @@ export const MISSIONS = [
     ],
   },
   {
-    id: 2, name: 'Burned Bridges',
+    id: 2, name: 'Burned Bridges', music: 'ceiling',
     briefing: 'The Concord wanted that crate, and now it wants us. Its border patrol is waiting at Hollowgap Pass; punch through to League airspace.',
     setting: 'mountains', location: 'Anvil Range (Hollowgap Pass)', clock: '17:45', time: 'golden',
     startBack: 2000,   // m behind the sortie frame: a quiet lead-in before first contact
@@ -258,7 +274,7 @@ export const MISSIONS = [
     ],
   },
   {
-    id: 3, name: 'Housewarming',
+    id: 3, name: 'Housewarming', music: 'ceiling',
     briefing: "The League can't afford a base for us, so we're taking the Concord's air station at Tarnfell. Its harbor covers the approach: sink the warships and silence the shore guns.",
     setting: 'snow coast', location: 'Tarnfell Air Station (soon the Toolshed)', clock: '08:12',
     startBack: 4000,   // m behind the sortie frame: a quiet lead-in before first contact
@@ -410,8 +426,9 @@ export const MISSIONS = [
         { kind: 'ground', type: 'railgun', count: 2, area: 'base', distance: 4800, difficulty: 'mercenary' },
         { kind: 'air', type: 'Q07', count: 3, formation: 'vee', position: 'left', distance: 5000, after: 25, task: 'engage', difficulty: 'mercenary' },
       ] },
-      { label: 'Chime Squadron', groups: [
-        { kind: 'air', type: 'Q07 CHIME', count: 1, formation: 'pair', position: 'behind', distance: 2000, task: 'engage' },
+      { label: 'Chime Squadron', endAtRemaining: 2, groups: [   // won with two left: the rest of Chime pulls out with Mainspring
+        { kind: 'air', type: 'Q07 MAINSPRING', count: 1, formation: 'pair', position: 'behind', distance: 2300, task: 'engage' },
+        { kind: 'air', type: 'Q07 CHIME', count: 2, formation: 'pair', position: 'behind', distance: 2000, task: 'engage' },
         { kind: 'air', type: 'Q11 CHIME', count: 1, formation: 'pair', position: 'behind', distance: 2500, task: 'engage' },
       ] },
     ],
@@ -616,8 +633,9 @@ export const MISSIONS = [
         { kind: 'air', type: 'EIDER-8B', count: 2, formation: 'pair', position: 'high', distance: 6900, after: 30, task: 'engage' },
         { kind: 'air', type: 'NV-16', count: 4, formation: 'vee', position: 'behind', distance: 4000, after: 40, task: 'engage' },
       ] },
-      { label: 'Chime strikes the hour', groups: [
-        { kind: 'air', type: 'Q07 CHIME', count: 4, formation: 'vee', position: 230, distance: 6300, task: 'engage', flight: 4 },
+      { label: 'Chime strikes the hour', endAtRemaining: 2, groups: [   // won with two left: Mainspring pulls the survivors out
+        { kind: 'air', type: 'Q07 MAINSPRING', count: 1, formation: 'pair', position: 230, distance: 6500, task: 'engage' },
+        { kind: 'air', type: 'Q07 CHIME', count: 3, formation: 'vee', position: 230, distance: 6300, task: 'engage', flight: 4 },
         { kind: 'air', type: 'Q11 CHIME', count: 4, formation: 'vee', position: 225, distance: 6500, task: 'engage', flight: 4 },
         { kind: 'air', type: 'NV-15C', count: 4, formation: 'vee', position: 235, distance: 6000, task: 'engage' },
         { kind: 'air', type: 'FLURRY-29', count: 4, formation: 'vee', position: 222, distance: 6000, task: 'engage' },
@@ -630,7 +648,7 @@ export const MISSIONS = [
     setting: 'night sea', location: 'Morrow Deep rigs', clock: '00:30', time: 'night',
     startBack: 4000,   // m behind the sortie frame: a quiet lead-in before first contact
     // Layout (PW Midnight Light): jump jets and helicopters patrol the rigs; after the alarm more choppers scramble;
-    //   Pendulum takes off from a rig.
+    //   Mainspring takes off from a rig.
     phases: [
       { label: 'Morrow Deep rigs', groups: [
         { kind: 'ground', type: 'railgun', count: 8, area: 'scattered', distance: 4800 },
@@ -647,9 +665,9 @@ export const MISSIONS = [
         { kind: 'air', type: 'KD-28H', count: 4, formation: 'loose', distance: 800, near: 'sam', after: 20, task: 'scramble' },
         { kind: 'air', type: 'EIDER-8B', count: 6, formation: 'vee', position: 'ahead', distance: 1500, near: 'c-ram', task: 'patrol' },
       ] },
-      { label: 'Pendulum', groups: [
-        { kind: 'air', type: 'Q04 PENDULUM', count: 1, formation: 'pair', position: 'low', distance: 600, near: 'railgun', task: 'engage' },
-        { kind: 'air', type: 'Q09', count: 6, formation: 'vee', position: 'low', distance: 1500, near: 'railgun', task: 'engage', optional: true, difficulty: 'mercenary' },  // launch with Pendulum; not needed once Pendulum falls
+      { label: 'Mainspring', music: 'mainspring', groups: [
+        { kind: 'air', type: 'Q04 MAINSPRING', count: 1, formation: 'pair', position: 'low', distance: 600, near: 'railgun', task: 'engage' },
+        { kind: 'air', type: 'Q09', count: 6, formation: 'vee', position: 'low', distance: 1500, near: 'railgun', task: 'engage', optional: true, difficulty: 'mercenary' },  // launch with her; not needed once she falls
       ] },
     ],
   },
@@ -746,13 +764,15 @@ export const MISSIONS = [
   },
   {
     id: 16, name: 'Backswing',
-    briefing: "Pendulum swung back and is circling the ruins of Tarnfell, our old Toolshed, in a new Orrery jet. Shearpin Squadron flies escort, and shearpins are built to snap under load: drop Pendulum and they'll bail.",
+    briefing: "Mainspring is back in a new Orrery jet, circling the ruins of Tarnfell, our old Toolshed. Shearpin Squadron flies her escort, and shearpins are built to snap under load: drop her and they'll bail.",
     setting: 'snow coast', location: 'Tarnfell (ruins of the Toolshed)', clock: '14:00', time: 'golden',
+    red: true,   // the sky is still red from the Glassfall over Kelderwick (M15)
+    music: 'mainspring',
     startBack: 1000,   // m behind the sortie frame: a quiet lead-in before first contact
-    // Layout (PW Wayback): Pendulum and Shearpin Squadron meet you head-on together.
+    // Layout (PW Wayback): Mainspring and Shearpin Squadron meet you head-on together.
     phases: [
-      { label: 'Pendulum swings back', groups: [
-        { kind: 'air', type: 'Q10 PENDULUM', count: 1, formation: 'pair', position: 'ahead', distance: 5000, task: 'engage' },
+      { label: 'Mainspring winds back', groups: [
+        { kind: 'air', type: 'Q10 MAINSPRING', count: 1, formation: 'pair', position: 'ahead', distance: 5000, task: 'engage' },
         { kind: 'air', type: 'Q09 SHEARPIN', count: 4, formation: 'vee', position: 'ahead', distance: 5500, task: 'engage', flight: 4, optional: true },
       ] },
     ],
@@ -794,7 +814,7 @@ export const MISSIONS = [
         { kind: 'air', type: 'NV-4', count: 2, formation: 'pair', position: 'left', distance: 3000, task: 'patrol' },
         { kind: 'air', type: 'SQUALL-27', count: 2, formation: 'pair', position: 'right', distance: 3000, task: 'patrol' },
       ] },
-      { label: "Chime's last round", groups: [
+      { label: "Chime's last round", mainspring: true, groups: [   // Mainspring sends them in over the radio
         { kind: 'air', type: 'Q07 CHIME', count: 4, formation: 'vee', position: 0, distance: 6600, task: 'engage', flight: 4 },
         { kind: 'air', type: 'Q11 CHIME', count: 4, formation: 'vee', position: 'high', distance: 6700, task: 'engage', flight: 4 },
       ] },
@@ -889,6 +909,8 @@ export const MISSIONS = [
     briefing: 'Mainspring is up in the Q12 over Lanternport, alone, waiting for you. One last duel, Wingnut: unwind the spring.',
     setting: 'city dusk', location: 'Lanternport at sundown', clock: '18:00', time: 'evening',
     red: true,   // under the Glassfall's red sky (js/timeofday.js glassfallPreset)
+    music: 'mainspring',
+    noAwacs: true, wsoBlackout: 0.5,   // only the WSO and Mainspring on the radio; the WSO blacks out at half her health
     wingmen: [],   // the duel is flown alone
     startBack: 2000,   // m behind the sortie frame: a quiet lead-in before first contact
     // Layout (PW Kings): Mainspring meets you head-on (on Mercenary, with four wingmen).
@@ -921,6 +943,8 @@ export function countUnits(missionOrPhase, difficulty = 'normal') {
 
 /** Lighting presets a mission may name in `time` (js/timeofday.js TIME_PRESETS keys; default 'day'). */
 export const TIMES = ['day', 'golden', 'dusk', 'overcast', 'evening', 'night'];
+/** Soundtrack tracks a mission or phase may name in `music` (js/music.js TRACKS). */
+export const TRACKS = ['ceiling', 'night', 'mainspring', 'epic'];
 const TASKS = ['engage', 'patrol', 'escort', 'scramble'];
 const SIDES = ['ahead', 'left', 'right', 'behind', 'high', 'low'];
 /** The placement fields of air group g in phase i of mission m (see MISSIONS above): a list of problems. */
@@ -952,6 +976,20 @@ export function validateMissions(missions = MISSIONS) {
     if ('time' in m && !TIMES.includes(m.time)) out.push(`M${m.id}: time must be one of ${TIMES.join(', ')}`);
     if ('glassfall' in m && m.glassfall !== 'mainspring') out.push(`M${m.id}: glassfall must be 'mainspring'`);
     if ('red' in m && typeof m.red !== 'boolean') out.push(`M${m.id}: red must be true or false`);
+    if ('music' in m && !TRACKS.includes(m.music)) out.push(`M${m.id}: music must be one of ${TRACKS.join(', ')}`);
+    if ('noAwacs' in m && typeof m.noAwacs !== 'boolean') out.push(`M${m.id}: noAwacs must be true or false`);
+    if ('wsoBlackout' in m && !(typeof m.wsoBlackout === 'number' && m.wsoBlackout > 0 && m.wsoBlackout < 1)) out.push(`M${m.id}: wsoBlackout must be a fraction in (0, 1)`);
+    m.phases.forEach((p, i) => {
+      const where = `M${m.id} phase ${i + 1}`;
+      if ('music' in p && !TRACKS.includes(p.music)) out.push(`${where}: music must be one of ${TRACKS.join(', ')}`);
+      if ('mainspring' in p && p.mainspring !== true) out.push(`${where}: mainspring must be true`);
+      if ('endAtRemaining' in p) {
+        const req = countUnits(p, 'easy'); const need = req.air + req.ground + req.naval - req.optional;
+        if (!(Number.isInteger(p.endAtRemaining) && p.endAtRemaining >= 1 && p.endAtRemaining <= 8)) out.push(`${where}: endAtRemaining must be 1-8`);
+        else if (p.endAtRemaining >= need) out.push(`${where}: endAtRemaining ${p.endAtRemaining} leaves nothing to fight (${need} required at Easy)`);
+        if (p.groups.some((g) => g.after > 0 && !g.optional)) out.push(`${where}: endAtRemaining needs every required group present from the start (no after)`);
+      }
+    });
     m.phases.forEach((p, i) => { if ('glassfall' in p && !(p.glassfall && Number.isInteger(p.glassfall.impacts) && p.glassfall.impacts >= 1 && p.glassfall.impacts <= 16)) out.push(`M${m.id} phase ${i + 1}: glassfall needs impacts 1-16`); });
     if ('wingmen' in m) {
       const w = m.wingmen;

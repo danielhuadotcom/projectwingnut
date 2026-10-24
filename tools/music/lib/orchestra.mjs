@@ -189,6 +189,7 @@ export function renderTrack(orch, bank, track, outSr, frames) {
           gainFn, offset, attack, detune, loop: !isShort,
           pan: (track.pan || 0) + (E.pan || 0) + (n.pan || 0), width: n.width ?? E.width ?? track.width ?? 1,
           hardEnd: isShort && !art.alignPeak ? undefined : tEnd + 0.01,
+          vib: n.vib && !isShort ? { ...n.vib, t0: n.t + delay, phase: er() * 6.283 } : undefined,
         });
         voices++;
       }

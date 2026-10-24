@@ -35,6 +35,7 @@ Thumbs.db
 
 # TTS masters for the AWACS clips (regenerate with tools/gen_awacs_tts.mjs; the trimmed clips in assets/awacs/ ship)
 assets/awacs/raw/
+assets/dialogue/raw/
 
 # local-only notes and agent prompts
 SPEC.md
@@ -44,3 +45,7 @@ SPEC_PHASE2.md
 assets/voice_audition/
 DIALOGUE_NOTES.md
 DIALOGUE_DRAFT.md
+LORE.md
+
+# music audition renders (local listening only; regenerate with tools/music/render_mainspring.mjs, render_night.mjs, crossfade_test.mjs)
+assets/music_audition/

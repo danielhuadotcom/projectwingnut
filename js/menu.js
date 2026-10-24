@@ -68,7 +68,7 @@ import { fullscreenSupported, isFullscreen, setFullscreen, onFullscreenChange } 
 // =================================================================================================================
 export const DEFAULT_SETTINGS = Object.freeze({
   quality: 'auto', perfOverlay: false, invertPitch: false, mouseSens: 1, mouseKeys: 'simple', touch: 'auto', cameraShake: true, screenFlash: false,
-  master: 0.8, music: 0.7, sfx: 0.9, voice: 1.0, subtitles: true, difficulty: 'normal',
+  master: 0.8, music: 0.7, sfx: 0.9, voice: 1.0, wso: true, subtitles: true, difficulty: 'normal',
   expoPitch: STICK_EXPO, expoRoll: STICK_EXPO, expoYaw: STICK_EXPO, padLayout: 'mode2',
 });
 const STORE_KEY = 'wingnut.settings';
@@ -121,8 +121,10 @@ export const SETTING_DEFS = [
   { key: 'sfx', tab: 'audio', type: 'slider', label: 'Effects', min: 0, max: 1, step: 0.05, dragStep: 0.01, format: pct,
     desc: 'Engines, weapons, explosions and cockpit warnings.' },
   { key: 'voice', tab: 'audio', type: 'slider', label: 'Voice', min: 0, max: 1, step: 0.05, dragStep: 0.01, format: pct,
-    desc: 'AWACS radio calls.' },
-  { key: 'subtitles', tab: 'audio', type: 'toggle', label: 'AWACS subtitles',
+    desc: 'Radio calls: AWACS, your WSO and Mainspring.' },
+  { key: 'wso', tab: 'audio', type: 'toggle', label: 'WSO voice',
+    desc: 'Your back-seater\'s calls and banter. Off: AWACS makes the calls.' },
+  { key: 'subtitles', tab: 'audio', type: 'toggle', label: 'Radio subtitles',
     desc: 'Show radio calls as text on the HUD.' },
   { key: 'difficulty', tab: 'gameplay', type: 'choice', label: 'Difficulty',
     options: [['easy', 'Easy'], ['normal', 'Normal'], ['hard', 'Hard'], ['mercenary', 'Merc']],
@@ -252,11 +254,11 @@ export const CREDITS = [
     'Per-mission enemy compositions and unit performance figures adapted from community documentation (projectwingman.wiki.gg), scaled down for performance',
   ] },
   { section: 'Voice', lines: [
-    '"AWACS Claude" radio calls, voiced with Google text-to-speech (Gemini API)',
+    'Radio voices (AWACS Claude, the WSO, Mainspring) generated with Google text-to-speech (Gemini API)',
   ] },
   { section: 'Music', lines: [
-    '"Ceiling Unlimited", an original orchestral theme composed in code for PROJECT WINGNUT',
-    'Rendered from the VSCO 2 Community Edition sample library (Versilian Studios / Sam Gossner, CC0)',
+    '"Ceiling Unlimited", "Sortie", "Mainspring" and "Night Shift", original music composed in code for PROJECT WINGNUT',
+    'Orchestral samples from the VSCO 2 Community Edition library (Versilian Studios / Sam Gossner, CC0)',
   ] },
   { section: 'Sound effects', lines: [
     '"Saab J35D Draken – start engine and taxiing" by Work With Sounds / Torsten Nilsson (Wikimedia Commons, with Wikimedia Sverige), CC BY 4.0, modified',
