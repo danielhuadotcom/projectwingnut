@@ -62,6 +62,8 @@
 //     phases[].endAtRemaining (optional) = N (1-8): the phase is won once N or fewer of its required enemies are left;
 //     those (and any optional ones still flying) withdraw: they turn away, can no longer be targeted and despawn (M6,
 //     M11: the last two of Chime pull out).
+//     groups[].label (optional) = the HUD label its aircraft show instead of the type key (at most 14 characters; M11:
+//     Mainspring's Q07 passes as one of Chime's).
 //     phases[].mainspring (optional) = true: Mainspring is in the fight although none of her jets is (M18: on the radio).
 //     Any phase with a live MAINSPRING-type jet counts too (the "Typical." line on a death).
 //     glassfall (optional) = a Glassfall story event (js/glassfall.js): on a phase, { impacts } runs the Thunderhead
@@ -634,7 +636,7 @@ export const MISSIONS = [
         { kind: 'air', type: 'NV-16', count: 4, formation: 'vee', position: 'behind', distance: 4000, after: 40, task: 'engage' },
       ] },
       { label: 'Chime strikes the hour', endAtRemaining: 2, groups: [   // won with two left: Mainspring pulls the survivors out
-        { kind: 'air', type: 'Q07 MAINSPRING', count: 1, formation: 'pair', position: 230, distance: 6500, task: 'engage' },
+        { kind: 'air', type: 'Q07 MAINSPRING', count: 1, formation: 'pair', position: 230, distance: 6500, task: 'engage', label: 'Q07 CHIME' },   // unnamed: one of the jets that get away
         { kind: 'air', type: 'Q07 CHIME', count: 3, formation: 'vee', position: 230, distance: 6300, task: 'engage', flight: 4 },
         { kind: 'air', type: 'Q11 CHIME', count: 4, formation: 'vee', position: 225, distance: 6500, task: 'engage', flight: 4 },
         { kind: 'air', type: 'NV-15C', count: 4, formation: 'vee', position: 235, distance: 6000, task: 'engage' },
@@ -1016,6 +1018,7 @@ export function validateMissions(missions = MISSIONS) {
       for (const g of p.groups) {
         const where = `M${m.id} phase ${i + 1} ${g.type}`;
         if ('difficulty' in g && !['hard', 'mercenary'].includes(g.difficulty)) out.push(`${where}: bad difficulty`);
+        if ('label' in g && !(g.kind === 'air' && typeof g.label === 'string' && g.label.length > 0 && g.label.length <= 14 && g.label === g.label.toUpperCase())) out.push(`${where}: label must be an upper-case HUD label (air, 1-14 characters)`);
         if ('target' in g && (g.target !== 'fleet' || g.kind !== 'air' || !AIRCRAFT_TYPES[g.type] || AIRCRAFT_TYPES[g.type].armed !== false
           || !(Array.isArray(allies) && allies.some((a) => a.kind === 'naval' && (a.phase || 0) <= i)))) out.push(`${where}: target 'fleet' needs an unarmed air type and an allied fleet by this phase`);
         if (g.kind === 'air') {

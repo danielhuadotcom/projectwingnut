@@ -670,6 +670,9 @@ class Game {
     for (const g of P.groups) if (g.kind !== 'air' && spawns(g) && !g.optional && !(g.after > 0) && S[g.type]) { ax += S[g.type].x; az += S[g.type].z; an++; }
     if (an) this._nextAnchor = { x: ax / an, z: az / an };
     this._fight = an ? this._nextAnchor : { x: F.x, z: F.z };   // where this phase's fight is (spawnPending, fleetApproach)
+    // unarmed transits (transports, bombers, drones) are leashed to the fight: around the player if this phase's air
+    // groups went there (_airFrame), else the phase's fight (EnemyBrain.leashHome; the final withdrawal drops it)
+    (this._leashHome || (this._leashHome = new THREE.Vector3())).set(this._airFrame ? pp.x : this._fight.x, 0, this._airFrame ? pp.z : this._fight.z);
     this.seeded(this.placementSeed(-2), () => this.spawnAllies(true));    // allied units placed beside this phase's enemies
     if (this.flights) this.flights.restart(this.time);
     this._phaseLive = false;               // (updateGame: a phase that opens empty waits for its delayed groups)
@@ -706,7 +709,9 @@ class Game {
   withdrawRemaining() {
     const p = this.player;
     let n = 0;
-    for (const e of this.enemies) {
+    // Mainspring first (M11: she is guaranteed to be among those who get away, if the player hasn't downed her)
+    const order = this.enemies.filter((e) => e.alive && !e.withdrawing).sort((a, b) => (b.mainspring ? 1 : 0) - (a.mainspring ? 1 : 0));
+    for (const e of order) {
       if (!e.alive || e.withdrawing) continue;
       const b = e.brain;
       e.withdrawing = true; e.untargetable = true; e.optional = true; e.holdFire = true; e.withdrawT = this.time + 6;
@@ -714,7 +719,7 @@ class Game {
       _v.subVectors(e.position, p.position); _v.y = 0;
       if (_v.lengthSq() < 1) e.getForward(_v);
       b.transitDir.copy(_v.normalize()); b.transitAlt = Math.max(e.position.y, 900); b.state = 'transit'; b.stateTime = 0;
-      b.setTransitGoal(null);
+      b.setTransitGoal(null); b.leashHome = null;   // the final withdrawal: off the leash, away from the player
       e.throttle = 1; n++;
     }
     for (const t of this.ground.targets) if (t.alive && t.team !== 'player') t.optional = true;
@@ -728,7 +733,7 @@ class Game {
   mainspringInFight() {
     const P = this.mission && this.mission.phases && this.mission.phases[this.phaseIndex];
     if (P && P.mainspring && !this.infinity) return true;
-    for (const e of this.enemies) if (e.alive && !e.withdrawing && /MAINSPRING/.test(e.name || '')) return true;
+    for (const e of this.enemies) if (e.alive && !e.withdrawing && e.mainspring) return true;
     return false;
   }
   /** Radio gate 'alone' (js/radio.js): only the boss is left flying (her wingmen are down). */
@@ -780,6 +785,7 @@ class Game {
     this.infT = -1; this.waveTimer = 0;
     this.wave = plan.round; this.phaseIndex = plan.round - 1;
     this.setSortieFrame();
+    (this._leashHome || (this._leashHome = new THREE.Vector3())).set(this.player.position.x, 0, this.player.position.z);   // (spawnAircraft)
     this.fitSurfaceSpots(plan.groups);
     this._bossPhase = false;
     let ground = 0, naval = 0;
@@ -947,9 +953,9 @@ class Game {
     // target 'fleet': past the frame origin from the allied fleet, flying at it (js/allies.js leakers)
     const atFleet = g.target === 'fleet' && g.kind === 'air' && this.allied && this.allied.ships.length > 0;
     if (atFleet) { this.fleetApproach(g, dist, _v2, rand); cx = _v2.x; cz = _v2.z; }
-    this._spawnOptional = !!g.optional; this._spawnAtFleet = atFleet;
+    this._spawnOptional = !!g.optional; this._spawnAtFleet = atFleet; this._spawnLabel = g.label || null;
     const n = g.kind === 'air' ? this.spawnAirGroup(g, cx, cz, rand) : this.seeded(rand() * 4294967296, () => this.spawnSurfaceGroup(g, cx, cz));
-    this._spawnAtFleet = false;
+    this._spawnAtFleet = false; this._spawnLabel = null;
     return n;
   }
   /** Sortie frame: where and which way the sortie starts (the player's pose at mission load). Campaign groups are
@@ -1133,7 +1139,7 @@ class Game {
    *  in the same phase, placed before it). Null when there are none. */
   escortCharges(near) {
     let out = null;
-    for (const e of this.enemies) if (e.alive && e.name === near && e.bornAt === this.time) (out || (out = [])).push(e);
+    for (const e of this.enemies) if (e.alive && (e.typeKey || e.name) === near && e.bornAt === this.time) (out || (out = [])).push(e);
     return out;
   }
   /**
@@ -1209,10 +1215,14 @@ class Game {
     ac.brain.evasive = false; ac.brain.lockedOn = false; ac._glass = false;   // pooled: the Glassfall tags its Thunderheads
     ac.brain.gunsOnly = type.armed === false ? 'none' : null;
     if (ac.brain.passive) { ac.getForward(ac.brain.transitDir); ac.brain.transitAlt = pos.y; ac.brain.state = 'transit'; }
+    // kept by reference: nextPhase sets it once the phase's sites are known, after its groups are placed
+    ac.brain.leashHome = ac.brain.passive ? this._leashHome || (this._leashHome = new THREE.Vector3()) : null;
     ac.brain.setTransitGoal(null);                       // pooled: a leaker's goal must not carry over
     ac.holdFire = false;                                 // pooled: attack slots (updateGame) decide who may fire
     ac.withdrawing = false; ac.untargetable = false;     // pooled: a phase won early sends its survivors home (withdrawRemaining)
-    ac.name = typeName;
+    ac.typeKey = typeName;                               // the type; name is the HUD label (groups[].label may disguise it)
+    ac.name = this._spawnLabel || typeName;
+    ac.mainspring = /MAINSPRING/.test(typeName);         // one of Mainspring's jets (the radio's "Typical.", withdrawal order)
     if (this._spawnAtFleet) this.allied.addLeaker(ac);   // flies at the allied fleet instead (js/allies.js)
     return ac;
   }

@@ -36,6 +36,8 @@ const WSO_SHARE = 0.6;      // share of pool-backed AWACS calls the WSO takes
 const LABELS = { AWACS: 'AWACS CLAUDE', WSO: 'WSO', MAINSPRING: 'MAINSPRING' };
 // AWACS event keys: priority class, default cooldown (s)
 const CRITICAL = new Set(['missileIncoming', 'pullUp', 'checkSix', 'playerHit', 'lowHealth', 'tunnelCrash', 'outOfBounds', 'playerDown']);
+// Per-trigger cooldowns (s), shared by the AWACS and WSO versions of a call; they start when a line goes on air. Kept
+// short: variety (the rotation below) and the short expiry keep reactions from repeating, not long cooldowns.
 const COOLDOWNS = { kill: 2, groundKill: 2, missileIncoming: 4, pullUp: 4 };
 // WSO-only calls (no AWACS version): a random cooldown in [a, b] s after each one, short expiry, never the same variant twice running
 const WSO_CALLS = { lockOn: [12, 20], gunSolution: [12, 20] };
@@ -69,7 +71,7 @@ export class Radio {
     this.events = [];                 // log: { t, ev, id, speaker, pri, text? } (capped)
     this._seq = 0;
     this._cool = {};                  // key -> last time said
-    this._lastVariant = {}; this._lastPool = {}; this._next = {};
+    this._bags = {}; this._next = {}; this._lastClip = {};
     this.fetchClips = opts.fetchClips !== false;
     this.wsoOn = opts.wso !== false;   // Settings > Audio > WSO voice: Off = AWACS makes every call, the WSO's lines are silent
     this.byId = {}; for (const e of DIALOGUE) this.byId[e.id] = e;
@@ -164,26 +166,40 @@ export class Radio {
       it.key = key; it.ttl = this.t + (key === 'tunnelEnter' ? 3.5 : CRIT_TTL);
       return this._enqueue(it);
     }
-    const pool = (this.wsoOn ? this.pool[key] || [] : []).filter((e) => !(opts.subject && /MAINSPRING/.test(opts.subject.name || '') && HE.test(e.text)));
+    const pool = (this.wsoOn ? this.pool[key] || [] : []).filter((e) => !(opts.subject && (opts.subject.mainspring || /MAINSPRING/.test(opts.subject.name || '')) && HE.test(e.text)));
     const awacsOk = !this.noAwacs && !this.awacsSilent && AWACS_CLIPS[key];
     let wso = pool.length > 0 && !this.wsoSilent && (this.noAwacs || this.awacsSilent || !AWACS_CLIPS[key] || this.rand() < WSO_SHARE);
     if (!wso && !awacsOk) return false;
+    // never the same clip twice in a row within a trigger: a version with one clip that just played hands over to the other
+    const only = (n, id) => n === 1 && this._lastClip[key] === id;
+    if (wso && only(pool.length, pool[0] && pool[0].id)) { if (awacsOk) wso = false; else return false; }
+    else if (!wso && awacsOk && only(AWACS_CLIPS[key].length, key + '#0')) { if (pool.length && !this.wsoSilent) wso = true; else return false; }
     let it;
     if (wso) {
-      let i = Math.floor(this.rand() * pool.length) % pool.length;
-      if (pool.length > 1 && pool[i].id === this._lastPool[key]) i = (i + 1) % pool.length;   // no immediate repeat
-      this._lastPool[key] = pool[i].id;
-      it = this._story(pool[i], pri, 0);
+      it = this._story(this._rotate('wso:' + key, pool), pri, 0);
     } else {
       const clips = AWACS_CLIPS[key];
-      let i = Math.floor(this.rand() * clips.length);
-      if (clips.length > 1 && i === this._lastVariant[key]) i = (i + 1) % clips.length;
-      this._lastVariant[key] = i;
+      const i = this._rotate('awacs:' + key, clips.map((c, k) => k));
       it = { kind: 'voice', id: key + '#' + i, speaker: 'AWACS', text: clips[i].text, dur: clips[i].dur, awacs: [key, i], pri };
     }
     it.key = key; it.at = this.t;
     it.ttl = this.t + (EXPIRY[key] ?? (pri === 'critical' ? CRIT_TTL : AMBIENT_TTL));
     return this._enqueue(it);
+  }
+
+  /** Next variant of a call: a shuffled rotation through all of them, never the same one twice in a row (also across a
+   *  reshuffle). items: the variants; bag key: per trigger and speaker. Variants filtered out for this call are skipped. */
+  _rotate(bagKey, items) {
+    const bag = this._bags[bagKey] || (this._bags[bagKey] = { left: [], last: null });
+    const ids = items.map((x) => (typeof x === 'object' ? x.id : x));
+    bag.left = bag.left.filter((x) => ids.includes(x));
+    if (!bag.left.length) {
+      bag.left = ids.slice();
+      for (let i = bag.left.length - 1; i > 0; i--) { const j = Math.floor(this.rand() * (i + 1)) % (i + 1); [bag.left[i], bag.left[j]] = [bag.left[j], bag.left[i]]; }
+      if (bag.left.length > 1 && bag.left[0] === bag.last) bag.left.push(bag.left.shift());
+    }
+    const id = bag.left.shift(); bag.last = id;
+    return items[ids.indexOf(id)];
   }
 
   /** Cut the line on air and drop the queue (quit, restart). */
@@ -257,7 +273,7 @@ export class Radio {
     this.cur = Object.assign(q, { start: t, end: t + lead + dur, audio: !!buf });
     this.started[q.id] = true;
     if (q.key) {                                   // cooldowns start on air
-      this._cool[q.key] = t;
+      this._cool[q.key] = t; this._lastClip[q.key] = q.id;
       if (WSO_CALLS[q.key]) { const [a, b] = WSO_CALLS[q.key]; this._next[q.key] = t + a + (b - a) * this.rand(); }
     }
     this._log(breakIn ? 'break-in' : 'start', q.id, q);
@@ -268,6 +284,7 @@ export class Radio {
   }
   _finish(c, how) {
     if (how === 'end') this.done[c.id] = true; else this.dropped[c.id] = true;
+    if (c.alias) { if (how === 'end') this.done[c.alias] = true; else this.dropped[c.alias] = true; }   // lines chained after the WSO beat it stood in for
     const chained = this.queue.some((q) => q.after === c.id && q.kind === 'voice');
     this.freeAt = this.t + GAP + (c.pri === 'plot' && !chained ? PLOT_HOLD : 0);
     this._log(how, c.id, c);
@@ -326,7 +343,8 @@ export class Radio {
         delay = pri === 'flavor' ? (D[trig.on] ?? 0) : trig.on === 'start' ? D.start : trig.on === 'phase' && trig.n === 1 ? D.phase1 : 0;
         if (opts.promote) delay = 0;
       }
-      const it = this._story(e, pri, delay);
+      const fb = !this.wsoOn && e.speaker === 'WSO' ? this.script.find((f) => f.fallbackFor === e.id) : null;
+      const it = fb ? Object.assign(this._story(fb, pri, delay), { alias: e.id }) : this._story(e, pri, delay);   // WSO voice off: AWACS carries the beat
       if (opts.phase) it.phase = opts.phase;
       if (opts.exemptSilence) it.exempt = true;
       if (it.kind === 'cue' && !it.after && !it.with) { this.queue.push(Object.assign(it, { seq: this._seq++ })); this._log('queue', it.id, it); }

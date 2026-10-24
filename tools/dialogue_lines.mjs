@@ -2,7 +2,8 @@
 // Do not edit by hand: edit the draft and regenerate. Shape: { id, speaker, trigger, text, note, mission?, music?, gate? }.
 //   trigger.on: start | phase (n) | clear (n) | complete | glassfall | detonation (n) | firstKill | boss (n = 50 / 25)
 //     | deathMainspring | tunnelApproach | tunnelEnter | tunnelExit | pool (key = the AWACS event it may replace);
-//   trigger.after / trigger.with: the id of the line this one queues behind / starts with.
+//   trigger.after / trigger.with: the id of the line this one queues behind / starts with. trigger.fallbackFor: the WSO
+//   line this AWACS line replaces when the WSO voice is off.
 //   music: a MUSIC cue (no clip): { action: play | cut | resume, track?, fade (s) }. gate 'alone': waits until only the
 //   boss is left alive.
 export const DIALOGUE_LINES = [
@@ -119,6 +120,21 @@ export const DIALOGUE_LINES = [
   {"id":"wso_15","speaker":"WSO","trigger":{"on":"pool","key":"lockOn"},"text":"Locked— take the shot!","note":"combat, tight"},
   {"id":"wso_16","speaker":"WSO","trigger":{"on":"pool","key":"gunSolution"},"text":"In gun range! Shoot them!","note":"combat, urgent"},
   {"id":"wso_17","speaker":"WSO","trigger":{"on":"pool","key":"gunSolution"},"text":"Nose on them— guns, GUNS!","note":"combat bark (homage to the memed BFM training video)"},
+  {"id":"wso_18","speaker":"WSO","trigger":{"on":"pool","key":"kill"},"text":"Splash! Got 'em!","note":"combat"},
+  {"id":"wso_19","speaker":"WSO","trigger":{"on":"pool","key":"kill"},"text":"Down they go!","note":"combat"},
+  {"id":"wso_20","speaker":"WSO","trigger":{"on":"pool","key":"kill"},"text":"That's one! Keep going!","note":"combat"},
+  {"id":"wso_21","speaker":"WSO","trigger":{"on":"pool","key":"groundKill"},"text":"Target's toast.","note":"combat"},
+  {"id":"wso_22","speaker":"WSO","trigger":{"on":"pool","key":"groundKill"},"text":"Ground's clear there. Move on.","note":"combat"},
+  {"id":"wso_23","speaker":"WSO","trigger":{"on":"pool","key":"streak"},"text":"We're on fire today!","note":"combat"},
+  {"id":"wso_24","speaker":"WSO","trigger":{"on":"pool","key":"missileIncoming"},"text":"Missile, six o'clock— FLARES!","note":"combat"},
+  {"id":"wso_25","speaker":"WSO","trigger":{"on":"pool","key":"missileIncoming"},"text":"They fired— TURN! Turn!","note":"combat"},
+  {"id":"wso_26","speaker":"WSO","trigger":{"on":"pool","key":"missileDefeated"},"text":"Ha! Missed us!","note":"combat"},
+  {"id":"wso_27","speaker":"WSO","trigger":{"on":"pool","key":"missileDefeated"},"text":"Flares worked. Breathe.","note":"combat"},
+  {"id":"wso_28","speaker":"WSO","trigger":{"on":"pool","key":"checkSix"},"text":"Someone's behind us— BREAK!","note":"combat"},
+  {"id":"wso_29","speaker":"WSO","trigger":{"on":"pool","key":"playerHit"},"text":"Ow— we're hit! Still up!","note":"combat"},
+  {"id":"wso_30","speaker":"WSO","trigger":{"on":"pool","key":"lowHealth"},"text":"We're coming apart back here!","note":"combat"},
+  {"id":"wso_31","speaker":"WSO","trigger":{"on":"pool","key":"pullUp"},"text":"Too low— UP! Pull UP!","note":"combat"},
+  {"id":"wso_32","speaker":"WSO","trigger":{"on":"pool","key":"newContacts"},"text":"Oh good, more of them.","note":"combat"},
   {"id":"wso_lock_1","speaker":"WSO","trigger":{"on":"pool","key":"lockOn"},"text":"Locked up!","note":"combat, quick"},
   {"id":"wso_lock_2","speaker":"WSO","trigger":{"on":"pool","key":"lockOn"},"text":"Got tone— send it!","note":"combat, quick"},
   {"id":"wso_lock_3","speaker":"WSO","trigger":{"on":"pool","key":"lockOn"},"text":"Gotcha— FIRE!","note":"combat, quick"},
@@ -127,4 +143,6 @@ export const DIALOGUE_LINES = [
   {"id":"wso_lock_6","speaker":"WSO","trigger":{"on":"pool","key":"lockOn"},"text":"Painted 'em— your shot!","note":"combat, quick"},
   {"id":"wso_lock_7","speaker":"WSO","trigger":{"on":"pool","key":"lockOn"},"text":"Hard lock— NOW!","note":"combat, quick"},
   {"id":"wso_lock_8","speaker":"WSO","trigger":{"on":"pool","key":"lockOn"},"text":"Solid tone! Let it fly!","note":"combat, quick"},
+  {"id":"m16_3_awacs","mission":16,"speaker":"AWACS","trigger":{"fallbackFor":"m16_3"},"text":"Shearpin's flying her escort. Those are our old hangar-mates.","note":"somber, quiet"},
+  {"id":"m18_4_awacs","mission":18,"speaker":"AWACS","trigger":{"fallbackFor":"m18_4"},"text":"Those were her warheads, Wingnut.","note":"grave"},
 ];

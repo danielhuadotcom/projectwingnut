@@ -1474,6 +1474,58 @@
    }
   ]
  },
+ "wso_18": {
+  "pick": 3,
+  "takes": [
+   {
+    "k": 1,
+    "rate": 2.59,
+    "artic": 3.33,
+    "maxPause": 180,
+    "score": 2.59
+   },
+   {
+    "k": 2,
+    "rate": 2.83,
+    "artic": 3.85,
+    "maxPause": 210,
+    "score": 2.83
+   },
+   {
+    "k": 3,
+    "rate": 2.86,
+    "artic": 3.85,
+    "maxPause": 200,
+    "score": 2.86
+   }
+  ]
+ },
+ "wso_19": {
+  "pick": 1,
+  "takes": [
+   {
+    "k": 1,
+    "rate": 4.48,
+    "artic": 4.48,
+    "maxPause": 0,
+    "score": 4.48
+   },
+   {
+    "k": 2,
+    "rate": 4.48,
+    "artic": 4.48,
+    "maxPause": 0,
+    "score": 4.48
+   },
+   {
+    "k": 3,
+    "rate": 3.66,
+    "artic": 3.66,
+    "maxPause": 0,
+    "score": 3.66
+   }
+  ]
+ },
  "wso_2": {
   "pick": 1,
   "takes": [
@@ -1500,6 +1552,266 @@
    }
   ]
  },
+ "wso_20": {
+  "pick": 2,
+  "takes": [
+   {
+    "k": 1,
+    "rate": 3.15,
+    "artic": 3.92,
+    "maxPause": 200,
+    "score": 3.15
+   },
+   {
+    "k": 2,
+    "rate": 3.39,
+    "artic": 4.17,
+    "maxPause": 220,
+    "score": 3.39
+   },
+   {
+    "k": 3,
+    "rate": 3.1,
+    "artic": 3.67,
+    "maxPause": 200,
+    "score": 3.1
+   }
+  ]
+ },
+ "wso_21": {
+  "pick": 2,
+  "takes": [
+   {
+    "k": 1,
+    "rate": 3.41,
+    "artic": 3.41,
+    "maxPause": 0,
+    "score": 3.41
+   },
+   {
+    "k": 2,
+    "rate": 4.11,
+    "artic": 4.11,
+    "maxPause": 0,
+    "score": 4.11
+   },
+   {
+    "k": 3,
+    "rate": 3.95,
+    "artic": 3.95,
+    "maxPause": 0,
+    "score": 3.95
+   }
+  ]
+ },
+ "wso_22": {
+  "pick": 1,
+  "takes": [
+   {
+    "k": 1,
+    "rate": 4.24,
+    "artic": 4.59,
+    "maxPause": 90,
+    "score": 4.24
+   },
+   {
+    "k": 2,
+    "rate": 3.65,
+    "artic": 4.5,
+    "maxPause": 260,
+    "score": 3.61
+   },
+   {
+    "k": 3,
+    "rate": 3.97,
+    "artic": 4.67,
+    "maxPause": 190,
+    "score": 3.97
+   }
+  ]
+ },
+ "wso_23": {
+  "pick": 1,
+  "takes": [
+   {
+    "k": 1,
+    "rate": 4,
+    "artic": 4.67,
+    "maxPause": 180,
+    "score": 4
+   },
+   {
+    "k": 2,
+    "rate": 3.62,
+    "artic": 4.07,
+    "maxPause": 80,
+    "score": 3.62
+   },
+   {
+    "k": 3,
+    "rate": 3.88,
+    "artic": 4.17,
+    "maxPause": 90,
+    "score": 3.88
+   }
+  ]
+ },
+ "wso_24": {
+  "pick": 2,
+  "takes": [
+   {
+    "k": 1,
+    "rate": 4.83,
+    "artic": 5.83,
+    "maxPause": 150,
+    "score": 4.83
+   },
+   {
+    "k": 2,
+    "rate": 5.51,
+    "artic": 6.42,
+    "maxPause": 180,
+    "score": 5.51
+   },
+   {
+    "k": 3,
+    "rate": 4.9,
+    "artic": 5.98,
+    "maxPause": 160,
+    "score": 4.9
+   }
+  ]
+ },
+ "wso_25": {
+  "pick": 1,
+  "takes": [
+   {
+    "k": 1,
+    "rate": 4,
+    "artic": 4.95,
+    "maxPause": 70,
+    "score": 4
+   },
+   {
+    "k": 2,
+    "rate": 3.45,
+    "artic": 4.42,
+    "maxPause": 130,
+    "score": 3.45
+   },
+   {
+    "k": 3,
+    "rate": 3.79,
+    "artic": 4.5,
+    "maxPause": 90,
+    "score": 3.79
+   }
+  ]
+ },
+ "wso_26": {
+  "pick": 2,
+  "takes": [
+   {
+    "k": 1,
+    "rate": 3.74,
+    "artic": 4.88,
+    "maxPause": 250,
+    "score": 3.74
+   },
+   {
+    "k": 2,
+    "rate": 3.88,
+    "artic": 4.21,
+    "maxPause": 80,
+    "score": 3.88
+   },
+   {
+    "k": 3,
+    "rate": 3.85,
+    "artic": 5.19,
+    "maxPause": 270,
+    "score": 3.77
+   }
+  ]
+ },
+ "wso_27": {
+  "pick": 2,
+  "takes": [
+   {
+    "k": 1,
+    "rate": 3.52,
+    "artic": 4.85,
+    "maxPause": 310,
+    "score": 3.28
+   },
+   {
+    "k": 2,
+    "rate": 4,
+    "artic": 4.85,
+    "maxPause": 110,
+    "score": 4
+   },
+   {
+    "k": 3,
+    "rate": 3.7,
+    "artic": 4.55,
+    "maxPause": 150,
+    "score": 3.7
+   }
+  ]
+ },
+ "wso_28": {
+  "pick": 1,
+  "takes": [
+   {
+    "k": 1,
+    "rate": 6.03,
+    "artic": 7.07,
+    "maxPause": 110,
+    "score": 6.03
+   },
+   {
+    "k": 2,
+    "rate": 5.51,
+    "artic": 6.54,
+    "maxPause": 140,
+    "score": 5.51
+   },
+   {
+    "k": 3,
+    "rate": 5.51,
+    "artic": 6.8,
+    "maxPause": 190,
+    "score": 5.51
+   }
+  ]
+ },
+ "wso_29": {
+  "pick": 1,
+  "takes": [
+   {
+    "k": 1,
+    "rate": 4.31,
+    "artic": 5.15,
+    "maxPause": 190,
+    "score": 4.31
+   },
+   {
+    "k": 2,
+    "rate": 3.21,
+    "artic": 4.13,
+    "maxPause": 120,
+    "score": 3.21
+   },
+   {
+    "k": 3,
+    "rate": 3.97,
+    "artic": 6.58,
+    "maxPause": 250,
+    "score": 3.97
+   }
+  ]
+ },
  "wso_3": {
   "pick": 1,
   "takes": [
@@ -1523,6 +1835,84 @@
     "artic": 6.67,
     "maxPause": 280,
     "score": 4.74
+   }
+  ]
+ },
+ "wso_30": {
+  "pick": 1,
+  "takes": [
+   {
+    "k": 1,
+    "rate": 6.03,
+    "artic": 6.03,
+    "maxPause": 0,
+    "score": 6.03
+   },
+   {
+    "k": 2,
+    "rate": 5.79,
+    "artic": 6.42,
+    "maxPause": 60,
+    "score": 5.79
+   },
+   {
+    "k": 3,
+    "rate": 5.79,
+    "artic": 6.36,
+    "maxPause": 60,
+    "score": 5.79
+   }
+  ]
+ },
+ "wso_31": {
+  "pick": 3,
+  "takes": [
+   {
+    "k": 1,
+    "rate": 3.68,
+    "artic": 5.32,
+    "maxPause": 140,
+    "score": 3.68
+   },
+   {
+    "k": 2,
+    "rate": 3.55,
+    "artic": 5.05,
+    "maxPause": 150,
+    "score": 3.55
+   },
+   {
+    "k": 3,
+    "rate": 4.07,
+    "artic": 5.15,
+    "maxPause": 130,
+    "score": 4.07
+   }
+  ]
+ },
+ "wso_32": {
+  "pick": 3,
+  "takes": [
+   {
+    "k": 1,
+    "rate": 4.24,
+    "artic": 4.81,
+    "maxPause": 140,
+    "score": 4.24
+   },
+   {
+    "k": 2,
+    "rate": 3.97,
+    "artic": 4.76,
+    "maxPause": 120,
+    "score": 3.97
+   },
+   {
+    "k": 3,
+    "rate": 4.39,
+    "artic": 5.1,
+    "maxPause": 100,
+    "score": 4.39
    }
   ]
  },

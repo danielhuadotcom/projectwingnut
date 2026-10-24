@@ -21,6 +21,8 @@
 import { Radio } from './js/radio.js';
 import { DIALOGUE } from './js/dialogue_data.js';
 import { MISSIONS } from './js/missions.js';
+import { AWACS_CLIPS } from './js/awacs_clips.js';
+const AWACS_KILL = AWACS_CLIPS.kill.map((c, i) => 'kill#' + i);
 
 const logEl = document.getElementById('log');
 let fails = 0, checks = 0;
@@ -215,8 +217,8 @@ function noOverlap(r, name) {
   run(x, 12);
   check('expiry: a dropped call keeps its cooldown', x.say('gunSolution') && x.say('lockOn'));
   const y = make(null).r; y.say('checkSix'); run(y, 0.1);
-  check('expiry: checkSix on air plays out', y.cur && y.cur.key === 'checkSix'); run(y, 0.9);
-  check('expiry: checkSix still on air after 1 s', y.cur && y.cur.key === 'checkSix' && !y.events.some((e) => e.ev === 'drop'));
+  check('expiry: checkSix on air plays out', y.cur && y.cur.key === 'checkSix'); run(y, 3);
+  check('expiry: checkSix on air is never dropped', y.events.some((e) => e.ev === 'end' && /^checkSix|^wso_[12]$/.test(e.id)) && !y.events.some((e) => e.ev === 'drop'));
   check('lockOn no immediate repeat', said.every((x, i) => i === 0 || x.id !== said[i - 1].id));
   check('lockOn always the WSO', said.every((x) => x.id.startsWith('wso_')));
   log(`RADIO_OK lockOn ${said.length} calls in 400 s, ${new Set(said.map((x) => x.id)).size} variants`);
@@ -239,10 +241,40 @@ function noOverlap(r, name) {
   check('WSO off: M21 Mainspring only', starts(m).length > 0 && starts(m).every((e) => e.speaker === 'MAINSPRING'), starts(m).map((e) => e.id));
   log('RADIO_OK WSO off');
 }
+// 10d) reactions: no long cooldowns or skips (variety does the work); rotation without back-to-back repeats; stale
+//      reactions expire; AWACS fallbacks (WSO off)
+{
+  const { r } = make(null, { rand: () => 0.99 });
+  r.say('kill'); run(r, 4);
+  check('kill speaks again a few seconds later (no long cooldown)', r.say('kill'));
+  const g = make(null, { rand: () => 0.3 }).r;
+  let n = 0; for (let i = 0; i < 20; i++) { if (g.say('groundKill')) n++; run(g, 4); }
+  check('groundKill never skipped off cooldown', n === 20, n);
+  const busy = make(2, { rand: () => 0.99 }).r; busy.missionStart(); busy.phaseStart(1);
+  for (let i = 0; i < 400 && !(busy.cur && busy.cur.pri === 'plot' && busy.cur.end - busy.t > 2); i++) busy.update(0.05);
+  busy.say('kill'); run(busy, 1.7);
+  check('a kill reaction behind a busy channel expires', busy.events.some((e) => e.ev === 'drop' && /^kill|^wso_(7|18|19|20)$/.test(e.id) && e.why === 'expired'));
+  // rotation: over a long fight no clip of a trigger plays twice in a row, and every variant gets its turn
+  const rot = make(null).r; const seq = [];
+  for (let t = 0; t < 3000; t += 0.5) { rot.update(0.5); rot.say('kill'); }
+  for (const e of rot.events) if (e.ev === 'start') seq.push(e.id);
+  check('kill: never the same clip twice in a row', seq.length > 50 && seq.every((x, i) => i === 0 || x !== seq[i - 1]), seq.slice(0, 20));
+  const want = DIALOGUE.filter((e) => e.on === 'pool' && e.key === 'kill').map((e) => e.id).concat(AWACS_KILL);
+  check('kill: every variant rotates in', want.every((id) => seq.includes(id)), { want, got: [...new Set(seq)] });
+  // WSO voice off: the AWACS fallbacks carry M16's and M18's beats
+  const f16 = make(16).r; f16.wsoOn = false; f16.missionStart(); f16.phaseStart(1); run(f16, 20);
+  check('WSO off: m16_3_awacs in place of m16_3', ids(f16).includes('m16_3_awacs') && !ids(f16).includes('m16_3'), ids(f16));
+  const f18 = make(18).r; f18.wsoOn = false; f18.missionStart(); f18.phaseStart(1); run(f18, 3); f18.phaseStart(2); run(f18, 20);
+  check('WSO off: m18_4_awacs in place of m18_4', ids(f18).includes('m18_4_awacs') && !ids(f18).includes('m18_4'), ids(f18));
+  const o16 = make(16).r; o16.missionStart(); o16.phaseStart(1); run(o16, 20);
+  check('WSO on: m16_3 itself, no fallback', ids(o16).includes('m16_3') && !ids(o16).includes('m16_3_awacs'), ids(o16));
+  log(`RADIO_OK reactions: ${seq.length} kill calls rotated through ${new Set(seq).size} clips`);
+}
 // 11) every scripted line can be placed: each mission entry's trigger is one the game fires
 {
   const fired = new Set(['start', 'phase', 'clear', 'complete', 'glassfall', 'detonation', 'firstKill', 'boss', 'deathMainspring', 'pool', 'tunnelApproach', 'tunnelEnter', 'tunnelExit']);
   for (const e of DIALOGUE) {
+    if (e.fallbackFor) { check(`${e.id}: replaces an existing line`, DIALOGUE.some((h) => h.id === e.fallbackFor)); continue; }
     if (e.after || e.with) { check(`${e.id}: head exists`, DIALOGUE.some((h) => h.id === (e.after || e.with))); continue; }
     check(`${e.id}: trigger ${e.on}`, fired.has(e.on));
     if (e.on === 'phase' || e.on === 'clear') check(`${e.id}: phase ${e.n} exists`, e.n >= 1 && e.n <= M(e.mission).phases.length);

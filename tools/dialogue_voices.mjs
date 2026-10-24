@@ -88,6 +88,23 @@ export const WSO_SCENES = {
   wso_17: ['combat', 'The bandit is right in front of you, close enough for the cannon.'],
 };
 for (let i = 1; i <= 8; i++) WSO_SCENES[`wso_lock_${i}`] = ['combat', LOCK_SCENE];
+Object.assign(WSO_SCENES, {
+  wso_18: ['combat', 'You just watched the bandit you were shooting at explode.'],
+  wso_19: ['combat', 'The bandit ahead just burst into flames and is falling out of the sky.'],
+  wso_20: ['combat', 'You just scored the first kill of this fight, and more bandits are still out there.'],
+  wso_21: ['combat', 'You just watched an enemy position on the ground go up in flames.'],
+  wso_22: ['combat', 'The last enemy gun at that ground site just blew up.'],
+  wso_23: ['combat', 'That was another kill in a quick string of them; you are buzzing.'],
+  wso_24: ['combat', 'An enemy missile just launched from behind you.'],
+  wso_25: ['combat', 'You just saw the enemy fire a missile at you.'],
+  wso_26: ['combat', 'The missile chasing you just went wide and missed.'],
+  wso_27: ['combat', 'The missile chasing you just went for your flares; you let out the breath you were holding.'],
+  wso_28: ['combat', 'An enemy fighter just slid in right behind you.'],
+  wso_29: ['combat', 'Enemy fire just slammed into your jet, but it is still flying.'],
+  wso_30: ['combat', 'Your jet is shaking itself apart, every warning light on.'],
+  wso_31: ['combat', 'The ground is rushing up at you, far too close.'],
+  wso_32: ['combat', 'Even more enemy contacts just appeared on your radar.'],
+});
 /** Takes kept from the first batch (designer-approved): not regenerated. */
 export const KEEP = new Set(['typical', 'm11_4', 'm21_5', 'm11_8']);
 export const WSO_TTS = { temperature: 1.0, tempo: 1.15, maxGap: 0.2 };   // generation and post-processing for WSO clips

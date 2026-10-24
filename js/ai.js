@@ -84,6 +84,9 @@ export class EnemyBrain {
     this.transitGoal = null;        // optional point (Vector3) a passive transit flies to instead of along transitDir (set it
     this.diveRange = 3000;          //   with setTransitGoal): at transitAlt, then a glide straight at it of at most ~18 deg,
                                     //   begun max(diveRange, 3 x the height above it) m out (cruise missiles)
+    this.leashHome = null;          // optional point (Vector3, kept by reference): a passive transit without a goal that is
+    this.leashR = 6000;             //   over leashR m (level) from it and heading away turns back across it (transports
+                                    //   and other unarmed types stay near the phase's fight instead of flying off the map)
     this.target = null;             // aircraft the game assigned to this brain (the game passes it to update)
     this.role = null;               // bandit director: 'player' | 'squad' (hunts the player / a squadmate), null = unassigned
     this.roleSince = 0;             // game time of the last role change
@@ -457,7 +460,18 @@ export class EnemyBrain {
       if (!targetAlive && !this.passive) this.state = 'patrol';
 
       if (this.state === 'transit') {
-        if (goal === null) { _pt.copy(ac.position).addScaledVector(this.transitDir, 3000); _pt.y = this.transitAlt || ac.position.y; this.steerToward(_pt, 0.45); }
+        if (goal === null) {
+          const H = this.leashHome;
+          if (H !== null) {
+            const hx = H.x - ac.position.x, hz = H.z - ac.position.z;
+            if (hx * hx + hz * hz > this.leashR * this.leashR && hx * this.transitDir.x + hz * this.transitDir.z < 0) {
+              // past the leash, heading away: back toward home, swung up to ~30 deg so the legs cross it on new lines
+              const a = Math.atan2(hz, hx) + (Math.random() - 0.5) * 1.0;
+              this.transitDir.set(Math.cos(a), 0, Math.sin(a));
+            }
+          }
+          _pt.copy(ac.position).addScaledVector(this.transitDir, 3000); _pt.y = this.transitAlt || ac.position.y; this.steerToward(_pt, 0.45);
+        }
         else if (!this._diving) {               // en route: head for the goal at the transit altitude
           _pt.set(goal.x - ac.position.x, 0, goal.z - ac.position.z).setLength(3000).add(ac.position); _pt.y = this.transitAlt || ac.position.y;
           this.steerToward(_pt, 0.45);

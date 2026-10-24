@@ -39,7 +39,7 @@ const byId = Object.fromEntries(DIALOGUE_LINES.map((l) => [l.id, l]));
 const FLAVOR_ON = new Set(['start', 'phase', 'clear', 'firstKill']);
 function priority(l, depth = 0) {
   if (l.music) return 'cue';
-  const t = l.trigger, head = t.after || t.with;
+  const t = l.trigger, head = t.after || t.with || t.fallbackFor;
   if (head && byId[head] && depth < 20) { const p = priority(byId[head], depth + 1); return p === 'cue' ? 'plot' : p; }
   if (t.on === 'pool' || t.on === 'deathMainspring' || /^tunnel/.test(t.on)) return 'critical';
   return l.speaker === 'WSO' && FLAVOR_ON.has(t.on) ? 'flavor' : 'plot';
