@@ -469,9 +469,10 @@ class Game {
    *  rawMs: the unclamped frame interval. */
   updateDynamicResolution(dt, rawMs = dt * 1000) {
     if (this.state === 'paused') return;
-    const gpu = this.profiler.mode === 'pass' ? this.profiler.lastTotal.pass : 0;
+    const prof = this.profiler, gpu = prof.mode === 'pass' ? prof.lastTotal.pass : 0;
+    const fresh = prof.gpuSeq !== this._gpuSeq; this._gpuSeq = prof.gpuSeq;   // (GPU totals arrive every few frames)
     const P = PRESETS[this.quality];
-    const r = this.dynres.update(dt, this.renderScale, P, gpu, dt * 1000);
+    const r = this.dynres.update(dt, this.renderScale, P, gpu, dt * 1000, fresh);
     this.setRenderScale(r.scale);
     if (this.qualityChoice !== 'auto' || this.state !== 'playing') return;
     const i = TIERS.indexOf(this.quality);
@@ -486,6 +487,9 @@ class Game {
   /** CPU section timings are read only by the perf overlay and benchmarks: record them only then. */
   syncProfilerCpu() {
     this.profiler.cpuOn = !!this.bench || !!(this.ui.perf && !this.ui.perf.hidden);
+    // GPU timer queries cost ~1 ms of main-thread time per pass timed (js/profiler.js): normal play times one whole
+    // frame in four (dynamic resolution's input), the overlay one pass a frame round-robin, benchmarks every pass
+    this.profiler.setPassPlan(this.bench ? 'all' : this.profiler.cpuOn ? 'rr' : 'single', this.bench || this.profiler.cpuOn ? 1 : 4);
     if (this.hud) this.hud.prof = this.profiler.cpuOn ? (this.hud.prof || {}) : null;   // per-group HUD times for the overlay
   }
   /** HUD cost control: a HUD that keeps costing > 6 ms per frame in flight (software Canvas2D: Firefox for Android; Chrome's
@@ -1484,7 +1488,8 @@ class Game {
 
     if (this.state === 'playing') this.updateGame(dt);
     else if (this.state === 'title') this.updateTitle(dt);
-    else if (this.state === 'dead' || this.state === 'complete') { this.updateDead(dt); }
+    else if (this.state === 'dead') this.updateDead(dt);
+    else if (this.state === 'complete') this.updateComplete(dt);
     // paused: freeze simulation, keep rendering
 
     if (this.state === 'playing' && this.player.alive) this.updateAim(dt);
@@ -1565,6 +1570,14 @@ class Game {
     this.weapons.update(dt, this.combatList, this.camera, this.teamTargets);
     this.glassfall.update(dt, false);      // blasts keep fading (the event itself waits: the player is down or done)
     if (this.combatDirty) this.rebuildCombatList();
+    this.audio.setEngine({ throttle: 0, speedFrac: 0, afterburner: false, alive: false });
+    this.ageMessages(dt);
+  }
+  /** Mission complete (the debrief is up): the world behind it is frozen like the pause, so nothing simulates: bandits,
+   *  squadmates (and their contrails / engine effects, updated with the airframe), allied story units, rounds and
+   *  effects in flight, the Glassfall and its Q12 all hold where they were when the debrief opened. Only the HUD
+   *  messages age and the engine sound idles. */
+  updateComplete(dt) {
     this.audio.setEngine({ throttle: 0, speedFrac: 0, afterburner: false, alive: false });
     this.ageMessages(dt);
   }

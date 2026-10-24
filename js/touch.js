@@ -7,6 +7,10 @@
 //   top-right    RB "TGT" tap = next target, hold = padlock · RT "GUN" cannon (hold, big)
 //   FLR (= L3 flares) above the left stick · pause (= Start) in the top band, just right of the HUD heading tape
 //
+// Large screens (tablets, landscape): the shoulder buttons move off the top corners into a thumb-reach cluster around
+// each stick (left: LOOK, MSL, FLR · right: TGT, GUN), sized and placed in estimated physical units (cm) so everything
+// sits within ~9 cm of the bottom corners where the hands hold the device. Phones keep the top-corner layout.
+//
 // input.js reads `input.touch = instance` every frame ({ active, lx, ly, rx, ry, buttons, used }) and owns the
 // expo/shape: sticks report raw -1..1 (circular gate, small radial deadzone rescaled so there is no step).
 //
@@ -36,6 +40,25 @@ const PULSE_MS = 120;          // confirm / back pulse length
 const LIT = 0.4;               // deflection that lights the ring label in that direction
 const EDGE_M = 8, GAP = 8;     // keep in sync with --wn-m / --wn-g
 const PAUSE = 46;              // pause button size (px), = --wn-pz; its ::before pads the hit area to 64
+// Large-screen cluster layout (tablets). A landscape container at least this big is a tablet, not a phone (phones top
+// out near 430 CSS px tall in landscape):
+const CLUSTER_MIN_W = 900, CLUSTER_MIN_H = 540;
+// CSS px per cm on a touch screen. 96 CSS px/in is the web's reference, set for a desktop monitor at arm's length;
+// handheld touch screens map more CSS px to the inch (iPads 132, 10" Android tablets 130-150, phones 150+), and neither
+// devicePixelRatio nor the `resolution` media feature says anything about physical size (they are device px per CSS px).
+// 132 / in (the iPad density) is the estimate: on denser screens the cluster only comes out a little tighter.
+const PX_PER_CM = 132 / 2.54;
+// Cluster geometry in cm, per side, from the bottom outer corner of the safe area (mirrored on the right): the stick base
+// center, then each button's center as [angle from the inward horizontal (deg, counter-clockwise = up), distance from
+// the stick center (cm)] and its size [w, h] (cm). Every button center stays within ~9 cm of the corner.
+const CL_STICK = [4.2, 3.6];
+const CL = {
+  lb: { at: [8, 3.1], size: [1.5, 1.3] },     // LOOK: inboard, level with the stick
+  lt: { at: [48, 3.2], size: [2.0, 1.5] },    // MSL: up and inboard
+  flr: { at: [95, 2.9], size: [1.4, 1.4] },   // FLR: straight above the stick
+  rb: { at: [8, 3.1], size: [1.5, 1.3] },     // TGT
+  rt: { at: [48, 3.4], size: [2.4, 1.7] },    // GUN (the big one)
+};
 const STYLE_ID = 'wn-touch-style';
 const INTERACTIVE = 'a,button,input,select,textarea,label,summary,[role="button"],[role="link"],' +
   '[contenteditable="true"],[contenteditable=""],[data-touch-ignore]';
@@ -75,6 +98,12 @@ const CSS = `
 .wn-rt b{font-size:20px}
 .wn-rb{right:calc(var(--wn-sr) + var(--wn-m) + var(--wn-rtw) + var(--wn-g));width:var(--wn-bpw);height:var(--wn-bph)}
 .wn-flr{top:var(--flr-y);left:calc(var(--rest-lx) - 34px);width:68px;height:68px;border-radius:50%}
+/* large screens: thumb-reach clusters around the sticks (positions and sizes in px from _layout) */
+.wn-cl .wn-lt{left:var(--lt-x);top:var(--lt-y);border-radius:14px}
+.wn-cl .wn-lb{left:var(--lb-x);top:var(--lb-y)}
+.wn-cl .wn-rb{left:var(--rb-x);right:auto;top:var(--rb-y)}
+.wn-cl .wn-rt{left:var(--rt-x);right:auto;top:var(--rt-y);border-radius:14px}
+.wn-cl .wn-flr{left:var(--fl-x);top:var(--fl-y);width:var(--wn-flz);height:var(--wn-flz)}
 /* pause: in the top band beside the HUD heading tape (x computed in _layout) */
 .wn-pause{top:calc(var(--wn-st) + var(--wn-m) + 2px);left:var(--pause-x);width:var(--wn-pz);height:var(--wn-pz);border-radius:23px;
   flex-direction:row;gap:7px}
@@ -185,6 +214,7 @@ export class TouchControls {
     this.supported = typeof this._win.PointerEvent === 'function';
     this.lastTouchTime = 0;              // performance.now() of the last touch-down anywhere on the page
     this.pitchInverted = false;
+    this.cluster = false;                // large-screen layout: buttons in thumb-reach clusters around the sticks (_layout)
 
     this._onAnyTouch = typeof onAnyTouch === 'function' ? onAnyTouch : null;
     this._onActiveChange = typeof onActiveChange === 'function' ? onActiveChange : null;
@@ -363,6 +393,8 @@ export class TouchControls {
     try { if (this._ro) this._ro.disconnect(); } catch (e) { /* ignore */ }
     this._ro = null; this._mq = null;
     if (root.parentNode) root.parentNode.removeChild(root);
+    const cst = this.container.style;
+    this.container.classList.remove('wn-touch-ui'); cst.removeProperty('--wn-ov-top'); cst.removeProperty('--wn-ov-side');
     releaseStyle(doc);
     this.active = false; this.visible = false; this.paused = false;
     this.lx = this.ly = this.rx = this.ry = 0;
@@ -387,6 +419,8 @@ export class TouchControls {
     c.toggle('wn-on', this.active);
     c.toggle('wn-flight', this._vis === 'flight');
     c.toggle('wn-paused', this._vis === 'paused');
+    // on the container: page overlays (the perf readout) move clear of the controls while any of them show
+    this.container.classList.toggle('wn-touch-ui', this.active && this._vis !== 'hidden');
   }
 
   /** Resize / rotation / fullscreen: cache the safe-area insets, anchor the fixed stick bases, feed the CSS a few px
@@ -400,30 +434,64 @@ export class TouchControls {
     const cs = this._win.getComputedStyle(this._probe), sf = this._safe;
     sf.l = parseFloat(cs.paddingLeft) || 0; sf.r = parseFloat(cs.paddingRight) || 0;
     sf.t = parseFloat(cs.paddingTop) || 0; sf.b = parseFloat(cs.paddingBottom) || 0;
-    const inset = Math.max(RING_R + 26, 0.16 * w);
-    const restY = Math.round(h - sf.b - RING_R - Math.max(16, 0.06 * h));   // whole px: crisp rings, exact centers
-    const L = this._sticks.l, R = this._sticks.r;
-    L.bx = Math.round(sf.l + inset); R.bx = Math.round(w - sf.r - inset); L.by = R.by = restY;
-    // FLR: above the left stick's resting ring (more clearance on tall screens so a high thumb landing doesn't hit it),
-    // but no higher than the top of the stick zone
-    const flrY = Math.max(h * this._zoneTop - 10, restY - RING_R - Math.max(34, 0.08 * h) - 68);
-    // shoulder buttons grow a little on bigger screens (hit targets never under 64 px)
-    const ltw = clamp(0.12 * w, 88, 112), lth = clamp(0.18 * h, 68, 84);
-    const rtw = clamp(0.14 * w, 104, 132), rth = clamp(0.2 * h, 76, 92);
-    const bpw = clamp(0.085 * w, 72, 84);
+    const st = root.style, L = this._sticks.l, R = this._sticks.r;
+    const cluster = w > h && w >= CLUSTER_MIN_W && h >= CLUSTER_MIN_H;
+    let ltw, lth, rtw, rth, bpw, bph = 64, flrY, lbRight, rbLeft;
+    if (cluster) {
+      // tablets: physical units (cm -> px), shrunk if the screen is too small for the whole cluster
+      const u = Math.min(PX_PER_CM, (w - sf.l - sf.r) / 19, (h - sf.t - sf.b) / 12.5);
+      const size = (k) => [Math.max(64, Math.round(CL[k].size[0] * u)), Math.max(64, Math.round(CL[k].size[1] * u))];
+      const sx = CL_STICK[0] * u, sy = CL_STICK[1] * u;
+      L.bx = Math.round(sf.l + sx); R.bx = Math.round(w - sf.r - sx); L.by = R.by = Math.round(h - sf.b - sy);
+      // a button's top-left in container px: its center at [angle, distance] from its side's stick center (x mirrored)
+      const place = (k, side) => {
+        const c = CL[k], a = c.at[0] * Math.PI / 180, d = c.at[1] * u, z = size(k), S = side === 'l' ? L : R;
+        const cx = S.bx + (side === 'l' ? 1 : -1) * Math.cos(a) * d, cy = S.by - Math.sin(a) * d;
+        st.setProperty('--' + (k === 'flr' ? 'fl' : k) + '-x', px(Math.round(cx - z[0] / 2)));
+        st.setProperty('--' + (k === 'flr' ? 'fl' : k) + '-y', px(Math.round(cy - z[1] / 2)));
+        return z;
+      };
+      [ltw, lth] = place('lt', 'l'); [bpw, bph] = place('lb', 'l'); place('rb', 'r'); [rtw, rth] = place('rt', 'r');
+      st.setProperty('--wn-flz', px(place('flr', 'l')[0]));
+      flrY = 0;
+      lbRight = sf.l + EDGE_M; rbLeft = w - sf.r - EDGE_M;   // the top corners are free
+    } else {
+      // phones: sticks near the bottom corners, shoulder buttons in the top corners
+      const inset = Math.max(RING_R + 26, 0.16 * w);
+      const restY = Math.round(h - sf.b - RING_R - Math.max(16, 0.06 * h));   // whole px: crisp rings, exact centers
+      L.bx = Math.round(sf.l + inset); R.bx = Math.round(w - sf.r - inset); L.by = R.by = restY;
+      // FLR: above the left stick's resting ring (more clearance on tall screens so a high thumb landing doesn't hit it),
+      // but no higher than the top of the stick zone
+      flrY = Math.max(h * this._zoneTop - 10, restY - RING_R - Math.max(34, 0.08 * h) - 68);
+      // shoulder buttons grow a little on bigger screens (hit targets never under 64 px)
+      ltw = clamp(0.12 * w, 88, 112); lth = clamp(0.18 * h, 68, 84);
+      rtw = clamp(0.14 * w, 104, 132); rth = clamp(0.2 * h, 76, 92);
+      bpw = clamp(0.085 * w, 72, 84);
+      rbLeft = w - sf.r - EDGE_M - rtw - GAP - bpw; lbRight = sf.l + EDGE_M + ltw + GAP + bpw;
+    }
     // pause: beside the HUD heading tape (hud.js: center ± min(26% w, 31% min(w,h))), right side if it fits, else
     // left side, else as close to the tape's right end as RB allows (small phones: it then covers the tape's end)
     const hdg = Math.min(0.26 * w, 0.31 * Math.min(w, h));
-    const rbLeft = w - sf.r - EDGE_M - rtw - GAP - bpw, lbRight = sf.l + EDGE_M + ltw + GAP + bpw;
     let pauseX = w / 2 + hdg + 6;
     if (pauseX + PAUSE + GAP > rbLeft) {
       const leftX = w / 2 - hdg - 6 - PAUSE;
       pauseX = leftX >= lbRight + GAP ? leftX : Math.max(lbRight + GAP, rbLeft - GAP - PAUSE);
     }
-    const st = root.style;
     st.setProperty('--wn-ltw', px(ltw)); st.setProperty('--wn-lth', px(lth));
-    st.setProperty('--wn-rtw', px(rtw)); st.setProperty('--wn-rth', px(rth)); st.setProperty('--wn-bpw', px(bpw));
+    st.setProperty('--wn-rtw', px(rtw)); st.setProperty('--wn-rth', px(rth));
+    st.setProperty('--wn-bpw', px(bpw)); st.setProperty('--wn-bph', px(bph));
     st.setProperty('--rest-lx', px(L.bx)); st.setProperty('--flr-y', px(flrY)); st.setProperty('--pause-x', px(pauseX));
+    root.classList.toggle('wn-cl', cluster);
+    this.cluster = cluster;
+    // Where an overlay of the page (the perf readout) can sit without covering a control: top center, under the HUD
+    // heading tape and the pause button, clear of any top-corner buttons. Published on the container as CSS variables
+    // (with the class wn-touch-ui while controls show; see _applyClasses): --wn-ov-top (px from the top), --wn-ov-side
+    // (px to keep clear on each side).
+    const hs = clamp(Math.min(w, h) / 900, 0.6, 2.2), hts = Math.max(0.78, hs);   // hud.js layout scales
+    const hdgBottom = Math.round(6 * hs) + Math.round(20 * hts) + Math.round(16 * hs) + 2 + Math.round(6 * hs) + Math.round(12 * hts);
+    const cst = this.container.style;
+    cst.setProperty('--wn-ov-top', px(Math.max(hdgBottom, sf.t + EDGE_M + 2 + PAUSE) + 8));
+    cst.setProperty('--wn-ov-side', px(Math.max(lbRight, w - rbLeft) + GAP));
     root.classList.toggle('wn-portrait', h > w);
     // re-anchor both bases, held or not; a thumb that stays down through the change is re-measured against the new
     // center, so the reported deflection keeps matching the knob

@@ -79,13 +79,14 @@ export class DynamicResolution {
   /**
    * @returns {{scale:number}} new scale (quantized to 0.05). Tier changes are StepDown's job (never upward mid-session).
    */
-  update(dt, scale, preset, gpuMs, frameMs) {
+  update(dt, scale, preset, gpuMs, frameMs, fresh = true) {
     const result = { scale };
     // Ignore a warm-up window after start or any quality change (shader compiles and uploads spike the first frames)
     if (this.warm > 0) { this.warm -= dt; return result; }
     const useGpu = gpuMs > 0;
     if (useGpu !== this.useGpu) { this.n = 0; this.i = 0; this.useGpu = useGpu; }
-    this.samples[this.i] = useGpu ? gpuMs : frameMs; this.i = (this.i + 1) % this.samples.length; if (this.n < this.samples.length) this.n++;
+    // GPU totals arrive only every few frames (the profiler samples): count each one once, not once per frame
+    if (!useGpu || fresh) { this.samples[this.i] = useGpu ? gpuMs : frameMs; this.i = (this.i + 1) % this.samples.length; if (this.n < this.samples.length) this.n++; }
     if (this.n < 12) return result;
     const cost = this.cost = this._median();
     const target = useGpu ? this.targetMs : 17.5;        // without timer queries, vsynced 16.7 ms frames count as fine

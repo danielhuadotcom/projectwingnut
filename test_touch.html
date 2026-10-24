@@ -394,6 +394,61 @@ async function run() {
   check('rotate hint restored', hintOk(startPortrait), cs(hint).display);
   check('bases back at their layout positions', bases() === before && fixed(), bases());
   check('onActiveChange reported the flips', activeChanges.length >= 2, activeChanges.join(','));
+
+  // ---- 13. layout by screen size: phones keep the top-corner buttons; tablets cluster them around the sticks within
+  //          thumb reach of the bottom corners (estimated cm: 132 CSS px / in, shrunk to fit), stick bases fixed ----
+  const PXCM = 132 / 2.54;
+  for (const [sw, sh, kind] of [[1280, 800, 'tablet'], [1024, 768, 'tablet'], [1366, 1024, 'tablet'], [874, 402, 'phone'], [667, 375, 'phone']]) {
+    game.style.right = 'auto'; game.style.bottom = 'auto'; game.style.width = sw + 'px'; game.style.height = sh + 'px';
+    await sleep(60); await frames2();
+    const R = touch.getRects(), tag = sw + 'x' + sh + ' ';
+    const cx = (k) => R[k].x + R[k].w / 2, cy = (k) => R[k].y + R[k].h / 2;
+    check(tag + 'layout mode ' + kind, touch.cluster === (kind === 'tablet'), String(touch.cluster));
+    let ov = '';
+    for (let i = 0; i < names.length; i++) for (let j = i + 1; j < names.length; j++) {
+      const a = R[names[i]], b = R[names[j]];
+      if (a && b && a.x < b.x + b.w - 1 && b.x < a.x + a.w - 1 && a.y < b.y + b.h - 1 && b.y < a.y + a.h - 1) ov += names[i] + '/' + names[j] + ' ';
+    }
+    check(tag + 'controls do not overlap', ov === '', ov);
+    const out = names.filter((n) => { const r = R[n]; return !r || r.x < 0 || r.y < 0 || r.x + r.w > sw + 0.5 || r.y + r.h > sh + 0.5; });
+    check(tag + 'controls inside the screen', out.length === 0, out.join(','));
+    const [lbx, lby] = xy(stl), [rbx, rby] = xy(str);
+    const stickBox = (bx, by) => ({ x: bx - 66, y: by - 66, w: 132, h: 132 });
+    const hitsRing = names.filter((n) => [stickBox(lbx, lby), stickBox(rbx, rby)].some((b) => { const a = R[n]; return a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h; }));
+    check(tag + 'buttons clear of the stick rings', hitsRing.length === 0, hitsRing.join(','));
+    if (kind === 'tablet') {
+      const u = Math.min(PXCM, sw / 19, sh / 12.5);
+      const left = ['lt', 'lb', 'flr'], right = ['rt', 'rb'];
+      const far = left.map((k) => [k, Math.hypot(cx(k), sh - cy(k)) / u]).concat(right.map((k) => [k, Math.hypot(sw - cx(k), sh - cy(k)) / u]))
+        .filter(([, d]) => d > 10).map(([k, d]) => k + ' ' + d.toFixed(1) + 'cm');
+      check(tag + 'every button center within 10 cm of its bottom corner', far.length === 0, far.join(','));
+      const spread = left.filter((k) => Math.hypot(cx(k) - lbx, cy(k) - lby) > 3.6 * u).concat(right.filter((k) => Math.hypot(cx(k) - rbx, cy(k) - rby) > 3.6 * u));
+      check(tag + 'buttons cluster around their stick (<= 3.6 cm)', spread.length === 0, spread.join(','));
+      check(tag + 'no button in the top 40%', names.filter((n) => n !== 'pause').every((n) => R[n].y > sh * 0.4), JSON.stringify(R));
+      check(tag + 'stick centers ~4 cm from the bottom corners', Math.abs(lbx / u - 4.2) < 0.2 && Math.abs((sh - lby) / u - 3.6) < 0.2 && Math.abs((sw - rbx) / u - 4.2) < 0.2, lbx + ',' + lby);
+    } else {
+      check(tag + 'phone: shoulder buttons in the top corners', ['lt', 'lb', 'rt', 'rb'].every((k) => R[k].y <= 10), JSON.stringify(R));
+      check(tag + 'phone: sticks low in the corners', lby > sh * 0.6 && lbx < sw * 0.3 && rbx > sw * 0.7, lbx + ',' + lby);
+    }
+    // page overlays (the perf readout) get a top-center slot clear of every control
+    const ovTop = parseFloat(game.style.getPropertyValue('--wn-ov-top')), ovSide = parseFloat(game.style.getPropertyValue('--wn-ov-side'));
+    const slot = { x: ovSide, y: ovTop, w: sw - 2 * ovSide, h: 150 };
+    const under = names.filter((n) => { const a = R[n]; return a.x < slot.x + slot.w && slot.x < a.x + a.w && a.y < slot.y + slot.h && slot.y < a.y + a.h; });
+    check(tag + 'overlay slot clear of the controls', under.length === 0 && slot.w > 200 && game.classList.contains('wn-touch-ui'), under.join(',') + ' w=' + slot.w);
+  }
+  // a touch never moves the bases at tablet size either
+  game.style.width = '1280px'; game.style.height = '800px'; await sleep(60); await frames2();
+  const tb = bases(), Tf = new Finger(81), [tlx, tly] = xy(stl);
+  Tf.x = tlx + 30; Tf.y = tly - 20; Tf.el = sink; Tf.fire('pointerdown'); Tf.move(tlx - 90, tly - 80);   // (may be off a small viewport)
+  check('tablet: base fixed while the thumb drives the stick', bases() === tb && touch.lx < -0.5, bases());
+  Tf.up();
+  check('tablet: base fixed after release', bases() === tb, bases());
+  game.style.right = ''; game.style.width = ''; game.style.bottom = ''; game.style.height = '';
+  await sleep(60); await frames2();
+  check('bases back at their layout positions after the size sweep', bases() === before, bases());
+  touch.setVisible(false);
+  check('overlay class off while the controls are hidden', !game.classList.contains('wn-touch-ui'));
+  touch.setVisible(true);
 }
 
 /** Leave a representative state on screen for the screenshot. */

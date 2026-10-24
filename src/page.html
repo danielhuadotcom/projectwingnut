@@ -27,6 +27,9 @@ body { margin: 0; background: var(--bg); color: var(--fg); font-family: var(--mo
 #loading { position: relative; z-index: 3; pointer-events: none; font-family: var(--display); letter-spacing: 0.3em; color: var(--hud); font-size: 14px; animation: pulse 1.2s ease-in-out infinite; }
 #err { pointer-events: auto; position: absolute; z-index: 10; left: 16px; right: 16px; bottom: 16px; margin: 0; padding: 10px 12px; font-size: 12px; white-space: pre-wrap; color: #ffd1d1; background: rgba(60, 0, 0, 0.8); border: 1px solid var(--danger); border-radius: 4px; max-height: 40%; overflow: auto; }
 #perf { position: absolute; top: calc(8px + env(safe-area-inset-top, 0px)); right: max(8px, env(safe-area-inset-right, 0px)); margin: 0; padding: 8px 10px; font: 11px/1.45 var(--mono); color: var(--hud); background: rgba(2, 6, 10, 0.72); border: 1px solid var(--line); border-radius: 4px; pointer-events: none; white-space: pre; font-variant-numeric: tabular-nums; z-index: 5; }
+/* touch controls showing (js/touch.js sets the class and the variables on #game): top center under the heading tape and
+   the pause button, clear of the top-corner buttons; long lines wrap rather than reach under a control */
+#game.wn-touch-ui #perf { top: var(--wn-ov-top, 64px); right: auto; left: 50%; transform: translateX(-50%); width: max-content; max-width: calc(100% - 2 * var(--wn-ov-side, 16px)); box-sizing: border-box; padding: 6px 8px; font-size: 10px; white-space: pre-wrap; overflow-wrap: anywhere; }
 @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.45; } }
 
 /* ==================================================================================================================

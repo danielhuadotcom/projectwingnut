@@ -2,6 +2,12 @@
 // GPU timings use EXT_disjoint_timer_query_webgl2 (queries can't nest, so it runs in one of two modes):
 //   'pass'   — whole render passes (scene incl. MSAA resolve, bloom, composite), begun/ended by PostFX
 //   'object' — individual draws of instrumented objects (terrain, water, sky, jets, fx...), via onBeforeRender/onAfterRender
+// Every timer query costs the page: each begin/end pair measured ~1 ms of main-thread time (ANGLE flushes around it;
+// three pairs a frame = 3 ms of "render" on Iris Xe/ANGLE), so 'pass' mode has a plan (setPassPlan):
+//   'all'    — every pass every sampled frame (benchmarks: per-pass numbers, the old behaviour)
+//   'rr'     — one pass per frame, round-robin (perf overlay: the per-pass breakdown at a flat ~1 pair a frame)
+//   'single' — one query spanning the whole frame on every passEvery-th frame (normal play: dynamic resolution's input)
+// gpuSeq counts completed GPU frames, so a consumer can tell a fresh total from a repeated one.
 // CPU timings: main loop sections via cpuBegin/cpuEnd (performance.now()), recorded only while `cpuOn` is set (the game
 // sets it while the perf overlay is visible or in benchmark mode: nothing else reads them).
 // Results are per-frame sums per label, aggregated into rolling windows for mean/p50/p95.
@@ -61,6 +67,20 @@ export class Profiler {
     this.frameMs = new Series();
     this.disjoints = 0;
     this.lastTotal = { pass: 0, object: 0 };   // most recent completed frame's GPU total per mode (ms)
+    this.gpuSeq = 0;                   // completed GPU frames so far (lastTotal changed)
+    this.passPlan = 'all'; this.passEvery = 1;   // see setPassPlan
+    this._passIdx = 0; this._passN = 1; this._rr = 0; this._singleOpen = false; this._planFrame = 0;
+    this._last = new Float64Array(32); // 'rr': latest value per pass slot (the total sums them)
+  }
+  /** 'all' | 'rr' | 'single' (see the header); every: time only every N-th frame. */
+  setPassPlan(plan, every = 1) {
+    if (plan === this.passPlan && every === this.passEvery) return;
+    if (this._actQ !== null) this._endQuery();
+    this._singleOpen = false;
+    this.passPlan = plan; this.passEvery = Math.max(1, every | 0);
+    const G = this._g; for (let s = 0; s < G.n; s++) { G.acc[s] = 0; G.hit[s] = 0; }
+    this._last.fill(0); this._curFrame = -1;
+    this._planFrame = this.frame;      // results still in flight from the previous plan are dropped (_poll)
   }
   _ringGrow(cap) {
     const q = new Array(cap).fill(null), l = new Array(cap).fill(''), m = new Array(cap).fill(''), f = new Array(cap).fill(0);
@@ -81,6 +101,7 @@ export class Profiler {
   setMode(m) {
     if (m === this.mode) return;
     if (this._actQ !== null) this._endQuery();
+    this._singleOpen = false;
     this.mode = this.supported ? m : 'off';
   }
   // ---- GPU queries ----
@@ -99,8 +120,20 @@ export class Profiler {
     this._rq[j] = this._actQ; this._rl[j] = this._actLabel; this._rm[j] = this._actMode; this._rf[j] = this.frame; this._rn++;
     this._actQ = null;
   }
-  beginPass(label) { if (this.mode === 'pass') this._begin(label); }
-  endPass() { if (this.mode === 'pass' && this._actQ !== null) this._endQuery(); }
+  beginPass(label) {
+    if (this.mode !== 'pass') return;
+    const i = this._passIdx++;
+    if (this.frame % this.passEvery !== 0) return;
+    const plan = this.passPlan;
+    if (plan === 'all') this._begin(label);
+    else if (plan === 'rr') { if (i === this._rr) this._begin(label); }
+    else if (i === 0) { this._begin('frame'); this._singleOpen = this._actQ !== null; }   // 'single': open across passes
+  }
+  endPass() {
+    if (this.mode !== 'pass' || this._actQ === null) return;
+    if (this._singleOpen) { if (this._passIdx < this._passN) return; this._singleOpen = false; }   // the frame's last pass
+    this._endQuery();
+  }
   /** Wrap every drawable under `root` so its draws are timed under `label` in 'object' mode. */
   instrument(root, label) {
     const self = this;
@@ -134,6 +167,12 @@ export class Profiler {
       C.acc[s] = 0; C.hit[s] = 0;
     }
     if (frameMs > 0) this.frameMs.push(frameMs);
+    if (this._singleOpen) { this._singleOpen = false; if (this._actQ !== null) this._endQuery(); }
+    if (this._passIdx > 0) {           // passes seen this frame: the round-robin moves on
+      this._passN = this._passIdx;
+      if (this.passPlan === 'rr' && this.frame % this.passEvery === 0) this._rr = (this._rr + 1) % this._passN;
+      this._passIdx = 0;
+    }
     this.frame++;
     this._poll();
   }
@@ -149,6 +188,7 @@ export class Profiler {
       this._rq[h] = null; this._rh = (h + 1) % this._rcap; this._rn--;
       this._pool.push(q);
       if (disjoint) { this.disjoints++; continue; }
+      if (frame < this._planFrame) continue;
       if (frame !== this._curFrame) { this._flush(); this._curFrame = frame; this._curMode = mode; }
       const G = this._g, s = G.slot(label);
       G.acc[s] += ns / 1e6; G.hit[s] = 1;
@@ -163,18 +203,23 @@ export class Profiler {
     if (map) {
       const ser = this._gSeries[mode], seen = this._gSeen[mode];
       let total = 0;
+      const rr = mode === 'pass' && this.passPlan === 'rr';
+      if (rr && this._last.length < G.n) { const L = new Float64Array(G.n * 2); L.set(this._last); this._last = L; }
       for (let s = 0; s < G.n; s++) {
         if (!G.hit[s]) continue;
         let S = ser[s];
         if (S === undefined) { S = ser[s] = new Series(); map.set(G.names[s], S); seen.push(s); }
         S.push(G.acc[s]); total += G.acc[s];
+        if (rr) this._last[s] = G.acc[s];
       }
-      // labels seen before but absent this frame count as 0
-      for (let k = 0; k < seen.length; k++) { const s = seen[k]; if (!G.hit[s]) ser[s].push(0); }
+      if (rr) { total = 0; for (let k = 0; k < seen.length; k++) total += this._last[seen[k]]; }   // latest of every pass
+      // labels seen before but absent this frame count as 0 (not in 'rr', where each frame times one pass only)
+      else for (let k = 0; k < seen.length; k++) { const s = seen[k]; if (!G.hit[s]) ser[s].push(0); }
       let T = this._gTotal[mode];
       if (T === null) { T = this._gTotal[mode] = new Series(); map.set('__total', T); }
       T.push(total);
       this.lastTotal[mode] = total;
+      this.gpuSeq++;
     }
     for (let s = 0; s < G.n; s++) { G.acc[s] = 0; G.hit[s] = 0; }
   }

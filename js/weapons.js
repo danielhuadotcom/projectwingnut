@@ -200,6 +200,9 @@ void main() {
   vFireI = aParams.y * energy * nearFade;
   vSun = normalize((viewMatrix * vec4(uSunDir, 0.0)).xyz);
   vFog = wnFog(depth);
+  // a puff too faint to show (end of its life, or faded at the lens) draws no fragments at all: lingering smoke is
+  // biggest just as it disappears (the fragment shader would discard every pixel of it after its noise fetches)
+  if (vColor.a < 0.002 && (fireT <= 0.0 || vFireI < 0.0002)) { gl_Position = vec4(2.0, 2.0, 2.0, 1.0); gl_PointSize = 0.0; return; }
   gl_PointSize = cpx;
   gl_Position = projectionMatrix * mv;
 }
