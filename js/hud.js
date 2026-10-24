@@ -46,6 +46,14 @@ const MK_GROW = 1.1, MK_PAD = 3, MK_MAX = 0.4;
 // the model (MK_FAR_A alpha), pointing down at it, never over it, no label
 const MK_FAR_M = 4500, MK_FAR_A = 0.55;
 const MAX_CONTACTS = 128;                  // safety bound on frame.contacts and radar blips (js/main.js fills at most 96)
+// Incoming-missile edge glow (_drawThreats): one soft red arc per enemy missile guiding on us, on a rounded rect
+// hugging the screen edge (THR_CORNER * min(w, h) corner radius) at the missile's direction in the camera frame.
+// Nearer impact (time to impact THR_FAR..THR_NEAR s) = brighter (THR_A0..THR_A1 alpha), narrower (THR_SPAN0..1 deg
+// of edge seen from the centre; the gradient ellipse is 1.5x that, as its tails fade) and deeper (THR_D0..1 * min(w, h));
+// under THR_PULSE s it pulses. Arcs add ('lighter'); the summed alpha of arcs that overlap is capped at THR_CAP.
+// Drawn first, under every HUD element, so tapes, reticle and text always sit on top. Budget mode blits a sprite.
+const THR_MAX = 8, THR_FAR = 8, THR_NEAR = 1, THR_A0 = 0.25, THR_A1 = 0.55, THR_SPAN0 = 40, THR_SPAN1 = 25;
+const THR_D0 = 0.06, THR_D1 = 0.10, THR_PULSE = 1.5, THR_CAP = 0.75, THR_CORNER = 0.16;
 const CARDINAL = { 0: 'N', 90: 'E', 180: 'S', 270: 'W' };
 const WARN_DEFS = [
   { key: 'missileIncoming', text: 'MISSILE', color: COL.red },
@@ -80,6 +88,12 @@ function fPrefixed(table, prefix, n) {
   n = Math.max(0, Math.round(n) || 0);
   if (n < 10000) return table[n] || (table[n] = prefix + n);
   return prefix + n;
+}
+/** The incoming-missile glow, edge (0) to inner rim (1): a deep crimson core reads on bright skies (day, the red
+ *  Glassfall), the brighter red ring inside it on dark ones (night). */
+function threatStops(g) {
+  g.addColorStop(0, 'rgba(60,0,8,1)'); g.addColorStop(0.35, 'rgba(175,0,20,0.9)');
+  g.addColorStop(0.68, 'rgba(255,36,42,0.45)'); g.addColorStop(1, 'rgba(255,34,40,0)');
 }
 function clamp(v, a, b) { return v < a ? a : v > b ? b : v; }
 function lerp(a, b, t) { return a + (b - a) * t; }
@@ -123,6 +137,9 @@ export class HUD {
     this._kx0 = 0; this._kx1 = -1; this._ky0 = 0; this._ky1 = -1;
     this._inBlocked = null; this._inConn = null; this._inName = null; this._inUsing = null; this._inLocked = null; this._inMaxW = -1;
     this._inLines = []; this._inColor = COL.green; this._inGlyph = false;
+    this._thrA = new Float32Array(THR_MAX); this._thrSpan = new Float32Array(THR_MAX);   // per-arc alpha, half-span (rad)
+    this._ep = { x: 0, y: 0, nx: 0, ny: 0, t: 0 };                                          // _edgePoint result
+    this._thrSprite = null;                                                                // budget mode: the glow as an image
     this._ro = null;
     try {
       if (typeof ResizeObserver === 'function') {
@@ -225,6 +242,13 @@ export class HUD {
       g.addColorStop(0, 'rgba(255,30,20,0)'); g.addColorStop(0.55, 'rgba(255,30,20,0.35)'); g.addColorStop(1, 'rgba(255,30,20,0.85)');
       L.dmgGrad = g;
     } catch (e) { L.dmgGrad = null; }
+    // incoming-missile glow: a unit radial gradient, stretched per arc by the transform (_drawThreats)
+    try {
+      const g = ctx.createRadialGradient(0, 0, 0, 0, 0, 1);
+      threatStops(g);
+      L.thrGrad = g;
+    } catch (e) { L.thrGrad = null; }
+    L.thrCorner = THR_CORNER * m;
     this._inMaxW = -1;   // invalidate the wrapped input-status cache
   }
 
@@ -321,6 +345,8 @@ export class HUD {
     const radar = frame.radar || DEF_RADAR;
     this._drawDamage(frame.damageFlash);
     if (P) lap('damage');
+    const th = frame.threats;
+    if (th && th.length) { this._drawThreats(th, frame.threatGlass); if (P) lap('threats'); }
     // The gun cross is drawn where the rounds actually go (projected from the gun along the nose), not at screen center
     const gc = frame.gunCross;
     if (frame.mouseAim) {
@@ -1251,6 +1277,71 @@ export class HUD {
     const ctx = this.ctx;
     ctx.globalAlpha = this.alpha * clamp(v, 0, 1);
     ctx.fillStyle = L.dmgGrad; ctx.fillRect(0, 0, L.w, L.h);
+    ctx.globalAlpha = this.alpha;
+  }
+  /** Where the ray from the screen centre along (c, s) (unit, y down) meets the edge rounded rect: this._ep gets the
+   *  point (x, y, relative to the centre), its distance t and the outward edge normal (nx, ny). */
+  _edgePoint(c, s) {
+    const L = this.L, a = L.w / 2, b = L.h / 2, r = Math.min(L.thrCorner, a, b), E = this._ep;
+    const ac = Math.abs(c), as = Math.abs(s);
+    const ta = ac > 1e-6 ? a / ac : Infinity, tb = as > 1e-6 ? b / as : Infinity;
+    let t = ta < tb ? ta : tb, x = t * c, y = t * s;
+    const ix = a - r, iy = b - r;
+    if (Math.abs(x) > ix && Math.abs(y) > iy) {   // a rounded corner: meet its circle instead
+      const qx = x < 0 ? -ix : ix, qy = y < 0 ? -iy : iy, dq = c * qx + s * qy;
+      t = dq + Math.sqrt(Math.max(0, dq * dq - qx * qx - qy * qy + r * r)); x = t * c; y = t * s;
+      E.nx = (x - qx) / r; E.ny = (y - qy) / r;
+    } else if (ta < tb) { E.nx = c < 0 ? -1 : 1; E.ny = 0; } else { E.nx = 0; E.ny = s < 0 ? -1 : 1; }
+    E.x = x; E.y = y; E.t = t;
+    return E;
+  }
+  /** The glow as a small image (budget mode: a scaled blit is cheaper than a big radial-gradient fill in software). */
+  _threatSprite() {
+    if (this._thrSprite) return this._thrSprite;
+    const N = 64, c = document.createElement('canvas'); c.width = N; c.height = N;
+    const g = c.getContext('2d'), gr = g.createRadialGradient(N / 2, N / 2, 0, N / 2, N / 2, N / 2);
+    threatStops(gr);
+    g.fillStyle = gr; g.fillRect(0, 0, N, N);
+    return (this._thrSprite = c);
+  }
+  /** Incoming-missile edge arcs: threats[i] = { ang (screen angle from the centre, rad, y down), tti (s), fade (0..1) }.
+   *  glass (0..1: the red Glassfall sky) raises the alpha up to 1.5x, as red on red needs it. One transformed fill (or
+   *  blit) per arc, nothing allocated. */
+  _drawThreats(threats, glass) {
+    const ctx = this.ctx, L = this.L, n = Math.min(threats.length, THR_MAX), A = this._thrA, SP = this._thrSpan;
+    const budget = this.cacheLayers, grad = L.thrGrad;
+    if (!grad && !budget) return;
+    for (let i = 0; i < n; i++) {
+      const T = threats[i], u = clamp((THR_FAR - T.tti) / (THR_FAR - THR_NEAR), 0, 1);
+      let a = lerp(THR_A0, THR_A1, u) * clamp(T.fade, 0, 1) * (1 + 0.5 * clamp(glass || 0, 0, 1));
+      if (T.tti < THR_PULSE) a *= 0.86 + 0.18 * Math.sin(this.time * 20);   // ~3 Hz
+      A[i] = a; SP[i] = lerp(THR_SPAN0, THR_SPAN1, u) * 0.5 * DEG;
+    }
+    ctx.globalCompositeOperation = 'lighter';
+    const k = this.k, sprite = budget ? this._threatSprite() : null;
+    for (let i = 0; i < n; i++) {
+      const T = threats[i], ang = T.ang;
+      // overlap cap: the alpha of every arc within reach of this one (itself included) sums to at most THR_CAP
+      let sum = 0;
+      for (let j = 0; j < n; j++) {
+        let d = Math.abs(threats[j].ang - ang) % TAU; if (d > Math.PI) d = TAU - d;
+        if (d < SP[i] + SP[j]) sum += A[j];
+      }
+      const cap = THR_CAP * (1 + 0.2 * clamp(glass || 0, 0, 1));
+      const a = A[i] * (sum > cap ? cap / sum : 1);
+      if (!(a > 0.004)) continue;
+      const c = Math.cos(ang), s = Math.sin(ang), E = this._edgePoint(c, s);
+      const u = clamp((THR_FAR - T.tti) / (THR_FAR - THR_NEAR), 0, 1);
+      const along = Math.max(1.5 * E.t * Math.tan(SP[i]), 40 * L.s), depth = lerp(THR_D0, THR_D1, u) * L.m;
+      // local frame: x along the edge (tangent), y inward; the unit gradient becomes an ellipse centred on the edge
+      const tx = -E.ny, ty = E.nx, ix = -E.nx, iy = -E.ny;
+      ctx.setTransform(k * tx * along, k * ty * along, k * ix * depth, k * iy * depth, k * (L.cx + E.x), k * (L.cy + E.y));
+      ctx.globalAlpha = this.alpha * a;
+      if (sprite) ctx.drawImage(sprite, 0, 16, 64, 48, -1, -0.5, 2, 1.5);
+      else { ctx.fillStyle = grad; ctx.fillRect(-1, -0.5, 2, 1.5); }
+    }
+    ctx.setTransform(k, 0, 0, k, 0, 0);
+    ctx.globalCompositeOperation = 'source-over';
     ctx.globalAlpha = this.alpha;
   }
   _drawHitFlash(v) {

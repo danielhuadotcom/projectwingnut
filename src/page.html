@@ -111,6 +111,24 @@ body { margin: 0; background: var(--bg); color: var(--fg); font-family: var(--mo
 .m-status.ok { color: var(--hud); }
 .m-status.ok .m-dot { animation: none; }
 .m-tip { margin: 0; font: 400 11px/1.4 var(--mono); color: var(--muted); }
+/* Home-screen install line (js/menu.js, title footer; only on the Pages build where installing is possible) */
+.m-install { appearance: none; position: relative; display: flex; align-items: center; gap: 9px; width: 100%; min-height: 34px; margin: 0; padding: 4px 10px; cursor: pointer;
+  border: 1px solid transparent; background: transparent; text-align: left; font: 700 10.5px/1.2 var(--mono); letter-spacing: 0.14em; text-transform: uppercase; color: var(--hud-2);
+  transition: background-color 0.12s, border-color 0.12s, color 0.12s; }
+.m-install[hidden] { display: none; }
+.m-install-i { flex: none; display: grid; width: 18px; height: 18px; color: var(--hud); }
+.m-install-i svg { width: 100%; height: 100%; }
+.m-install:hover, .m-install.is-focus { border-color: var(--line); color: #fff; background: rgba(156, 235, 255, 0.1); }
+/* iOS Add to Home Screen hint (modal): the whole screen takes the tap that closes it */
+.m-instscr { pointer-events: auto; }
+.m-panel--install { width: min(420px, 100%); }
+.m-inst-steps { display: flex; align-items: center; justify-content: center; gap: 12px; margin: 0 0 12px; padding: 14px 12px; border: 1px solid var(--line); background: rgba(156, 235, 255, 0.05);
+  font: 600 13px/1.2 var(--display); letter-spacing: 0.08em; text-transform: uppercase; color: var(--pale); }
+.m-inst-step { display: inline-flex; flex-direction: column; align-items: center; gap: 8px; text-align: center; }
+.m-inst-g { display: grid; place-items: center; width: 46px; height: 46px; border-radius: 12px; color: #4fb6ff; background: rgba(234, 251, 255, 0.94); box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35); }
+.m-inst-g svg { width: 28px; height: 28px; }
+.m-inst-arrow { font: 400 24px/1 var(--mono); color: var(--hud); }
+.m-inst-note { margin: 0 0 14px; font: 400 11.5px/1.45 var(--mono); color: var(--muted); }
 .m-hints { display: flex; flex-wrap: wrap; gap: 6px 18px; font: 700 10.5px/1 var(--mono); letter-spacing: 0.14em; text-transform: uppercase; color: var(--muted); }
 .m-hints span { display: inline-flex; align-items: center; gap: 7px; }
 .m-g { display: inline-grid; font-variant-ligatures: none; place-items: center; min-width: 20px; height: 18px; padding: 0 5px; border: 1px solid rgba(156, 235, 255, 0.42); border-bottom-width: 2px; border-radius: 3px;
@@ -332,6 +350,15 @@ body { margin: 0; background: var(--bg); color: var(--fg); font-family: var(--mo
   .m-panel--pick { overflow-y: auto; }
   .m-diffs { margin-bottom: 10px; }
   .m-diff-rec { padding: 2px 5px; }
+  .m-inst-steps { padding: 10px; margin-bottom: 8px; }
+  .m-inst-g { width: 40px; height: 40px; }
+  .m-inst-note { margin-bottom: 10px; }
+  .m-panel--install { overflow-y: auto; }
+  /* the install line shares the footer row with the controller status, so the title keeps its height */
+  .m-title .m-foot { flex-direction: row; align-items: center; gap: 12px; }
+  .m-title .m-status { flex: 1 1 0; min-width: 0; }
+  .m-title .m-status-t { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .m-install { flex: none; width: auto; min-height: 32px; margin-right: -10px; }
   .m-title .m-list { gap: 2px; }          /* six title entries (INFINITY under Start Campaign) */
   .m-title .m-item { min-height: 36px; }
 }

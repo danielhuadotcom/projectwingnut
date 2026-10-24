@@ -32,6 +32,15 @@
 // the difficulty setting (onSetting, so Settings shows it) and the 'wingnut.difficultyPicked' flag; Back cancels to the
 // screen that opened it. It never shows again until Settings › Gameplay › Restore defaults clears the flag. When
 // storage fails it shows once per page session. INFINITY skips it (its own ramp).
+// HOME-SCREEN INSTALL: one compact line at the bottom of the title (data-act="install"), only on the GitHub Pages build
+// (the page links a web app manifest; dev.html and the artifact body do not) and never when already running standalone.
+// iPhone / iPad Safari has no install API, so the line opens a small hint panel (screen 'install', a modal): Tap Share,
+// then Add to Home Screen; any tap, Esc / B or Got it closes it. Chromium fires beforeinstallprompt when the page is
+// installable: the event is stashed (module level, so an early event is not missed) and the line calls its prompt().
+// prompt() needs a user activation: clicks, taps and keys have one, a gamepad press does not, and a refusal shows a
+// short note on the line. The line hides after appinstalled, after the prompt is answered (a later event brings it
+// back), and when the event never fires. installKind() holds the rule; opts.installEnv overrides the detected
+// environment (test_menu.html).
 
 import { countUnits } from './missions.js';
 import { shapeAxis, STICK_EXPO, EXPO_MAX } from './input.js';
@@ -124,6 +133,40 @@ export function saveDifficultyPicked(on) {
   try { if (on) localStorage.setItem(DIFFICULTY_PICKED_KEY, '1'); else localStorage.removeItem(DIFFICULTY_PICKED_KEY); return true; } catch { return false; }
 }
 const FULLSCREEN = 'fullscreen';
+
+// ---- Home-screen install (see the header) ------------------------------------------------------------------------
+let installEvent = null;                                  // the stashed beforeinstallprompt event, until used
+const installSubs = new Set();                            // Menu instances to resync when it changes
+const installChanged = () => { for (const f of installSubs) { try { f(); } catch { /* ignore */ } } };
+if (typeof window !== 'undefined' && window.addEventListener) {
+  window.addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); installEvent = e; installChanged(); });
+  window.addEventListener('appinstalled', () => { installEvent = null; installChanged(); });
+}
+/** The live environment for installKind(). */
+export function installEnv() {
+  const nav = typeof navigator === 'undefined' ? {} : navigator;
+  return {
+    ua: String(nav.userAgent || ''), platform: String(nav.platform || ''), touchPoints: nav.maxTouchPoints | 0,
+    standalone: nav.standalone === true || media('(display-mode: standalone)') || media('(display-mode: fullscreen)'),
+    manifest: typeof document !== 'undefined' && !!document.querySelector('link[rel="manifest"]'),
+  };
+}
+/** Which install entry the title shows: 'ios' (the Share hint), 'prompt' (Chromium's install prompt) or null (none).
+ *  env as installEnv(); promptReady: a beforeinstallprompt event is waiting. */
+export function installKind(env, promptReady) {
+  if (!env || !env.manifest || env.standalone) return null;
+  const ua = env.ua || '';
+  const ios = /\b(iPhone|iPad|iPod)\b/.test(ua) || (env.platform === 'MacIntel' && env.touchPoints > 1);   // iPadOS asks for the desktop site
+  // Safari only: other iOS browsers and in-app web views have their own (or no) Add to Home Screen
+  if (ios) return /Safari\//.test(ua) && !/CriOS|FxiOS|EdgiOS|OPiOS|GSA\/|DuckDuckGo|YaBrowser|FBAN|FBAV|Instagram|Line\//.test(ua) ? 'ios' : null;
+  return promptReady ? 'prompt' : null;
+}
+const SHARE_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+  '<path d="M8.5 9.5H7A2 2 0 0 0 5 11.5v7.5a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-7.5a2 2 0 0 0-2-2h-1.5"/><path d="M12 14.5V3M8.5 6.5 12 3l3.5 3.5"/></svg>';
+const ADD_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+  '<rect x="3.5" y="3.5" width="17" height="17" rx="4"/><path d="M12 8v8M8 12h8"/></svg>';
+const INSTALL_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+  '<path d="M12 3.5v11M7.5 10 12 14.5 16.5 10"/><path d="M4.5 15.5v2a3 3 0 0 0 3 3h9a3 3 0 0 0 3-3v-2"/></svg>';
 const ROW_KEYS = new Set(['Enter', 'NumpadEnter', 'Space', ' ', 'ArrowLeft', 'ArrowRight']);   // js/input.js confirm / ←→ keys
 
 /** Valid value for `key`, or undefined. Numbers are clamped and rounded to 0.01. */
@@ -204,8 +247,8 @@ export const CREDITS = [
 // =================================================================================================================
 // Markup helpers
 // =================================================================================================================
-const SCREENS = ['title', 'missions', 'pause', 'debrief', 'settings', 'controls', 'credits', 'confirm', 'difficulty'];
-const MODALS = new Set(['confirm', 'difficulty']);   // drawn over the dimmed screen beneath
+const SCREENS = ['title', 'missions', 'pause', 'debrief', 'settings', 'controls', 'credits', 'confirm', 'difficulty', 'install'];
+const MODALS = new Set(['confirm', 'difficulty', 'install']);   // drawn over the dimmed screen beneath
 const ROOTS = new Set(['title', 'pause', 'debrief']);
 const ESC = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ESC[c]);
@@ -315,6 +358,7 @@ export class Menu {
     this._diffSel = 'easy'; this._pickFor = null; this._pickedSession = false;   // first-run difficulty picker
     this._device = '';
     this._reduced = media('(prefers-reduced-motion: reduce)');
+    this._instEnv = { ...installEnv(), ...(this.opts.installEnv || {}) };   // home-screen install (see the header)
     this._build();
     this._setDevice(media('(hover: none) and (pointer: coarse)') ? 'touch' : 'kb');
     this._bind();
@@ -325,7 +369,7 @@ export class Menu {
   // ---------------------------------------------------------------------------------------------------------------
   /** Any menu visible. */
   get open() { return !!this.el && !this.el.hidden; }
-  /** 'title' | 'missions' | 'pause' | 'debrief' | 'settings' | 'controls' | 'credits' | 'confirm' | 'difficulty', or null when closed. */
+  /** 'title' | 'missions' | 'pause' | 'debrief' | 'settings' | 'controls' | 'credits' | 'confirm' | 'difficulty' | 'install', or null when closed. */
   get screen() { return this.open && this._stack.length ? this._stack[this._stack.length - 1].screen : null; }
 
   /**
@@ -457,6 +501,8 @@ export class Menu {
   dispose() {
     this._flushSave();
     clearTimeout(this._fsNoteT);
+    if (this._inst) clearTimeout(this._inst.noteT);
+    installSubs.delete(this._instSync);
     const el = this.el, h = this._h;
     if (h) {
       el.removeEventListener('pointerdown', h.down);
@@ -486,7 +532,8 @@ export class Menu {
     // the briefing text would launch the selected mission, a tap on the credits text would leave the screen).
     el.setAttribute('data-touch-ignore', '');
     el.innerHTML = '<div class="m-scrim" aria-hidden="true"></div>' + this._htmlTitle() + this._htmlMissions() + this._htmlPause() +
-      this._htmlDebrief() + this._htmlSettings() + this._htmlControls() + this._htmlCredits() + this._htmlConfirm() + this._htmlDifficulty();
+      this._htmlDebrief() + this._htmlSettings() + this._htmlControls() + this._htmlCredits() + this._htmlConfirm() + this._htmlDifficulty() +
+      this._htmlInstall();
     this.root.insertBefore(el, this.root.firstChild);
     const q = (sel, r = el) => r.querySelector(sel);
     this._screens = {};
@@ -513,6 +560,11 @@ export class Menu {
     this._syncAllRows();
     this._renderKb();
     this.setControllerStatus('Looking for a controller…', false);
+    this._inst = { btn: q('[data-act="install"]', this._screens.title) };
+    this._inst.icon = q('.m-install-i', this._inst.btn); this._inst.text = q('.m-install-t', this._inst.btn);
+    this._instSync = () => this._syncInstall();
+    installSubs.add(this._instSync);
+    this._syncInstall();
   }
 
   _htmlTitle() {
@@ -529,7 +581,8 @@ export class Menu {
         <nav class="m-list" aria-label="Main menu">
           ${entries.map(([act, label, sub], i) => item(act, pad2(i + 1), label, sub)).join('')}
         </nav>
-        <footer class="m-foot">${STATUS}<p class="m-tip" hidden></p>${hints([['ud', 'Select'], ['ok', 'Confirm']])}</footer>
+        <footer class="m-foot">${STATUS}<p class="m-tip" hidden></p>${hints([['ud', 'Select'], ['ok', 'Confirm']])}
+          <button type="button" class="m-install" data-nav data-act="install" hidden><span class="m-install-i"></span><span class="m-install-t"></span></button></footer>
       </div></section>`;
   }
 
@@ -679,6 +732,65 @@ export class Menu {
         </div>
         ${hintFoot([['ud', 'Select'], ['ok', 'Start'], ['back', 'Back']])}
       </div></section>`;
+  }
+
+  /** iOS Add to Home Screen hint (modal over the title). Any tap closes it (_onClick), as do Esc / B and Got it. */
+  _htmlInstall() {
+    return `<section class="m-screen m-instscr" data-screen="install" role="dialog" aria-modal="true" aria-labelledby="m-inst-h" aria-describedby="m-inst-d" hidden>
+      <div class="m-panel m-panel--install">
+        <p class="m-eyebrow">Install</p>
+        <h2 class="m-h2" id="m-inst-h">Add to Home Screen</h2>
+        <p class="m-lede" id="m-inst-d">Tap Share, then Add to Home Screen. Wingnut then opens full screen from its icon.</p>
+        <div class="m-inst-steps" aria-hidden="true">
+          <span class="m-inst-step"><span class="m-inst-g">${SHARE_SVG}</span>Share</span>
+          <span class="m-inst-arrow">›</span>
+          <span class="m-inst-step"><span class="m-inst-g">${ADD_SVG}</span>Add to Home Screen</span>
+        </div>
+        <p class="m-inst-note">No Share button in view? It may sit under the ••• menu.</p>
+        <div class="m-actions"><button type="button" class="m-btn primary" data-nav data-act="back">Got it</button></div>
+        ${hintFoot([['ok', 'Close'], ['back', 'Close']])}
+      </div></section>`;
+  }
+
+  /** Show, hide or relabel the title's install line for the current environment and stashed event. */
+  _syncInstall() {
+    const I = this._inst;
+    if (!I || !I.btn) return;
+    const kind = installKind(this._instEnv, !!installEvent);
+    I.kind = kind;
+    if (!I.noteText) {
+      I.icon.innerHTML = kind === 'ios' ? SHARE_SVG : INSTALL_SVG;
+      I.text.textContent = kind === 'ios' ? 'Add to Home Screen' : 'Install app';
+    }
+    const hide = !kind;
+    if (I.btn.hidden !== hide) I.btn.hidden = hide;
+    if (hide && this._focusEl === I.btn && this.screen === 'title') this._focus(this._defaultFocus('title'), { silent: true });
+  }
+
+  /** The install line was activated. 'prompt': call prompt() first, synchronously, so a click / key keeps its activation. */
+  _install() {
+    const kind = this._inst && this._inst.kind;
+    if (kind === 'ios') { this._push('install'); return; }
+    const e = installEvent;
+    if (kind !== 'prompt' || !e) return;
+    let req;
+    try { req = e.prompt(); } catch (err) { req = Promise.reject(err); }
+    this._sound('select');
+    Promise.resolve(req).then(() => {
+      if (installEvent === e) installEvent = null;       // one prompt per event: hide until the browser offers another
+      installChanged();
+    }, (err) => {
+      if (err && err.name === 'NotAllowedError') this._installNote('Install needs a click, tap or key press.');
+      else { if (installEvent === e) installEvent = null; installChanged(); }
+    });
+  }
+
+  /** Show `text` on the install line for a few seconds. */
+  _installNote(text) {
+    const I = this._inst;
+    I.noteText = text; I.text.textContent = text;
+    clearTimeout(I.noteT);
+    I.noteT = setTimeout(() => { I.noteText = ''; this._syncInstall(); }, 4000);
   }
 
   // ---------------------------------------------------------------------------------------------------------------
@@ -1116,6 +1228,7 @@ export class Menu {
         break;
       case 'back': this._back(); break;
       case 'reset-tab': this._resetTab(); break;
+      case 'install': this._install(); break;
       default: break;
     }
   }
@@ -1241,6 +1354,7 @@ export class Menu {
   _onClick(e) {
     e.stopPropagation();
     if (!this.open || !this._cur) return;
+    if (this.screen === 'install') { this._back(); return; }   // the hint closes on any tap
     const t = e.target instanceof Element ? e.target : null;
     if (!t || !this._cur.contains(t)) return;
     const seg = t.closest('.m-seg button');

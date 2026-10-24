@@ -132,6 +132,8 @@ const hudRadius = (e) => { if (!e.isGround) return 8 * (e.visualScale || 1); con
 // HUD contact slots (screen markers and radar blips): the largest phase (66 hostiles, M6 phase 1 on Mercenary) plus
 // missiles in flight; buildFrame fills them in priority order should a phase ever outgrow them
 const HUD_CONTACTS = 96;
+const HUD_THREATS = 8;        // incoming-missile edge arcs (js/hud.js _drawThreats)
+const THREAT_FADE = 0.3;      // s: an arc fades out this long after its missile stops guiding on the player (flares, lost track)
 
 class Game {
   constructor(root) {
@@ -1396,7 +1398,10 @@ class Game {
     this.audio.lockTone('none'); this.audio.missileWarning(false); this.audio.pullUpWarning(false);
   }
   message(text, big = false, duration = 2.5) {
-    this.messages.push({ text, age: 0, duration, big });
+    // a repeat of a message still on screen refreshes it and shows a count instead of stacking another line
+    const live = this.messages.find((m) => m.base === text && m.big === big && m.age < m.duration);
+    if (live) { live.count++; live.text = `${text} ×${live.count}`; live.age = 0; live.duration = Math.max(live.duration, duration); return; }
+    this.messages.push({ text, base: text, count: 1, age: 0, duration, big });
     if (this.messages.length > 5) this.messages.shift();
   }
 
@@ -2270,6 +2275,39 @@ class Game {
     c.r = hudRadius(e) * pxm / Math.max(1, e.position.distanceTo(this.camera.position));
     b.dx = e.position.x - p.position.x; b.dz = e.position.z - p.position.z; b.type = 'enemy'; b.isTarget = c.isTarget; b.relAlt = e.position.y - p.position.y;
   }
+  /** Incoming-missile edge arcs (f.threats): a slot per enemy missile guiding on the player, keyed by the missile, with
+   *  its screen angle in the camera frame (behind the camera leans to the bottom edge: "on your six"), its time to impact
+   *  (as EnemyBrain._scanMissiles) and a fade that runs out over THREAT_FADE s once it stops guiding on us. No allocation. */
+  hudThreats(dt) {
+    const f = this.frame, p = this.player, cam = this.camera;
+    const TP = f._threatPool || (f._threatPool = Array.from({ length: HUD_THREATS }, () => ({ m: null, ang: -Math.PI / 2, tti: 9, fade: 0, seen: false })));
+    const th = f.threats || (f.threats = []);
+    th.length = 0;
+    if (this.state === 'title' || !p.alive) { for (const s of TP) { s.m = null; s.fade = 0; } return; }
+    for (const s of TP) s.seen = false;
+    const e = cam.matrixWorld.elements;   // camera basis: right (0,1,2), up (4,5,6), back (8,9,10)
+    const ms = this.weapons.missiles;
+    for (let i = 0; i < ms.length; i++) {
+      const m = ms[i]; if (!m.alive || m.target !== p) continue;
+      let s = null;
+      for (const q of TP) if (q.m === m) { s = q; break; }
+      if (!s) { for (const q of TP) if (!q.m) { s = q; s.m = m; s.ang = -Math.PI / 2; break; } }
+      if (!s) continue;                   // (more than HUD_THREATS inbound: the rest share the arcs already drawn)
+      _v.subVectors(m.position, p.position); const d = Math.max(_v.length(), 1);
+      const vc = Math.max(50, -(_v.x * (m.velocity.x - p.velocity.x) + _v.y * (m.velocity.y - p.velocity.y) + _v.z * (m.velocity.z - p.velocity.z)) / d);
+      s.tti = d / vc;
+      const x = (_v.x * e[0] + _v.y * e[1] + _v.z * e[2]) / d, y = (_v.x * e[4] + _v.y * e[5] + _v.z * e[6]) / d;
+      const z = -(_v.x * e[8] + _v.y * e[9] + _v.z * e[10]) / d;   // + ahead of the camera
+      const sy = y + 0.6 * Math.min(0, z);                            // behind: pulled toward the bottom edge
+      if (x * x + sy * sy > 4e-4) s.ang = Math.atan2(-sy, x);         // (dead ahead: keep the last angle)
+      s.seen = true; s.fade = 1;
+    }
+    for (const s of TP) {
+      if (!s.m) continue;
+      if (!s.seen) { s.fade -= dt / THREAT_FADE; if (s.fade <= 0) { s.fade = 0; s.m = null; continue; } }
+      th.push(s);
+    }
+  }
   buildFrame(dt) {
     const f = this.frame, p = this.player, cam = this.camera;
     f.w = this._hudW; f.h = this._hudH; f.dt = dt; f.time = this.time;
@@ -2399,6 +2437,7 @@ class Game {
       B.name = boss.name; B.bars = boss.bossBars; B.frac = THREE.MathUtils.clamp(boss.health / (boss.maxHealth || 1), 0, 1);
       f.boss = B;
     } else f.boss = null;
+    this.hudThreats(dt); f.threatGlass = this.todGlass || 0;   // (the red Glassfall sky: the arcs run stronger)
     f.warnings.missileIncoming = !!this.missileIncoming; f.warnings.pullUp = !!this.pullUp; f.warnings.stall = !!this.stall; f.warnings.overG = false;
     f.radio = this.radio;
     f.compact = !!(this.touch && this.touch.active);

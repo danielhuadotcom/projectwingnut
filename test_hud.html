@@ -64,6 +64,10 @@ const MSG_DEFS = [
   { t0: 4.8, text: '+500', duration: 2.0, big: false },
   { t0: 9.0, text: 'TARGET BEHIND — CHECK SIX', duration: 3.0, big: false },
 ];
+// incoming-missile edge arcs (HUD._drawThreats): two missiles guiding on us between t = 4..6 (left, then one from behind:
+// the bottom edge), closing; after t = 6 they stop guiding and fade out over 0.3 s, as a flare would make them
+const threatL = { ang: Math.PI * 0.97, tti: 4, fade: 1 }, threatB = { ang: Math.PI * 0.5, tti: 6, fade: 1 };
+frame.threats = [];
 const msgObjs = MSG_DEFS.map(d => ({ text: d.text, age: 0, duration: d.duration, big: d.big }));
 
 function buildFrame(t, dt) {
@@ -114,6 +118,12 @@ function buildFrame(t, dt) {
   blipT.dx = Math.sin(br) * tg.distance; blipT.dz = -Math.cos(br) * tg.distance; blipT.relAlt = 320;
   bl.push(blipT, blipA, blipB);
   if (missile) { blipM.dx = Math.sin(hr + 2.4) * contactM.distance; blipM.dz = -Math.cos(hr + 2.4) * contactM.distance; bl.push(blipM); }
+  const th = frame.threats; th.length = 0;
+  const thFade = missile ? 1 : Math.max(0, 1 - (t - 6) / 0.3);
+  if (t >= 4 && thFade > 0) {
+    threatL.tti = Math.max(0.4, 4.4 - (t - 4) * 1.8); threatL.fade = thFade; th.push(threatL);
+    if (t >= 4.5) { threatB.tti = Math.max(0.6, 6 - (t - 4.5) * 2); threatB.fade = thFade; th.push(threatB); }
+  }
   // warnings
   const wn = frame.warnings;
   wn.missileIncoming = missile;
@@ -167,6 +177,23 @@ function blitCrop() {
   }
 }
 
+// One arc from the left at 1 s to impact: the left edge (mid-height) must show red, the right edge stay clear; and no
+// arcs, no red there. Logs HUD_THREATS ok or HUD_ERR.
+function checkThreats() {
+  const saved = frame.threats, hf = frame.hitFlash, df = frame.damageFlash, k = hud.k, w = hud.w, h = hud.h;
+  frame.hitFlash = 0; frame.damageFlash = 0;   // (edge effects of their own)
+  const px = (x, y) => hud.ctx.getImageData(Math.floor(x * k), Math.floor(y * k), 1, 1).data;
+  frame.threats = [{ ang: Math.PI, tti: 1, fade: 1 }];
+  hud.render(frame);
+  const L = px(2, h / 2), R = px(w - 3, h / 2);
+  frame.threats = [];
+  hud.render(frame);
+  const L0 = px(2, h / 2);
+  frame.threats = saved; frame.hitFlash = hf; frame.damageFlash = df;
+  const ok = L[3] > 40 && L[0] > L[1] + 60 && R[3] === 0 && L0[3] === 0;
+  console.log(ok ? 'HUD_THREATS ok' : 'HUD_ERR threats left ' + Array.from(L) + ' right ' + Array.from(R) + ' none ' + Array.from(L0));
+}
+
 let start = null, last = null, frames = 0, errLogged = false;
 function loop(now) {
   if (start === null) { start = now; last = now; }
@@ -176,6 +203,7 @@ function loop(now) {
     hud.render(buildFrame(t, dt));
     blitCrop();
     if (++frames === 1) console.log('HUD_OK');
+    if (frames === 2) checkThreats();
     if (frames === 120) console.log('HUD_FRAMES 120 ok');
   } catch (e) {
     if (!errLogged) { errLogged = true; console.log('HUD_ERR ' + (e && e.stack || e)); }

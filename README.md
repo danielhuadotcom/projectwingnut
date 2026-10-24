@@ -9,6 +9,9 @@ and an orchestral soundtrack. Everything is generated in code or embedded in the
 
 Works in desktop and mobile browsers with WebGL 2. A gamepad is recommended.
 
+To install it as an app that opens full screen: on iPhone or iPad, tap Share in Safari, then **Add to Home Screen**.
+In Chrome or Edge, use **Install app** at the bottom of the title menu, or the browser's install option.
+
 ## Controls
 
 The in-game **Controls** screen (Main menu › Controls) shows the same list.

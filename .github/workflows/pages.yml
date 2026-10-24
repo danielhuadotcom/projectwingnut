@@ -36,6 +36,9 @@ jobs:
           mkdir -p _site
           # dist/wingnut_local.html is the standalone full page; dist/wingnut.html is only the page body.
           cp dist/wingnut_local.html _site/index.html
+          # home-screen install: the web app manifest and its icons (committed PNGs, copied into dist/ by the build)
+          cp dist/manifest.webmanifest _site/
+          cp -r dist/icons _site/icons
           touch _site/.nojekyll
 
       - uses: actions/configure-pages@v5

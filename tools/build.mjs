@@ -2,13 +2,23 @@
 //   dist/wingnut.html       — artifact body (no doctype/html/head/body; inline module script)
 //   dist/wingnut_local.html — full standalone document with the same inline bundle (for local play/testing)
 //   dev.html                — full document loading js/main.js unbundled (fast local iteration)
+// The standalone page (the one GitHub Pages serves) also gets the home-screen web app tags: manifest.webmanifest and
+// icons/ (made by tools/make_icons.mjs) are copied next to it into dist/. The artifact body stays without them: the
+// claude.ai artifact has no such files next to it.
 import { buildSync } from 'esbuild'; // devDependency, pinned in package.json (npm ci)
-import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, cpSync } from 'node:fs';
 mkdirSync('dist', { recursive: true });
 const pageArg = process.argv.indexOf('--page');
 const page = readFileSync(pageArg > 0 ? process.argv[pageArg + 1] : 'src/page.html', 'utf8');
 const skeletonHead = '<!doctype html><html><head><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover"><style>:root{color-scheme:light;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}html{scroll-padding-top:env(safe-area-inset-top,0px)}body{margin:0;padding:0;font:14px -apple-system,BlinkMacSystemFont,sans-serif;background:#fff;color:#000}img{max-width:100%}[hidden]:not([hidden=until-found i]){display:none!important}</style></head><body>\n';
 const skeletonTail = '</body></html>';
+// Home-screen install (Pages build only). Paths are relative so the /projectwingnut/ subpath works. black-translucent
+// lets the page draw under the iOS status bar; the page already pads by env(safe-area-inset-*).
+const appHead = '<link rel="manifest" href="manifest.webmanifest"><meta name="theme-color" content="#04070d">'
+  + '<link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png"><link rel="apple-touch-icon" sizes="180x180" href="icons/apple-touch-icon.png">'
+  + '<meta name="mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-capable" content="yes">'
+  + '<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"><meta name="apple-mobile-web-app-title" content="Wingnut">';
+const BLANK_ICON = '<link rel="icon" href="data:,">';
 const minify = process.argv.includes('--min');
 const bundle = buildSync({
   entryPoints: ['js/main.js'], bundle: true, format: 'esm', external: ['https://*'], target: 'es2022', logLevel: 'warning',
@@ -18,6 +28,10 @@ const inline = bundle.replace(/<\/script/gi, '<\\/script').replace(/<!--/g, '<\\
 // replacer function: a replacement *string* would expand $&, $', $`, $$ and $1 occurring in the bundle
 const artifact = page.replace('<!--SCRIPT-->', () => `<script type="module">\n${inline}\n</script>`);
 writeFileSync('dist/wingnut.html', artifact);
-writeFileSync('dist/wingnut_local.html', skeletonHead + artifact + skeletonTail);
+if (!artifact.includes(BLANK_ICON)) throw new Error('src/page.html: expected ' + BLANK_ICON);
+// the page's blank favicon would override the real one, so the standalone page drops it
+writeFileSync('dist/wingnut_local.html', skeletonHead.replace('</head>', appHead + '</head>') + artifact.replace(BLANK_ICON, '') + skeletonTail);
+cpSync('manifest.webmanifest', 'dist/manifest.webmanifest');
+cpSync('icons', 'dist/icons', { recursive: true });
 writeFileSync('dev.html', skeletonHead + page.replace('<!--SCRIPT-->', '<script type="module" src="js/main.js"></script>') + skeletonTail);
 console.log(`bundle ${(bundle.length / 1024).toFixed(0)} KB, artifact ${(artifact.length / 1024).toFixed(0)} KB`);

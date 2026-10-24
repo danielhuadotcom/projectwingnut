@@ -21,7 +21,7 @@
 <body>
 <div id="banner" hidden></div>
 <script type="module">
-import { Menu, loadSettings, saveSettings, DEFAULT_SETTINGS, CREDITS, SETTING_DEFS, DIFFICULTY_PICKS, DIFFICULTY_PICKED_KEY, loadDifficultyPicked, saveDifficultyPicked } from './js/menu.js';
+import { Menu, installKind, loadSettings, saveSettings, DEFAULT_SETTINGS, CREDITS, SETTING_DEFS, DIFFICULTY_PICKS, DIFFICULTY_PICKED_KEY, loadDifficultyPicked, saveDifficultyPicked } from './js/menu.js';
 import { MISSIONS, countUnits } from './js/missions.js';
 import { Input, shapeAxis, STICK_EXPO } from './js/input.js';
 import { loadBest, saveBest, BEST_KEY } from './js/infinity.js';
@@ -47,7 +47,7 @@ let infRound = 0;
 const flyInfinity = () => { playing = 0; infRound = 1; banner.hidden = false; banner.textContent = 'FLYING INFINITY · round 1 · P/Esc pause · L clear round · K shot down'; };
 const ground = () => { banner.hidden = true; };
 const settings = loadSettings();
-const menu = new Menu(document.querySelector('#ui'), {
+const menuOpts = {
   settings, missions: MISSIONS,
   onStart: (i) => { calls.push(['start', i]); if (!selfTest) fly(i); },
   onResume: () => { calls.push(['resume']); },
@@ -57,7 +57,8 @@ const menu = new Menu(document.querySelector('#ui'), {
   onSetting: (k, v) => { calls.push(['set', k, v]); if (!selfTest) console.log(`onSetting ${k} = ${v}`); },
   onSound: (kind) => { sounds[kind] = (sounds[kind] || 0) + 1; },
   onInfinity: () => { calls.push(['infinity']); if (!selfTest) flyInfinity(); },
-});
+};
+let menu = new Menu(document.querySelector('#ui'), menuOpts);   // replaced for ?install= screenshots (see the end)
 window.__menu = menu;
 
 // ---- scripted self-test: fake input edges, deterministic dt ------------------------------------------------------
@@ -593,6 +594,96 @@ async function runSelfTest() {
     menu.setSetting('difficulty', d0);
   }
 
+  // Home-screen install line: installKind() rules, then real Menus with a simulated environment (this page links no
+  // manifest, so the main menu above, like dev.html and the artifact body, has no install line)
+  {
+    const IPHONE = 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1';
+    const IPAD_DESK = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15';
+    const CRIOS = 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) CriOS/130.0.6723.90 Mobile/15E148 Safari/604.1';
+    const WEBVIEW = 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148';
+    const ANDROID = 'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Mobile Safari/537.36';
+    const FIREFOX = 'Mozilla/5.0 (X11; Linux x86_64; rv:131.0) Gecko/20100101 Firefox/131.0';
+    const env = (o) => ({ ua: ANDROID, platform: 'Linux armv8l', touchPoints: 5, standalone: false, manifest: true, ...o });
+    check('install: iPhone Safari gets the Share hint', installKind(env({ ua: IPHONE, platform: 'iPhone' }), false) === 'ios');
+    check('install: iPadOS (desktop UA, touch) gets the hint', installKind(env({ ua: IPAD_DESK, platform: 'MacIntel', touchPoints: 5 }), false) === 'ios');
+    check('install: a Mac (no touch) gets nothing', installKind(env({ ua: IPAD_DESK, platform: 'MacIntel', touchPoints: 0 }), false) === null);
+    check('install: Chrome on iOS and in-app web views get nothing', installKind(env({ ua: CRIOS, platform: 'iPhone' }), false) === null && installKind(env({ ua: WEBVIEW, platform: 'iPhone' }), false) === null);
+    check('install: standalone iOS gets nothing', installKind(env({ ua: IPHONE, platform: 'iPhone', standalone: true }), false) === null);
+    check('install: Chromium shows it only once beforeinstallprompt fired', installKind(env(), false) === null && installKind(env(), true) === 'prompt');
+    check('install: Chromium standalone gets nothing', installKind(env({ standalone: true }), true) === null);
+    check('install: other browsers get nothing', installKind(env({ ua: FIREFOX, platform: 'Linux x86_64', touchPoints: 0 }), false) === null);
+    check('install: no manifest (artifact, dev.html) gets nothing', installKind(env({ ua: IPHONE, platform: 'iPhone', manifest: false }), false) === null && installKind(env({ manifest: false }), true) === null);
+    check('install: the test page (no manifest) has no install line', menu.el.querySelector('[data-act="install"]').hidden);
+
+    const make = (o) => {
+      const host = document.createElement('div'); host.style.cssText = 'position:fixed;inset:0'; document.body.appendChild(host);
+      const m = new Menu(host, { settings: { ...settings }, missions: MISSIONS, onInfinity: () => {}, installEnv: env(o) });
+      const btn = m.el.querySelector('[data-act="install"]');
+      const fin = () => { m.dispose(); host.remove(); };
+      const nav = (k) => { for (const e of EDGES) fake[e] = false; fake[NAMES[k]] = true; m.update(1 / 60, fake); fake[NAMES[k]] = false; m.update(1 / 60, fake); };
+      const foc = () => { const f = m.el.querySelector('.is-focus'); return f && (f.dataset.act || '?'); };
+      const open = async () => { m.show('title'); await new Promise((r) => setTimeout(r, Math.max(0, (m._lockUntil || 0) - performance.now()) + 20)); m.update(1, fake); };
+      return { m, btn, fin, nav, foc, open };
+    };
+    const fakePrompt = (impl) => {
+      const ev = new Event('beforeinstallprompt', { cancelable: true }); ev.prompts = 0;
+      ev.prompt = () => { ev.prompts++; return impl ? impl() : Promise.resolve({ outcome: 'dismissed' }); };
+      ev.userChoice = Promise.resolve({ outcome: 'dismissed', platform: 'web' });
+      window.dispatchEvent(ev); return ev;
+    };
+    const tick = () => new Promise((r) => setTimeout(r, 0));
+
+    { // iOS Safari: the line opens the hint; tap, Esc / B and Got it close it
+      const T = make({ ua: IPHONE, platform: 'iPhone' });
+      await T.open();
+      check('iOS: the install line shows, labelled Add to Home Screen', !T.btn.hidden && /add to home screen/i.test(T.btn.textContent), T.btn.textContent);
+      check('iOS: the line is the last thing on the title', T.btn.closest('.m-foot') && !T.btn.nextElementSibling);
+      T.nav('up'); check('iOS: up from Start wraps to the install line', T.foc() === 'install', T.foc());
+      T.nav('up'); check('iOS: up from it reaches Credits', T.foc() === 'credits', T.foc());
+      T.nav('down'); check('iOS: down from Credits reaches it', T.foc() === 'install', T.foc());
+      T.nav('down'); check('iOS: down from it wraps to Start', T.foc() === 'start', T.foc());
+      T.nav('up'); T.nav('ok');
+      const S = T.m.el.querySelector('[data-screen="install"]');
+      check('iOS: confirm opens the hint over the title', T.m.screen === 'install' && !S.hidden && T.m.el.querySelector('[data-screen="title"]').classList.contains('m-under'), T.m.screen);
+      check('iOS: the hint says Tap Share, then Add to Home Screen', /Tap Share, then Add to Home Screen/.test(S.textContent) && S.querySelectorAll('.m-inst-g svg').length === 2);
+      check('iOS: the hint focuses Got it', T.foc() === 'back', T.foc());
+      T.nav('back'); check('iOS: B / Esc closes the hint, focus back on the line', T.m.screen === 'title' && T.foc() === 'install', [T.m.screen, T.foc()]);
+      T.btn.click(); check('iOS: a tap on the line opens the hint', T.m.screen === 'install');
+      S.querySelector('.m-lede').click(); check('iOS: a tap anywhere on the hint closes it', T.m.screen === 'title');
+      T.btn.click(); S.click(); check('iOS: a tap outside the panel closes it', T.m.screen === 'title');
+      T.btn.click(); T.nav('ok'); check('iOS: Got it closes it', T.m.screen === 'title');
+      T.fin();
+      const U = make({ ua: IPHONE, platform: 'iPhone', standalone: true });
+      check('iOS standalone: no install line', U.btn.hidden); U.fin();
+    }
+    { // Chromium: beforeinstallprompt shows the line; prompt() runs on confirm; appinstalled / an answer hides it
+      const T = make({});
+      await T.open();
+      check('Chromium: no line before beforeinstallprompt', T.btn.hidden);
+      const ev = fakePrompt();
+      check('Chromium: the event is stashed (default prevented)', ev.defaultPrevented);
+      check('Chromium: Install app shows', !T.btn.hidden && /install app/i.test(T.btn.textContent), T.btn.textContent);
+      check('Chromium: the main menu (no manifest) still has none', menu.el.querySelector('[data-act="install"]').hidden);
+      T.nav('up'); check('Chromium: reachable by keyboard / gamepad', T.foc() === 'install', T.foc());
+      T.nav('ok'); check('Chromium: confirm calls prompt() once', ev.prompts === 1 && T.m.screen === 'title', ev.prompts);
+      await tick(); await tick();
+      check('Chromium: answered, the line hides and focus moves on', T.btn.hidden && T.foc() === 'start', T.foc());
+      const ev2 = fakePrompt(() => Promise.reject(new DOMException('The prompt() method must be called with a user gesture', 'NotAllowedError')));
+      check('Chromium: a new event brings it back', !T.btn.hidden);
+      T.btn.click(); await tick(); await tick();
+      check('Chromium: a refused prompt shows a note and keeps the line', ev2.prompts === 1 && !T.btn.hidden && /needs a click/i.test(T.btn.textContent), T.btn.textContent);
+      window.dispatchEvent(new Event('appinstalled'));
+      check('Chromium: appinstalled hides it', T.btn.hidden);
+      T.fin();
+      fakePrompt();
+      const U = make({ standalone: true });
+      check('Chromium standalone: no line even with the event', U.btn.hidden); U.fin();
+      const V = make({ ua: FIREFOX, platform: 'Linux x86_64', touchPoints: 0, manifest: false });
+      check('no manifest: no line even with the event', V.btn.hidden); V.fin();
+      window.dispatchEvent(new Event('appinstalled'));   // leave no stashed event behind
+    }
+  }
+
   // Restore the stored settings (the game shares this origin)
   for (const key of Object.keys(DEFAULT_SETTINGS)) menu.setSetting(key, before[key]);
   menu.hide();
@@ -610,6 +701,15 @@ selfTest = false;
 // ---- screenshot / manual mode: ?screen=title|missions|pause|debrief|runover|settings|controls|credits|confirm -------
 // (&inf=1 with pause or confirm: the INFINITY pause)
 const want = params.get('screen') || 'title';
+// &install=ios | prompt: a menu as on iPhone Safari / with Chromium's install prompt (screen=install: the iOS hint)
+const instParam = params.get('install') || (want === 'install' ? 'ios' : '');
+if (instParam) {
+  menu.dispose();
+  menu = window.__menu = new Menu(document.querySelector('#ui'), { ...menuOpts, installEnv: instParam === 'ios'
+    ? { ua: 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1', platform: 'iPhone', touchPoints: 5, standalone: false, manifest: true }
+    : { ua: navigator.userAgent, platform: 'Linux x86_64', touchPoints: 0, standalone: false, manifest: true } });
+  if (instParam === 'prompt') { const ev = new Event('beforeinstallprompt', { cancelable: true }); ev.prompt = () => { console.log('MENU_PROMPT'); return Promise.resolve({ outcome: 'dismissed' }); }; window.dispatchEvent(ev); }
+}
 menu.setControllerStatus(params.get('pad') === '0' ? 'No controller detected. Press a button on it, or fly with the keyboard.' : 'Controller ready: Xbox Wireless Controller', params.get('pad') !== '0');
 menu.setQualityLabel('AUTO · MEDIUM');
 if (params.get('dev')) menu.setDevice(params.get('dev'));
