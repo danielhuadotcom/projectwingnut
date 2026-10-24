@@ -953,9 +953,9 @@ class Game {
     // target 'fleet': past the frame origin from the allied fleet, flying at it (js/allies.js leakers)
     const atFleet = g.target === 'fleet' && g.kind === 'air' && this.allied && this.allied.ships.length > 0;
     if (atFleet) { this.fleetApproach(g, dist, _v2, rand); cx = _v2.x; cz = _v2.z; }
-    this._spawnOptional = !!g.optional; this._spawnAtFleet = atFleet; this._spawnLabel = g.label || null;
+    this._spawnOptional = !!g.optional; this._spawnAtFleet = atFleet; this._spawnLabel = g.label || null; this._spawnMainspring = !!g.mainspring;
     const n = g.kind === 'air' ? this.spawnAirGroup(g, cx, cz, rand) : this.seeded(rand() * 4294967296, () => this.spawnSurfaceGroup(g, cx, cz));
-    this._spawnAtFleet = false; this._spawnLabel = null;
+    this._spawnAtFleet = false; this._spawnLabel = null; this._spawnMainspring = false;
     return n;
   }
   /** Sortie frame: where and which way the sortie starts (the player's pose at mission load). Campaign groups are
@@ -1222,7 +1222,7 @@ class Game {
     ac.withdrawing = false; ac.untargetable = false;     // pooled: a phase won early sends its survivors home (withdrawRemaining)
     ac.typeKey = typeName;                               // the type; name is the HUD label (groups[].label may disguise it)
     ac.name = this._spawnLabel || typeName;
-    ac.mainspring = /MAINSPRING/.test(typeName);         // one of Mainspring's jets (the radio's "Typical.", withdrawal order)
+    ac.mainspring = this._spawnMainspring || /MAINSPRING/.test(typeName);         // one of Mainspring's jets (the radio's "Typical.", withdrawal order)
     if (this._spawnAtFleet) this.allied.addLeaker(ac);   // flies at the allied fleet instead (js/allies.js)
     return ac;
   }
