@@ -11,7 +11,7 @@ import { EnemyBrain } from './ai.js';
 import { Squadron } from './squad.js';
 import { AlliedForces } from './allies.js';
 import { Profiler } from './profiler.js';
-import { PRESETS, TIERS, CHOICES, DynamicResolution, loadChoice, saveChoice, guessTier } from './quality.js';
+import { PRESETS, TIERS, CHOICES, DynamicResolution, StepDown, loadChoice, saveChoice, guessTier } from './quality.js';
 import { GroundForces, DEFAULT_GROUND_TYPES, unitScale } from './targets.js';
 import { MISSIONS, AIRCRAFT_TYPES, GROUND_TYPES } from './missions.js';
 import { Awacs } from './awacs.js';
@@ -27,20 +27,20 @@ import { Glassfall } from './glassfall.js';
 
 // Fallback campaign (replaced by js/missions.js data once it exists): PW-style missions made of phases of groups.
 const FALLBACK_AIR_TYPES = {
-  'SLEET-2': { role: 'interceptor', hp: 35, speedKmh: 2500, roll: 170, pitch: 85, yaw: 10, color: 0x6b7178, accent: 0xc0392b },
-  'NV-48': { role: 'fighter', hp: 35, speedKmh: 2500, roll: 210, pitch: 85, yaw: 15, color: 0x5d6670, accent: 0xd8232a },
-  'FLURRY-4': { role: 'fighter', hp: 45, speedKmh: 2400, roll: 190, pitch: 92, yaw: 14, color: 0x56606a, accent: 0xb3262e },
+  'SLEET-21': { role: 'interceptor', hp: 35, speedKmh: 2500, roll: 170, pitch: 85, yaw: 10, color: 0x6b7178, accent: 0xc0392b },
+  'NV-16': { role: 'fighter', hp: 35, speedKmh: 2500, roll: 210, pitch: 85, yaw: 15, color: 0x5d6670, accent: 0xd8232a },
+  'FLURRY-29': { role: 'fighter', hp: 45, speedKmh: 2400, roll: 190, pitch: 92, yaw: 14, color: 0x56606a, accent: 0xb3262e },
 };
 const FALLBACK_MISSIONS = [
   { id: 1, name: 'Warm-Up Lap', briefing: 'Concord patrols are probing the Skerry coast. Clear the sky over the bay.',
-    phases: [ { label: 'Patrol', groups: [ { kind: 'air', type: 'SLEET-2', count: 2, formation: 'pair', position: 'ahead', distance: 4500 } ] },
-              { label: 'Reinforcements', groups: [ { kind: 'air', type: 'NV-48', count: 3, formation: 'vee', position: 'left', distance: 5000 } ] } ] },
+    phases: [ { label: 'Patrol', groups: [ { kind: 'air', type: 'SLEET-21', count: 2, formation: 'pair', position: 'ahead', distance: 4500 } ] },
+              { label: 'Reinforcements', groups: [ { kind: 'air', type: 'NV-16', count: 3, formation: 'vee', position: 'left', distance: 5000 } ] } ] },
   { id: 2, name: 'Battery Change', briefing: 'Air defenses guard the shoreline. Knock out the sites, then the escorts.',
     phases: [ { label: 'Air defenses', groups: [ { kind: 'ground', type: 'sam', count: 3, area: 'coastline', distance: 6000 }, { kind: 'ground', type: 'aa', count: 4, area: 'coastline', distance: 6000 }, { kind: 'ground', type: 'tank', count: 4, area: 'base', distance: 6500 } ] },
-              { label: 'Escorts', groups: [ { kind: 'air', type: 'NV-48', count: 4, formation: 'vee', position: 'ahead', distance: 5000 } ] } ] },
+              { label: 'Escorts', groups: [ { kind: 'air', type: 'NV-16', count: 4, formation: 'vee', position: 'ahead', distance: 5000 } ] } ] },
   { id: 3, name: 'Low Tide', briefing: 'A Corsair flotilla is closing on Lanternport. Sink it.',
     phases: [ { label: 'Flotilla', groups: [ { kind: 'naval', type: 'frigate', count: 2, area: 'fleet', distance: 7000 }, { kind: 'naval', type: 'boat', count: 4, area: 'fleet', distance: 7000 } ] },
-              { label: 'Air cover', groups: [ { kind: 'air', type: 'FLURRY-4', count: 4, formation: 'line', position: 'high', distance: 5000 }, { kind: 'air', type: 'SLEET-2', count: 2, formation: 'pair', position: 'right', distance: 5000 } ] } ] },
+              { label: 'Air cover', groups: [ { kind: 'air', type: 'FLURRY-29', count: 4, formation: 'line', position: 'high', distance: 5000 }, { kind: 'air', type: 'SLEET-21', count: 2, formation: 'pair', position: 'right', distance: 5000 } ] } ] },
 ];
 
 // ---------- tuning ----------
@@ -83,8 +83,8 @@ const ENEMY_MISSILE_TURN = 0.6;  // enemy shots: turn-limit scale, the same on e
 // speed in ~6 s. turnScale 1.3 keeps the old turn radius at the higher speed (1000 / 760 m/s), so close crossing shots
 // don't get worse; a 13 m fuse (enemy missiles are cut to 11 m to stay dodgeable). With the pursuit-style guidance
 // (js/weapons.js _guide) tail chases (an evading bandit included), gentle turns and head-ons inside ~1.5 km connect,
-// while high crossing angles and long shots at a hard turner or an evading bandit mostly miss; aces beat some good
-// shots with flares (js/ai.js break discipline). blindTime: on a tail-aspect launch inside 1.8 km the seeker's blind
+// while high crossing angles and long shots at a hard turner or an evading bandit mostly miss; aces and bosses beat
+// good shots with a post-stall Cobra that breaks the lock of every missile close to impact (js/ai.js COBRA_*). blindTime: on a tail-aspect launch inside 1.8 km the seeker's blind
 // range is at most 0.05 s of closure (15-25 m) instead of the flat 90 m, which in a close tail chase (a missile still
 // accelerating, closing at 250-450 m/s) left 0.2-0.35 s unguided: long enough for an ordinary evasive turn to slip the
 // 13 m fuse. Crossing, head-on and long shots keep 90 m (js/weapons.js fireMissile). Per-shot values on the Missile,
@@ -117,7 +117,7 @@ const _losAir = { position: new THREE.Vector3(), size: [0, -4, 0], def: { size: 
 const _q = new THREE.Quaternion();
 const yawToward = (from, to) => Math.atan2(-(to.x - from.x), -(to.z - from.z)); // rotation about +Y so that -Z nose points from->to
 const byDistance = (a, b) => a._d2 - b._d2;   // sort by squared distance to the player / squadmate (set beforehand)
-// AI cruise speed of an aircraft type relative to a SLEET-2's 1100 km/h (helicopters slow, cruise missiles fast)
+// AI cruise speed of an aircraft type relative to a SLEET-21's 1100 km/h (helicopters slow, cruise missiles fast)
 const cruiseScale = (type) => {
   const kmh = (type.ai && type.ai.kmh && type.ai.kmh[1]) || ((type.speedKmh || 2500) <= 1200 ? type.speedKmh : (type.speedKmh || 2500) * 0.44);
   return THREE.MathUtils.clamp(kmh / 1100, 0.3, 1.2);
@@ -161,7 +161,7 @@ class Game {
     this.aimDir = new THREE.Vector3(0, 0, -1); this._qInv = new THREE.Quaternion();
     this.aimUp = new THREE.Vector3(0, 1, 0); this._lookDir = new THREE.Vector3(0, 0, -1); this._aimQ = new THREE.Quaternion();
     this._ovRoll = 0; this._ovPitch = 0; this._behindDir = 0;
-    this._aimPush = false; this._rollSide = 0; this._aimLx = 0; this._aimTrim = 0; this._aimPI = 0;
+    this._aimPush = false; this._rollSide = 0; this._aimLx = 0; this._aimTrim = 0; this._aimPI = 0; this._levelSide = 0;
     // Player settings (the settings menu replaces this object when it lands)
     this.settings = loadSettings();   // persisted player settings (menu module); the menu edits this object in place
     this.frame = this.makeFrame();
@@ -179,6 +179,7 @@ class Game {
     this.qualityChoice = CHOICES.includes(PARAMS.get('q')) ? PARAMS.get('q') : (CHOICES.includes(this.settings.quality) ? this.settings.quality : 'auto');
     this.quality = this.qualityChoice === 'auto' ? guessTier(this.gpuName) : this.qualityChoice;
     this.dynres = new DynamicResolution({ targetMs: 12.5 });
+    this.stepDown = new StepDown();        // Auto: one tier down when frames stay slow at the lowest resolution (never up)
     const preset = PRESETS[this.quality];
     this.dpr = Math.min(window.devicePixelRatio || 1, preset.dprCap);
     this.renderScale = preset.scaleMax;
@@ -194,7 +195,7 @@ class Game {
     // The genre-staple tunnel: a rock ridge on the coast north of spawn with a lit bore through it
     try { this.tunnel = new Tunnel(this.scene, this.world); } catch (e) { console.warn('tunnel unavailable', e); this.tunnel = null; }
     this.inTunnel = false;
-    if (PARAMS.has('scale')) this.renderScale = THREE.MathUtils.clamp(Number(PARAMS.get('scale')) || 1, 0.5, 1);
+    if (PARAMS.has('scale')) this.renderScale = THREE.MathUtils.clamp(Number(PARAMS.get('scale')) || 1, 0.45, 1);
     if (PARAMS.has('dpr')) this.dpr = THREE.MathUtils.clamp(Number(PARAMS.get('dpr')) || 1, 0.5, 2);
     const msaa = PARAMS.has('msaa') ? Number(PARAMS.get('msaa')) : preset.samples;
     // PostFX renders the scene at renderScale internally (instant to change) and composites at native resolution
@@ -347,11 +348,10 @@ class Game {
   warmUpEffects() {
     try {
       const P = new THREE.Vector3(0, 9000, -4000);
-      const type = this.airTypes['SLEET-2'] || Object.values(this.airTypes)[0];
-      const dummy = this.spawnAircraft('SLEET-2', type, P.clone(), 0, 0);
+      const type = this.airTypes['SLEET-21'] || Object.values(this.airTypes)[0];
+      const dummy = this.spawnAircraft('SLEET-21', type, P.clone(), 0, 0);
       this.rebuildCombatList();
-      dummy.vapor && (dummy.vapor.visible = true);
-      this.player.vapor && (this.player.vapor.visible = true);
+      if (!dummy.fxLite) { dummy.vapor && (dummy.vapor.visible = true); this.player.vapor && (this.player.vapor.visible = true); }   // (off on 'verylow')
       const w = this.weapons;
       for (let i = 0; i < 4; i++) w.fireGun(dummy);
       w.fireMissile(dummy, null);
@@ -399,10 +399,13 @@ class Game {
     const post = this.post;
     if (post.setRenderScale) {
       // PostFX renders the scene at renderScale internally and composites at native resolution
-      this.renderer.setPixelRatio(this.dpr);
+      // canvasScale < 1 ('verylow'): the drawing buffer itself is smaller (the browser compositor stretches the canvas;
+      // the HUD is its own layer and stays sharp), so the composite pass also runs at the reduced size
+      const cs = this.canvasScale();
+      this.renderer.setPixelRatio(this.dpr * cs);
       this.renderer.setSize(w, h, false);
-      post.setSize(w, h, this.dpr);
-      post.setRenderScale(this.renderScale);
+      post.setSize(w, h, this.dpr * cs);
+      post.setRenderScale(this.renderScale / cs);
     } else {
       const pr = this.dpr * this.renderScale;
       this.renderer.setPixelRatio(pr);
@@ -413,12 +416,14 @@ class Game {
     this.hud.resize();
     this.cacheHudSize();
   }
+  /** Drawing-buffer scale of the current preset (PRESETS[].canvasScale, default 1): PostFX's render scale is relative to it. */
+  canvasScale() { return PRESETS[this.quality].canvasScale || 1; }
   /** HUD host size (CSS px) for buildFrame's projections, read here on resize instead of every frame. */
   cacheHudSize() { this._hudW = this.hudHost.clientWidth || 1; this._hudH = this.hudHost.clientHeight || 1; }
   setRenderScale(s) {
     if (Math.abs(s - this.renderScale) < 1e-3) return;
     this.renderScale = s;
-    if (this.post.setRenderScale) this.post.setRenderScale(s); else this.resize();
+    if (this.post.setRenderScale) this.post.setRenderScale(s / this.canvasScale()); else this.resize();
   }
   /** Apply a quality tier to every subsystem that supports it. */
   applyQuality(tier, announce = false, allowSamples = true) {
@@ -434,12 +439,13 @@ class Game {
     if (this.world.setQuality) this.world.setQuality(p.sub);
     if (this.weapons) {
       // Particle overdraw is the FX cost on integrated GPUs: cap sprite size and trail density on lower tiers
-      const fx = { low: [128, 45], medium: [192, 70], high: [256, 90], ultra: [256, 90] }[tier];
+      const fx = { verylow: [72, 30], low: [128, 45], medium: [192, 70], high: [256, 90], ultra: [256, 90] }[tier];
       this.weapons.maxPointSize = fx[0]; this.weapons.missileSmokeRate = fx[1];
       if (this.weapons.setQuality) this.weapons.setQuality(p.sub);
     }
     for (const ac of this.allAircraft || []) { if (ac.setEffectsQuality) ac.setEffectsQuality(p.sub); else if (ac.engineFX && ac.engineFX.setQuality) ac.engineFX.setQuality(p.sub); }
-    this.dynres.reset();
+    this.dynres.reset(); this.stepDown.reset();
+    if (this.hud) this.applyHudBudget();
     this.resize();
     this.updateGraphicsLabel();
     if (announce) this.message('GRAPHICS ' + (this.qualityChoice === 'auto' ? 'AUTO · ' : '') + p.label, false, 1.6);
@@ -457,30 +463,63 @@ class Game {
     const txt = (this.qualityChoice === 'auto' ? 'AUTO · ' : '') + PRESETS[this.quality].label;
     if (this.menu && this.menu.setQualityLabel) this.menu.setQualityLabel(txt);
   }
-  updateDynamicResolution(dt) {
+  /** Dynamic resolution every frame; with Graphics on Auto, during a sortie, the step-down (js/quality.js StepDown):
+   *  frames still slow (p75 > 28 ms for 4 s) with the render scale at the tier's floor drop one tier, announced on the
+   *  HUD. Never up (only the Settings choice raises it), never below the lowest tier; re-armed by every mission/round load.
+   *  rawMs: the unclamped frame interval. */
+  updateDynamicResolution(dt, rawMs = dt * 1000) {
     if (this.state === 'paused') return;
     const gpu = this.profiler.mode === 'pass' ? this.profiler.lastTotal.pass : 0;
-    const r = this.dynres.update(dt, this.renderScale, PRESETS[this.quality], gpu, dt * 1000);
-    if (r.tier && this.qualityChoice === 'auto') {
-      const i = TIERS.indexOf(this.quality) + r.tier;
-      if (i >= 0 && i < TIERS.length) { this.renderScale = r.tier < 0 ? PRESETS[TIERS[i]].scaleMax : PRESETS[TIERS[i]].scaleMin; this.applyQuality(TIERS[i], false, false); }
-      return;
-    }
+    const P = PRESETS[this.quality];
+    const r = this.dynres.update(dt, this.renderScale, P, gpu, dt * 1000);
     this.setRenderScale(r.scale);
+    if (this.qualityChoice !== 'auto' || this.state !== 'playing') return;
+    const i = TIERS.indexOf(this.quality);
+    if (i <= 0) return;
+    if (this.stepDown.update(dt, rawMs, this.renderScale <= P.scaleMin + 1e-3)) {
+      const next = TIERS[i - 1];
+      this.renderScale = PRESETS[next].scaleMax;
+      this.applyQuality(next, true, false);          // (resets both controllers; keeps the MSAA count: no pipeline rebuild)
+      this.stepDowns = (this.stepDowns || 0) + 1;
+    }
   }
   /** CPU section timings are read only by the perf overlay and benchmarks: record them only then. */
-  syncProfilerCpu() { this.profiler.cpuOn = !!this.bench || !!(this.ui.perf && !this.ui.perf.hidden); }
+  syncProfilerCpu() {
+    this.profiler.cpuOn = !!this.bench || !!(this.ui.perf && !this.ui.perf.hidden);
+    if (this.hud) this.hud.prof = this.profiler.cpuOn ? (this.hud.prof || {}) : null;   // per-group HUD times for the overlay
+  }
+  /** HUD cost control: a HUD that keeps costing > 6 ms per frame in flight (software Canvas2D: Firefox for Android; Chrome's
+   *  accelerated canvas measured 0.2 ms on the same tablet) switches to budget mode for the rest of the session: a 0.75x
+   *  backing store, the pitch ladder and radar scope blitted from cached images, no HUD damage gradient (PostFX's red
+   *  pulse remains). ?hudres=0.5..1, ?hudcache=0|1 and ?hudsprites=0|1 (sprite-cached labels) force each part. build / draw: buildFrame and HUD.render ms this frame. */
+  updateHudBudget(dt, build, draw) {
+    const k = 1 - Math.exp(-dt * 2);
+    this.hudBuildMs = (this.hudBuildMs || 0) + (build - (this.hudBuildMs || 0)) * k;
+    this.hudDrawMs = (this.hudDrawMs || 0) + (draw - (this.hudDrawMs || 0)) * k;
+    if (this.state !== 'playing' || this.hudSlow) return;
+    this._hudSlowT = this.hudDrawMs > 6 ? (this._hudSlowT || 0) + dt : 0;
+    if (this._hudSlowT > 3) { this.hudSlow = true; this.applyHudBudget(); }
+  }
+  applyHudBudget() {
+    const slow = !!this.hudSlow;
+    const res = PARAMS.has('hudres') ? Number(PARAMS.get('hudres')) : slow ? 0.75 : 1;
+    const sprites = PARAMS.has('hudsprites') ? PARAMS.get('hudsprites') !== '0' : false;   // (no gain measured in Firefox)
+    const cache = PARAMS.has('hudcache') ? PARAMS.get('hudcache') !== '0' : slow;
+    if (this.hud.setBudget) this.hud.setBudget(res, sprites, cache);
+  }
   updateOverlay(dt) {
     const el = this.ui.perf; if (!el || el.hidden) return;
     this._ovT = (this._ovT || 0) + dt; if (this._ovT < 0.25) return; this._ovT = 0;
     const L = this.profiler.live(), g = L.gpu;
+    const H = this.hud && this.hud.prof ? Object.assign({ k: this.hud.k }, this.hud.prof) : null;
     const f = (v) => (v || 0).toFixed(1);
-    const c = this.renderer.domElement, sc = this.post.renderScale || this.renderScale;
+    const c = this.renderer.domElement, sc = this.renderScale;
     const iw = this.post.renderWidth || c.width, ih = this.post.renderHeight || c.height;
     el.textContent =
       `FPS ${L.fps.toFixed(0).padStart(3)}  frame ${f(L.frame)} ms\n` +
       (this.profiler.supported ? `GPU ${f(g.__total)} ms  scene ${f(g.scene)}  bloom ${f(g.bloom)}  comp ${f(g.composite)}\n` : 'GPU timing unavailable in this browser\n') +
-      `CPU logic ${f(L.cpu.logic)}  render ${f(L.cpu.render)}  hud ${f(L.cpu.hud)}\n` +
+      `CPU logic ${f(L.cpu.logic)}  render ${f(L.cpu.render)}  hud ${f(L.cpu.hud)} (build ${f(this.hudBuildMs)} draw ${f(this.hudDrawMs)})\n` +
+      (H ? `HUD ${H.k.toFixed(2)}x${this.hud.cacheLayers ? ' cached' : ''}${this.hud.spriteText ? ' sprites' : ''}${this.hudSlow ? ' (slow: budget)' : ''}  clear ${f(H.clear)} att ${f(H.attitude)} hdg ${f(H.heading)} tapes ${f(H.tapes)} gauges ${f(H.gauges)} radar ${f(H.radar)} marks ${f(H.markers)} text ${f(H.text)}\n` : '') +
       `RES ${iw}x${ih} (${sc.toFixed(2)})  MSAA ${this.post.activeSamples ?? '?'}x  ${(this.qualityChoice === 'auto' ? 'AUTO ' : '') + PRESETS[this.quality].label}\n` +
       `draws ${this.drawCalls}  tris ${(this.triangles / 1000).toFixed(0)}k\n${this.gpuName.replace(/^ANGLE \(|\)$/g, '').slice(0, 60)}`;
   }
@@ -553,6 +592,7 @@ class Game {
     if (M.briefing) for (const line of String(M.briefing).split(/(?<=[.!?])\s+/).slice(0, 3)) this.message(line, false, 7);
     this.say('sortieStart', 3);
     this.nextPhase();
+    this.stepDown.reset();                 // the step-down judges this sortie afresh, after its load and bakes
   }
   /** Lighting preset `name` (js/timeofday.js; ?tod=<name> overrides it): values only, rebuilds the sky, shadow and
    *  environment only when the preset changes. */
@@ -695,6 +735,7 @@ class Game {
     if (nAir) parts.push(`${nAir} AIR`); if (ground) parts.push(`${ground} GROUND`); if (naval) parts.push(`${naval} NAVAL`);
     if (parts.length) this.message(parts.join(' · ') + ' TARGETS', false, 4);
     if (plan.round > 1) { if (nAir) this.say('newContacts', 2); this.audio.ui('wave'); }
+    this.stepDown.reset();                 // (each round's spawns and lighting swap: a fresh grace period)
     if (ground) this.say('groundTargets'); else if (naval) this.say('navalTargets');
   }
   /** INFINITY: the round's land spot and its sea spot each on the first side (the planned one first) whose terrain at
@@ -931,8 +972,8 @@ class Game {
    * tunnel ridge and above the terrain under them; spawn points stay on the map, over the terrain and out of the ridge.
    */
   spawnAirGroup(g, cx, cz, rand = Math.random) {
-    const typeName = g.type || 'SLEET-2';
-    const type = this.airTypes[typeName] || FALLBACK_AIR_TYPES['SLEET-2'];
+    const typeName = g.type || 'SLEET-21';
+    const type = this.airTypes[typeName] || FALLBACK_AIR_TYPES['SLEET-21'];
     const n = Math.max(1, Math.min(g.count || 1, 8));
     const O = this._airFrame || this.sortieFrame || this.setSortieFrame();
     const groundH = Math.max(this.world.getHeight(cx, cz), 0);
@@ -1418,7 +1459,8 @@ class Game {
   // ---------- main loop ----------
   loop(now) {
     requestAnimationFrame((t) => this.loop(t));
-    let dt = (now - this.last) / 1000; this.last = now;
+    const rawMs = now - this.last;
+    let dt = rawMs / 1000; this.last = now;
     if (!(dt > 0)) dt = 0.016; dt = Math.min(dt, 0.05);
     if (document.hidden) return;
     if ((window.devicePixelRatio || 1) !== this._dprSeen) this.resize();   // zoom / another monitor without a resize event
@@ -1484,12 +1526,15 @@ class Game {
       prof.cpuBegin('render');
       this.post.render(this.scene, this.camera, dt);
       prof.cpuEnd('render'); prof.cpuBegin('hud');
+      const h0 = performance.now();
       this.buildFrame(dt);
+      const h1 = performance.now();
       if (!this.noHud) this.hud.render(this.frame);
       prof.cpuEnd('hud');
+      this.updateHudBudget(dt, h1 - h0, performance.now() - h1);
     }
     this.updateTitleStatus();
-    if (!this.bench || PARAMS.has('dynres')) this.updateDynamicResolution(dt);
+    if ((!this.bench && !PARAMS.has('scale')) || PARAMS.has('dynres')) this.updateDynamicResolution(dt, rawMs);   // (?scale= pins it)
     this.updateOverlay(dt);
     this.drawCalls = this.renderer.info.render.calls; this.triangles = this.renderer.info.render.triangles;
     prof.frameEnd(dt * 1000);
@@ -1998,7 +2043,7 @@ class Game {
     this.lookYaw = 0; this.lookPitch = 0;
     this.aimDir.copy(_fwd); this.aimUp.set(0, 1, 0); this._lookDir.copy(_fwd);
     this._ovRoll = 0; this._ovPitch = 0; this._behindDir = 0;
-    this._aimPush = false; this._rollSide = 0; this._aimLx = 0; this._aimTrim = 0; this._aimPI = 0;
+    this._aimPush = false; this._rollSide = 0; this._aimLx = 0; this._aimTrim = 0; this._aimPI = 0; this._levelSide = 0;
   }
   /** Mouse moves the aim (or the camera alone while free look is held); the jet is flown toward the aim. */
   updateAim(dt) {
@@ -2045,11 +2090,12 @@ class Game {
     p.getUp(_up); p.getRight(_right);
     let pitch, roll, yaw;
     // Push or pull, decided in the jet's own frame with hysteresis: an aim point within ~50 deg of straight below the
-    // canopy floor and up to ~35 deg off is pushed onto rather than rolled inverted for (a nose-down attitude alone
-    // doesn't count), and it takes a clear move away (past ~46 deg, or off to the side) to switch back.
+    // canopy floor (up to ~97 deg off the nose) is pushed onto rather than rolled inverted for, so a dive arrives
+    // upright and steady (a nose-down attitude alone doesn't count); it takes a clear move away (past ~108 deg, or off
+    // to the side) to switch back. Pushing 60 deg is faster than the old half-roll-and-pull (1.45 s vs 1.72 s).
     const pullErr = Math.atan2(lx, ly);
-    if (this._aimPush) { if (ang > 0.8 || Math.abs(pullErr) < 1.8 || lz > 0.75) this._aimPush = false; }
-    else if (ly < 0 && ang < 0.62 && Math.abs(pullErr) > 2.2) this._aimPush = true;
+    if (this._aimPush) { if (ang > 1.88 || Math.abs(pullErr) < 1.8 || lz > 0.75) this._aimPush = false; }
+    else if (ly < 0 && ang < 1.7 && Math.abs(pullErr) > 2.2) this._aimPush = true;
     if (lz > 0.75) {
       // aim well behind: commit to one turn direction and pull hard until it comes around (no dithering)
       if (!this._behindDir) this._behindDir = lx >= 0 ? 1 : -1;
@@ -2067,7 +2113,13 @@ class Game {
       const keep = settled + (1 - settled) * Math.exp(-dt / 0.2);
       this._aimTrim = THREE.MathUtils.clamp(this._aimTrim * keep + lxF * 4 * dt * settled, -0.6, 0.6);
       this._aimPI = THREE.MathUtils.clamp(this._aimPI * keep + ly * 2 * dt * settled, -0.4, 0.4);
-      const fRoll = -(bank - this._aimTrim) * 0.9 * THREE.MathUtils.clamp(_up.y * 2, 0, 1) + lxB * 2.5 - r.roll * 0.08;
+      // Wings-level drift, inverted included (a roll-and-pull into a dive arrives upside down and rolls upright again), fading
+      // out only near vertical where "level" means nothing. Near +-180 deg it commits to one direction (no dithering).
+      const cosPitch = Math.sqrt(Math.max(0, 1 - (_up.z * _right.x - _up.x * _right.z) ** 2));   // forward = up x right; |fwd.y|
+      let lvl = bank - this._aimTrim;
+      if (Math.abs(bank) > 2.8) { if (!this._levelSide) this._levelSide = Math.sign(bank) || 1; lvl = this._levelSide * Math.abs(bank) - this._aimTrim; }
+      else this._levelSide = 0;
+      const fRoll = -lvl * 0.9 * THREE.MathUtils.smoothstep(cosPitch, 0.1, 0.35) + lxB * 2.5 - r.roll * 0.08;
       const fPitch = ly * 8 + this._aimPI - r.pitch * 0.25, fYaw = lx * 6 - r.yaw * 0.3;
       let bRoll, bPitch;
       if (this._aimPush) {
@@ -2095,15 +2147,9 @@ class Game {
     // The jet pushes at only PUSH_FACTOR of its pull rate: scale push commands to match, so small downward corrections are
     // as crisp as upward ones (a hard push still tops out at the jet's limit; well below the nose it rolls and pulls)
     if (pitch < 0) pitch /= FLIGHT.PUSH_FACTOR;
-    // Arcade safety net: the instructor won't fly you into the ground (manual roll still can)
-    const h = Math.max(this.world.getHeight(p.position.x, p.position.z), 0);
-    _v2.copy(p.position).addScaledVector(p.velocity, 2.2);
-    const h2 = Math.max(this.world.getHeight(_v2.x, _v2.z), 0);
-    const nearTunnel = this.tunnel && (this.inTunnel || this.tunnel.closestPathT(p.position) >= 0);
-    if (!nearTunnel && (p.position.y - h < 110 || _v2.y - h2 < 70) && p.velocity.y < 40) {
-      const bank = Math.atan2(-_right.y, _up.y);
-      roll = -bank * 2; pitch = Math.max(pitch, Math.abs(bank) < 1.2 ? 1 : 0.2);
-    }
+    // No ground-avoidance override: the jet goes where the aim points, so the player can dive steeply on a ground
+    // target (and fly into the ground if they insist). The old arcade safety net rolled level and pulled up whenever the
+    // flight path came within ~2.2 s of terrain, which made strafing dives impossible.
     if (lz <= 0.75) this._behindDir = 0;
     // Keyboard overrides replace the instructor on that axis with a short hand-off (0.05 s in, 0.1 s back out).
     // Simple preset: W/S boost/airbrake, Shift hard pull. Advanced: W/S pitch, Shift boost, H airbrake.
@@ -2125,7 +2171,7 @@ class Game {
     for (const e of this.enemies) e.kill();
     this.ground.clear(); this.allied.clear();
     const p = this.player; p.getForward(_fwd);
-    this.spawnAirGroup({ type: 'NV-48', count: 6, formation: 'loose', task: 'engage' }, p.position.x + _fwd.x * 3500, p.position.z + _fwd.z * 3500);   // constant workload
+    this.spawnAirGroup({ type: 'NV-16', count: 6, formation: 'loose', task: 'engage' }, p.position.x + _fwd.x * 3500, p.position.z + _fwd.z * 3500);   // constant workload
     this.rebuildCombatList();
     const immortal = () => false;
     for (const ac of this.allAircraft) ac.applyDamage = immortal;

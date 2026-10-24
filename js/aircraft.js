@@ -1,12 +1,11 @@
 import * as THREE from 'https://cdnjs.cloudflare.com/ajax/libs/three.js/0.170.0/three.module.min.js';
 import { AfterburnerFX } from './engine_fx.js';
-import { NIGHT_FX } from './timeofday.js';
 // PROJECT WINGNUT — js/aircraft.js
-// Procedural F-22 Raptor likeness (buildJetMesh) + arcade flight model, navigation lights, wingtip contrails and the
+// Procedural F-22 Raptor likeness (buildJetMesh) + arcade flight model, wingtip contrails and the
 // afterburner hookup (Aircraft). Local frame: nose = -Z, up = +Y, right wing = +X; origin = center of mass.
 // 0.8 scale: ~15.1 m long, 10.85 m span (published 4.1 m height includes landing gear; the gear-up airframe is ~3.0 m).
 //
-// Draw calls per visible jet: hull 1 (fuselage, wings, tails AND every control surface) + canopy 1 + nav lights 1 +
+// Draw calls per visible jet: hull 1 (fuselage, wings, tails AND every control surface) + canopy 1 +
 // AfterburnerFX (separate module, 1). Control surfaces are animated in the hull's vertex shader (per-vertex surface
 // id + per-jet hinge uniforms, Rodrigues rotation of position and normal). The hull topology is built once per
 // page and shared by every jet; per color scheme only the vertex-color attribute differs. Materials are per jet
@@ -49,12 +48,18 @@ export const FLIGHT = {
   AMMO: 2400,
   MAX_DT: 0.05,          // s, per-step clamp (numerical safety)
 };
+// Post-stall maneuver (Aircraft.startPostStall; the bosses' "limit break" Cobra, js/ai.js): while it runs the attitude is
+// scripted on the flight path (nose up past vertical, a full flat spin about the path axis, belly to the direction of
+// travel, then the nose back down onto the path) and the flight path is integrated from that attitude instead of
+// following the nose: drag PSM.DRAG x sin^2(AoA) /s pulls the speed toward PSM.FLOOR x the stall speed, lift
+// PSM.LIFT x sin(AoA) x v^2 / 250 m/s^2 pushes the path toward the nose (a pop-up away from the old line), full gravity.
+// Starts and ends exactly on the normal attitude (no snap); abortPostStall blends straight onto the path in 0.4 s.
+export const PSM = { DRAG: 2.4, FLOOR: 1.35, LIFT: 1.25 };
 
 // ---------------------------------------------------------------------------------------------
 // Scratch objects (no per-frame allocation in hot paths)
 const _v1 = new THREE.Vector3(), _v2 = new THREE.Vector3(), _v3 = new THREE.Vector3(), _v4 = new THREE.Vector3();
-const _q1 = new THREE.Quaternion(), _q2 = new THREE.Quaternion();
-const _vp = new THREE.Vector2();
+const _q1 = new THREE.Quaternion(), _q2 = new THREE.Quaternion(), _m4 = new THREE.Matrix4();
 const _c1 = new THREE.Color();
 const X_AXIS = new THREE.Vector3(1, 0, 0), Y_AXIS = new THREE.Vector3(0, 1, 0), Z_AXIS = new THREE.Vector3(0, 0, 1);
 
@@ -536,7 +541,7 @@ function buildCanopyGeometry() {
 }
 
 // =============================================================================================
-// Shared topology (built once per page): merged hull attributes, hinge table, canopy + light geometry, empties.
+// Shared topology (built once per page): merged hull attributes, hinge table, canopy geometry, empties.
 let _topo = null;
 const mirX = (v) => new THREE.Vector3(-v.x, v.y, v.z);
 
@@ -581,24 +586,12 @@ function getTopology() {
   let r2 = 0;                                                           // farthest vertex from the origin (the nose tip)
   for (let i = 0; i < position.length; i += 3) r2 = Math.max(r2, position[i] * position[i] + position[i + 1] * position[i + 1] + position[i + 2] * position[i + 2]);
 
-  // nav lights: red left tip, green right tip, white strobes on the fin tips
-  const M = finMatrix(), ft = finSec(FIN.span), finTip = new THREE.Vector3(FIN.span, 0, ft.z + ft.c - 0.06).applyMatrix4(M);
-  const yTip = wingSec(5.40).y;
-  const L = [[-5.40, yTip, 2.02, 5, 0.25, 0.2, 0, 0.35], [5.40, yTip, 2.02, 0.2, 5, 0.6, 0, 0.35],
-    [-finTip.x, finTip.y, finTip.z, 4, 4, 4, 1, 0.24], [finTip.x, finTip.y, finTip.z, 4, 4, 4, 1, 0.24]];
-  const lightGeometry = new THREE.BufferGeometry();
-  lightGeometry.setAttribute('position', new THREE.Float32BufferAttribute(L.flatMap((l) => l.slice(0, 3)), 3));
-  lightGeometry.setAttribute('aColor', new THREE.Float32BufferAttribute(L.flatMap((l) => l.slice(3, 6)), 3));
-  lightGeometry.setAttribute('aKind', new THREE.Float32BufferAttribute(L.map((l) => l[6]), 1));
-  lightGeometry.setAttribute('aSize', new THREE.Float32BufferAttribute(L.map((l) => l[7]), 1));
-  lightGeometry.computeBoundingSphere(); lightGeometry.boundingSphere.radius += 1.5;
-
   const tipY = wingSec(WING.xTip).y;
   _topo = {
     vertexCount: nv, triangleCount: ni / 3, position, kind,
     positionAttr, normalAttr, surfAttr: new THREE.BufferAttribute(surf, 1), indexAttr: new THREE.BufferAttribute(index, 1),
     sphere, box: tmp.boundingBox.clone(), surfTemplate, radius: Math.sqrt(r2),
-    canopyGeometry: buildCanopyGeometry(), lightGeometry,
+    canopyGeometry: buildCanopyGeometry(),
     local: {   // named empties (local frame)
       gunL: new THREE.Vector3(1.12, 0.07, -2.35), gunR: new THREE.Vector3(1.22, 0.06, -2.30),   // M61 port, right wing root
       tipL: new THREE.Vector3(-WING.xTip, tipY, 2.70), tipR: new THREE.Vector3(WING.xTip, tipY, 2.70),
@@ -743,34 +736,6 @@ function makeHullMaterial(topo) {
   return m;
 }
 
-const LIGHT_VERT = /* glsl */`
-attribute vec3 aColor;
-attribute float aKind;
-attribute float aSize;
-uniform float uViewportH, uTime;
-uniform vec2 uNav;        // time of day (js/timeofday.js NIGHT_FX): x = intensity multiplier, y = minimum size (px)
-varying vec3 vColor;
-void main() {
-  vec4 mv = modelViewMatrix * vec4(position, 1.0);
-  float inten = 1.0;
-  if (aKind > 0.5) { float ph = fract(uTime * 0.8); inten = 0.08 + step(0.90, ph) + 0.8 * step(0.96, ph); }   // strobe
-  float px = aSize * length(modelViewMatrix[0].xyz) * projectionMatrix[1][1] * uViewportH * 0.5 / max(-mv.z, 1.0);   // m at the drawn scale
-  gl_PointSize = clamp(px * sqrt(uNav.x), uNav.y, 160.0);
-  vColor = aColor * (inten * uNav.x);
-  gl_Position = projectionMatrix * mv;
-}`;
-const LIGHT_FRAG = /* glsl */`
-precision highp float;
-varying vec3 vColor;
-void main() {
-  vec2 d = gl_PointCoord - 0.5;
-  float r = length(d) * 2.0;
-  if (r > 1.0) discard;
-  float f = (1.0 - r) * (1.0 - r);
-  float core = smoothstep(0.4, 0.0, r);
-  gl_FragColor = vec4(vColor * (f * 0.55 + core * 1.1), 1.0);
-}`;
-
 /** Local exit-plane descriptors of the two 2D nozzles (fresh objects), as consumed by AfterburnerFX. */
 export function getJetNozzles() {
   return [-1, 1].map((s) => ({ position: new THREE.Vector3(s * ENG.x, ENG.y, NOZ.exitZ), halfWidth: NOZ.w - NOZ.wall, halfHeight: NOZ.h - NOZ.wall }));
@@ -786,7 +751,7 @@ export function getJetStats() {
  * F-22 Raptor likeness. Nose toward -Z, ~15.1 m long, 10.85 m span, origin at the center of mass.
  * bodyColor scales/tints the two-tone grey scheme (the default gives #5d646c / #7c858e; camoDark/camoLight override
  * exactly); accentColor paints the tail bands; canopyColor tints the gold canopy. Geometry is cached and shared.
- * Named children: 'hull', 'canopy', 'lights', 'afterburner' (AfterburnerFX.object3d), empties 'gunL','gunR','tipL','tipR',
+ * Named children: 'hull', 'canopy', 'afterburner' (AfterburnerFX.object3d), empties 'gunL','gunR','tipL','tipR',
  * 'rail0'..'rail3', 'aileronL','aileronR','flaperonL','flaperonR','elevatorL','elevatorR','rudder' (+'rudderL','rudderR').
  * Control surfaces deflect in the vertex shader: write angles with setJetSurfaces(group, ...) (Aircraft does this).
  */
@@ -805,19 +770,6 @@ export function buildJetMesh({ bodyColor = 0x8d9aa6, accentColor = 0xff5a1f, can
   const canopy = fixed(new THREE.Mesh(topo.canopyGeometry, scheme.canopyMaterial));
   canopy.name = 'canopy';
   group.add(canopy);
-
-  const lightMat = new THREE.ShaderMaterial({
-    vertexShader: LIGHT_VERT, fragmentShader: LIGHT_FRAG, uniforms: { uViewportH: new FloatUniform(1080), uTime: new FloatUniform(0.5), uNav: NIGHT_FX.uNav },
-    transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, fog: false,
-  });
-  lightMat.name = 'jetLights';
-  const lights = fixed(new THREE.Points(topo.lightGeometry, lightMat));
-  lights.name = 'lights';
-  lights.onBeforeRender = (renderer) => {
-    const rt = renderer.getRenderTarget();
-    lightMat.uniforms.uViewportH.value = rt ? rt.height : renderer.getDrawingBufferSize(_vp).y;
-  };
-  group.add(lights);
 
   let fx = null;
   try {
@@ -839,7 +791,6 @@ export function buildJetMesh({ bodyColor = 0x8d9aa6, accentColor = 0xff5a1f, can
 
   group.userData.engineFX = fx;
   group.userData.hullMaterial = hullMat;
-  group.userData.lightMaterial = lightMat;
   group.userData.surfaceUniforms = hullMat.userData.uSurf.value;   // Float32Array(64): [px,py,pz,cos, ax,ay,az,sin] x 8
   group.userData.schemeKey = scheme.key;
   group.userData.local = L;
@@ -862,7 +813,6 @@ export function disposeJetMesh(group) {
   ud.disposed = true;
   if (ud.engineFX) ud.engineFX.dispose();
   if (ud.hullMaterial) ud.hullMaterial.dispose();
-  if (ud.lightMaterial) ud.lightMaterial.dispose();
   releaseScheme(ud.schemeKey);
   group.removeFromParent();
 }
@@ -871,7 +821,7 @@ export function disposeJetMesh(group) {
 export function disposeJetCache() {
   for (const s of _schemes.values()) { s.geometry.dispose(); s.canopyMaterial.dispose(); }
   _schemes.clear();
-  if (_topo) { _topo.canopyGeometry.dispose(); _topo.lightGeometry.dispose(); _topo = null; }
+  if (_topo) { _topo.canopyGeometry.dispose(); _topo = null; }
 }
 
 // =============================================================================================
@@ -1165,7 +1115,7 @@ export class Aircraft {
     this.visualScale = 1;                                // drawn scale = mesh.scale (updateDrawScale)
     this.hitRadius = 0;                                  // round hit sphere (m) when larger, else 0 = the shooter's gun radius
     this.maxMissiles = FLIGHT.MAX_MISSILES; this.missiles = FLIGHT.MAX_MISSILES; this.ammo = FLIGHT.AMMO;
-    this.time = Math.random() * 7;                       // desyncs strobes / exhaust noise between aircraft
+    this.time = Math.random() * 7;                       // desyncs exhaust noise between aircraft
     this.controls = { pitch: 0, roll: 0, yaw: 0, throttleDelta: 0 };
     this._rates = { pitch: 0, roll: 0, yaw: 0 };         // smoothed achieved angular rates (rad/s)
     this._surf = { ail: 0, elev: 0, rud: 0 };            // smoothed control inputs (-1..1)
@@ -1174,8 +1124,8 @@ export class Aircraft {
 
     const ud = this.mesh.userData, L = ud.local;
     this.engineFX = ud.engineFX;                          // AfterburnerFX instance (or null)
+    this.fxLite = fxQuality === 'verylow';               // (setEffectsQuality) no wing vapor on the cheapest tier
     this._fxParams = { throttle: 0, afterburner: false, speed: 0, time: 0 };
-    this._lightTime = ud.lightMaterial.uniforms.uTime;
     this._local = { gunL: L.gunL, gunR: L.gunR, tipL: L.tipL, tipR: L.tipR, rails: L.rails };
     this._muzzles = [new THREE.Vector3(), new THREE.Vector3()];
     this._railPos = [new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3()];
@@ -1183,6 +1133,8 @@ export class Aircraft {
 
     this.contrails = new ContrailRibbons(scene);
     this.vapor = makeVapor(); this.mesh.add(this.vapor); this._vaporS = 0;
+    // post-stall maneuver state (startPostStall); fx = 0..1 vapor / contrail envelope while it runs
+    this._psm = { active: false, t: 0, dur: 2, pitch: 2, spins: 1, dir: 1, abort: -1, fx: 0, up: new THREE.Vector3(), q0: new THREE.Quaternion() };
     scene.add(this.mesh);
     this.reset({ position, heading, health: 100 });
   }
@@ -1218,8 +1170,7 @@ export class Aircraft {
   }
   /**
    * Drawn scale for this frame from the camera position `cam` (null: the near scale): sizeScale, times ENEMY_SCALE ..
-   * ENEMY_SCALE_FAR by camera distance when larger. Sets the root mesh's scale, so the hull, canopy, nav lights (sprite
-   * size too), afterburner and wing vapor follow it, plus the contrail width; localToWorld (wingtips, muzzles, rails) and
+   * ENEMY_SCALE_FAR by camera distance when larger. Sets the root mesh's scale, so the hull, canopy, afterburner and wing vapor follow it, plus the contrail width; localToWorld (wingtips, muzzles, rails) and
    * Weapons.aircraftDeath / gun-hit effects read visualScale. A few flops and no allocation: call it every frame.
    */
   updateDrawScale(cam) {
@@ -1240,8 +1191,9 @@ export class Aircraft {
     for (let i = 0; i < 4; i++) this.localToWorld(this._local.rails[i], this._railPos[i]);
     return this._railPos;
   }
-  /** Forwarded to AfterburnerFX.setQuality ('low' | 'medium' | 'high' | 'ultra'). */
-  setEffectsQuality(q) { if (this.engineFX) this.engineFX.setQuality(q); }
+  /** Forwarded to AfterburnerFX.setQuality ('verylow' | 'low' | 'medium' | 'high' | 'ultra'). 'verylow' also drops the
+   *  wing vapor blanket (a large blended shell right in front of the chase camera). */
+  setEffectsQuality(q) { if (this.engineFX) this.engineFX.setQuality(q); this.fxLite = q === 'verylow'; }
 
   // ---- lifecycle ------------------------------------------------------------------------------
   applyDamage(amount) {
@@ -1262,7 +1214,7 @@ export class Aircraft {
     if (position) this.position.copy(position);
     if (heading !== undefined) this.quaternion.setFromAxisAngle(Y_AXIS, -finite(heading));
     this.quaternion.normalize();
-    this.health = health; this.alive = true; this.stalled = false;
+    this.health = health; this.alive = true; this.stalled = false; this._psm.active = false; this._psm.fx = 0;
     this.speed = FLIGHT.CRUISE_SPEED; this.throttle = 0.6; this.afterburner = false; this.gLoad = 1; this.thrust = 0;
     this.missiles = this.maxMissiles; this.ammo = FLIGHT.AMMO;
     this._rates.pitch = this._rates.roll = this._rates.yaw = 0;
@@ -1280,6 +1232,61 @@ export class Aircraft {
     this.contrails.dispose();
     if (this.vapor) { this.vapor.material.dispose(); this.vapor.removeFromParent(); }   // shared vapor geometry stays
     disposeJetMesh(this.mesh);    // per-jet materials + afterburner; shared cached geometry stays
+  }
+
+  // ---- post-stall maneuver (PSM above) ---------------------------------------------------------
+  /** Start a post-stall maneuver: `dur` s, nose up to `pitch` rad off the flight path, `spins` flat turns in direction
+   *  `dir` (+-1). The controls are ignored until it ends. False when one is already running or the jet is dead. */
+  startPostStall({ dur = 2, pitch = 115 * DEG, spins = 1, dir = 1 } = {}) {
+    const P = this._psm;
+    if (P.active || !this.alive) return false;
+    P.active = true; P.t = 0; P.dur = Math.max(0.5, dur); P.pitch = pitch; P.spins = spins; P.dir = dir < 0 ? -1 : 1; P.abort = -1;
+    this.getUp(P.up);
+    this.getForward(this.velocity).multiplyScalar(this.speed);   // (normal flight: the path is the nose)
+    return true;
+  }
+  /** Cut a running post-stall maneuver short: blend straight onto the flight path over 0.4 s (terrain, ceiling). */
+  abortPostStall() { const P = this._psm; if (P.active && P.abort < 0) { P.abort = 0; P.q0.copy(this.quaternion); } }
+  /** True while a post-stall maneuver flies the jet. */
+  get postStall() { return this._psm.active; }
+
+  _integratePsm(dt) {
+    const P = this._psm, q = this.quaternion, v = this.velocity, F = FLIGHT;
+    P.t += dt;
+    let sp = v.length();
+    const d = _v1.copy(v).multiplyScalar(1 / Math.max(sp, 1e-3));            // flight path
+    const up = P.up; up.addScaledVector(d, -up.dot(d));                      // reference up, carried along the path
+    if (up.lengthSq() < 1e-6) up.set(0, 1, 0).addScaledVector(d, -d.y);
+    up.normalize();
+    _m4.makeBasis(_v3.crossVectors(d, up), up, _v4.copy(d).negate());
+    _q2.setFromRotationMatrix(_m4);                                          // path frame (nose on the path)
+    const u = P.t / P.dur;
+    let done = false;
+    if (P.abort >= 0) {
+      P.abort += dt; const k = smoothstep(0, 0.4, P.abort);
+      q.copy(P.q0).slerp(_q2, k); done = k >= 1;
+    } else {
+      const th = P.pitch * smoothstep(0, 0.22, u) * (1 - smoothstep(0.62, 1, u));
+      const ps = Math.PI * 2 * P.spins * P.dir * smoothstep(0.18, 0.7, u);
+      q.copy(_q2).multiply(_q1.setFromAxisAngle(X_AXIS, th)).multiply(_q1.setFromAxisAngle(Y_AXIS, ps));
+      done = u >= 1;
+    }
+    q.normalize();
+    // aero on the scripted attitude: drag toward the floor speed, lift toward the nose's side of the path, gravity
+    const n = this.getForward(_v2), ca = clamp(n.dot(d), -1, 1), sa2 = Math.max(0, 1 - ca * ca);
+    const ss = this.speedScale || 1, vFloor = F.MIN_SPEED * Math.min(1, ss * 1.2) * PSM.FLOOR;
+    const lift = PSM.LIFT * sp * sp / 250;
+    v.addScaledVector(n, lift * dt).addScaledVector(d, -lift * ca * dt);      // (n - ca d) has length sin(AoA)
+    sp = v.length();
+    const sp2 = Math.max(Math.min(sp, vFloor), sp - sa2 * PSM.DRAG * Math.max(0, sp - vFloor) * dt);
+    v.multiplyScalar(sp2 / Math.max(sp, 1e-3)); v.y -= 9.81 * dt;
+    this.speed = clamp(finite(v.length(), F.CRUISE_SPEED), 20, F.AB_SPEED * 1.15);
+    this.gLoad = 1 + lift * Math.sqrt(sa2) / 9.81;
+    P.fx = P.abort >= 0 ? Math.max(0, 1 - P.abort / 0.4) : smoothstep(0, 0.08, u) * (1 - smoothstep(0.55, 1, u));
+    const r = this._rates; r.pitch = 0; r.roll = 0; r.yaw = 0;
+    if (done) { P.active = false; P.fx = 0; this.getForward(v).multiplyScalar(this.speed); }
+    this.position.addScaledVector(v, dt);
+    if (this.position.y < -5) { this.position.y = -5; if (v.y < 0) v.y = 0; }
   }
 
   // ---- per frame ------------------------------------------------------------------------------
@@ -1300,6 +1307,7 @@ export class Aircraft {
     this.afterburner = t > F.AB_THRESHOLD;
     const throttleTarget = t >= 0 ? 0.6 + 0.4 * t : 0.6 + 0.5 * t;          // engine setting for HUD/audio/FX
     this.throttle += (throttleTarget - this.throttle) * (1 - Math.exp(-dt / 0.25));
+    if (this._psm.active) { this._integratePsm(dt); return; }
 
     const speed = this.speed;
     const right = this.getRight(_v3);
@@ -1388,12 +1396,11 @@ export class Aircraft {
     this._brk = (this._brk || 0) + (brk - (this._brk || 0)) * (dt > 0 ? 1 - Math.exp(-dt / 0.15) : 1);
     if (this._brk > 0.01) { a.aileronL -= this._brk * 0.5; a.aileronR -= this._brk * 0.5; a.flaperonL += this._brk * 0.45; a.flaperonR += this._brk * 0.45; }
     setJetSurfaces(this.mesh, a);
-    // exhaust (AfterburnerFX) + strobes
+    // exhaust (AfterburnerFX)
     const fp = this._fxParams;
     fp.throttle = this.alive ? this.throttle : 0; fp.afterburner = this.alive && this.afterburner;
     fp.speed = this.speed; fp.time = this.time;
     if (this.engineFX) this.engineFX.update(dt, fp);
-    this._lightTime.value = this.time;
     // contrails: condensation from high-g wingtip vortices or the humid altitude band (free when not condensing)
     let strength = 0;
     if (this.alive) {
@@ -1401,9 +1408,10 @@ export class Aircraft {
       const gPart = smoothstep(F.CONTRAIL_G, F.CONTRAIL_G + 2.5, Math.abs(this.gLoad));
       const hum = smoothstep(F.CONTRAIL_ALT_MIN, F.CONTRAIL_ALT_MIN + 300, alt) * (1 - smoothstep(F.CONTRAIL_ALT_MAX - 300, F.CONTRAIL_ALT_MAX, alt));
       strength = clamp(gPart + hum * 0.75, 0, 1) * smoothstep(70, 130, this.speed);
+      strength = Math.max(strength, this._psm.fx);   // post-stall maneuver: full wingtip vortices whatever the speed
     }
-    // wing vapor fades in with hard pulls at speed
-    const vT = this.alive ? smoothstep(4.6, 7.6, this.gLoad) * smoothstep(110, 190, this.speed) : 0;
+    // wing vapor fades in with hard pulls at speed (and blankets the wings through a post-stall maneuver)
+    const vT = this.alive && !this.fxLite ? Math.max(smoothstep(4.6, 7.6, this.gLoad) * smoothstep(110, 190, this.speed), this._psm.fx) : 0;
     if (dt > 0) this._vaporS += (vT - this._vaporS) * (1 - Math.exp(-dt / (vT > this._vaporS ? 0.12 : 0.35)));
     const vOn = this._vaporS > 0.01;
     this.vapor.visible = vOn;

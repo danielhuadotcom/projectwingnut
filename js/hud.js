@@ -97,6 +97,14 @@ export class HUD {
     this.container.appendChild(canvas);
     this.ctx = canvas.getContext('2d', { alpha: true });
     this.w = 0; this.h = 0; this.dpr = 1; this.s = 1;
+    // Budget devices (js/main.js sets these on the LOW / VERY LOW tiers, or when the HUD section runs slow):
+    //   res        backing-store scale (1 = device pixels; 0.6-0.75 lets CSS upscale a smaller canvas: fewer pixels to
+    //              clear, stroke and composite, which is what a software Canvas2D (Firefox for Android) pays for)
+    //   spriteText every label is a cached pre-rendered sprite (outline + fill drawn once per string/font/colour/align),
+    //              so a steady frame blits images instead of rasterising glyph outlines (strokeText is never cached)
+    //   prof       null, or an object that receives per-group times in ms (EMA) for the perf overlay
+    this.res = 1; this.k = 1; this.spriteText = false; this.cacheLayers = false; this.prof = null;
+    this._sprites = new Map(); this._fontPx = new Map();
     this.alpha = 1;            // base alpha (0.35 when dimmed for paused/dead/victory)
     this.time = 0;
     this.L = {};               // layout cache (positions, fonts, dashes), rebuilt on resize only
@@ -133,14 +141,21 @@ export class HUD {
     this._setSize(w, h);
   }
 
-  _setSize(w, h) {
+  _setSize(w, h, force = false) {
     const dpr = Math.min(2, window.devicePixelRatio || 1);
-    if (w === this.w && h === this.h && dpr === this.dpr) return;
-    this.w = w; this.h = h; this.dpr = dpr;
+    if (!force && w === this.w && h === this.h && dpr === this.dpr) return;
+    this.w = w; this.h = h; this.dpr = dpr; this.k = dpr * this.res;
     if (!(w > 0 && h > 0)) return;
-    this.canvas.width = Math.max(1, Math.round(w * dpr));
-    this.canvas.height = Math.max(1, Math.round(h * dpr));
+    this.canvas.width = Math.max(1, Math.round(w * this.k));
+    this.canvas.height = Math.max(1, Math.round(h * this.k));
+    this._sprites.clear(); this._radarBg = null; this._ladderStrip = null;
     this._layout();
+  }
+  /** Backing-store scale (0.5..1) and sprite text on/off (see the constructor). Cheap when nothing changes. */
+  setBudget(res = 1, spriteText = false, cacheLayers = false) {
+    res = clamp(Number(res) || 1, 0.5, 1);
+    this.spriteText = !!spriteText; this.cacheLayers = !!cacheLayers;
+    if (res !== this.res) { this.res = res; this._setSize(this.w, this.h, true); }
   }
 
   dispose() {
@@ -233,6 +248,7 @@ export class HUD {
   }
   _text(str, x, y, color, align, baseline, maxW) {
     const ctx = this.ctx;
+    if (this.spriteText && !(maxW > 0)) { this._spriteText(str, x, y, color, align || 'left', baseline || 'middle'); return; }
     ctx.textAlign = align || 'left'; ctx.textBaseline = baseline || 'middle';
     ctx.lineWidth = this.L.textOutline; ctx.strokeStyle = COL.dark;
     if (maxW > 0) {   // optional: the canvas condenses a wider string to maxW px
@@ -241,6 +257,30 @@ export class HUD {
     }
     ctx.strokeText(str, x, y);
     ctx.fillStyle = color; ctx.fillText(str, x, y);
+  }
+  /** _text through the sprite cache: one drawImage per label once its sprite exists. */
+  _spriteText(str, x, y, color, align, baseline) {
+    const ctx = this.ctx, font = ctx.font, key = font + '|' + color + '|' + align + '|' + baseline + '|' + str;
+    let sp = this._sprites.get(key);
+    if (sp === undefined) {
+      if (this._sprites.size > 700) this._sprites.clear();
+      let px = this._fontPx.get(font);
+      if (px === undefined) { const m = /(\d+(?:\.\d+)?)px/.exec(font); px = m ? Number(m[1]) : 12; this._fontPx.set(font, px); }
+      const k = this.k, pad = Math.ceil(this.L.textOutline) + 2, tw = ctx.measureText(str).width;
+      const W = tw + 2 * pad, H = px * 1.5 + 2 * pad;
+      const c = document.createElement('canvas');
+      c.width = Math.max(1, Math.ceil(W * k)); c.height = Math.max(1, Math.ceil(H * k));
+      const g = c.getContext('2d');
+      const ax = align === 'center' ? pad + tw / 2 : (align === 'right' || align === 'end') ? pad + tw : pad;
+      const ay = baseline === 'top' ? pad : baseline === 'bottom' ? H - pad : baseline === 'middle' ? H / 2 : pad + px * 1.1;
+      g.scale(k, k); g.font = font; g.textAlign = align; g.textBaseline = baseline;
+      g.lineJoin = 'round'; g.lineWidth = this.L.textOutline; g.strokeStyle = COL.dark; g.strokeText(str, ax, ay);
+      g.fillStyle = color; g.fillText(str, ax, ay);
+      sp = { c, ax, ay, w: c.width / k, h: c.height / k };
+      this._sprites.set(key, sp);
+    }
+    const k = this.k;
+    ctx.drawImage(sp.c, Math.round((x - sp.ax) * k) / k, Math.round((y - sp.ay) * k) / k, sp.w, sp.h);
   }
   /** Translucent dark box with a colored border. */
   _panel(x, y, w, h, color, lw) {
@@ -265,8 +305,12 @@ export class HUD {
     if (fw !== this.w || fh !== this.h || dpr !== this.dpr) this._setSize(fw, fh);
     if (!(this.w > 0 && this.h > 0)) return;
     const ctx = this.ctx;
-    ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
+    const P = this.prof, now = P ? () => performance.now() : null;
+    let t0 = P ? now() : 0, t1 = 0;
+    const lap = P ? (key) => { t1 = now(); P[key] = (P[key] || 0) + (t1 - t0 - (P[key] || 0)) * 0.1; t0 = t1; } : null;
+    ctx.setTransform(this.k, 0, 0, this.k, 0, 0);
     ctx.clearRect(0, 0, this.w, this.h);
+    if (P) lap('clear');
     const state = frame.state || 'playing';
     if (state === 'title') return;                       // main shows DOM overlays on the title screen
     this.time = typeof frame.time === 'number' ? frame.time : this.time + (frame.dt || 1 / 60);
@@ -276,6 +320,7 @@ export class HUD {
     const p = frame.player || DEF_PLAYER;
     const radar = frame.radar || DEF_RADAR;
     this._drawDamage(frame.damageFlash);
+    if (P) lap('damage');
     // The gun cross is drawn where the rounds actually go (projected from the gun along the nose), not at screen center
     const gc = frame.gunCross;
     if (frame.mouseAim) {
@@ -287,18 +332,24 @@ export class HUD {
     }
     if (gc) this._drawBoresight(gc.x, gc.y, gc.visible !== false); else this._drawBoresight();
     this._drawVelocityVector(frame.velocityVector);
+    if (P) lap('attitude');
     this._drawHeadingTape(p, radar);
+    if (P) lap('heading');
     this._drawAirspeed(p);
     this._drawAltitude(p);
+    if (P) lap('tapes');
     const compact = !!frame.compact;     // touch layout: sticks and buttons cover the corners
     if (!compact) this._drawThrottle(p);
     this._drawHealth(p);
     if (compact) this._drawCompactWeapons(p); else this._drawWeapons(p);
+    if (P) lap('gauges');
     if (!compact) { this._drawRadar(radar, p); this._drawScore(frame); }
+    if (P) lap('radar');
     this._prepTarget(frame.target, gc);                  // target box and info block first: squadmate labels avoid them
     this._drawAllies(frame.allies, compact ? frame.touchRects : null);
     this._drawContacts(frame.contacts);
     this._drawTarget(frame.target);
+    if (P) lap('markers');
     this._drawWarnings(frame.warnings || DEF_WARN, p);
     this._bossOff = frame.boss ? this.L.bossH : 0;
     this._drawBoss(frame.boss);
@@ -308,16 +359,41 @@ export class HUD {
     if (!compact) this._drawInputStatus(frame.input || DEF_INPUT);
     this._drawHitFlash(frame.hitFlash);
     ctx.globalAlpha = 1;
+    if (P) lap('text');
   }
 
   // ---- attitude group -----------------------------------------------------------------------------------------
   _drawPitchLadder(p) {
     const ctx = this.ctx, L = this.L, s = L.s;
     const pitch = p.pitch || 0, roll = p.roll || 0;
-    const ppd = L.ppd, R = L.clipR + 24 * s, tick = L.tick, gap = L.rungGap;
+    const R = L.clipR + 24 * s;
     ctx.save();
-    ctx.beginPath(); ctx.arc(L.cx, L.cy, L.clipR, 0, TAU); ctx.clip();
+    if (!this.cacheLayers) { ctx.beginPath(); ctx.arc(L.cx, L.cy, L.clipR, 0, TAU); ctx.clip(); }
     ctx.translate(L.cx, L.cy); ctx.rotate(-roll * DEG);
+    if (this.cacheLayers) {
+      // budget mode: the whole ladder (rungs, dashes, labels) is painted once into a tall strip at zero pitch; each frame
+      // blits the window within clipR of the centre, rotated, with no clip path (a circular clip is costly in software
+      // Canvas2D): no dashed strokes, outlined glyphs or clipping per frame
+      const st = this._ladderStrip || (this._ladderStrip = this._buildLadderStrip()), W = L.clipR;
+      const k = this.k, sy = clamp(st.y0 - pitch * L.ppd - W, 0, st.h), ey = clamp(st.y0 - pitch * L.ppd + W, 0, st.h);
+      if (ey > sy) ctx.drawImage(st.c, 0, sy * k, st.c.width, (ey - sy) * k, -st.w / 2, sy - st.y0 + pitch * L.ppd, st.w, ey - sy);
+    } else this._ladderPaint(pitch, R);
+    ctx.restore();
+  }
+  _buildLadderStrip() {
+    const L = this.L, s = L.s, k = this.k;
+    const w = 2 * (L.rungHalf + 6 * s + 3 * L.chSmall + 2 * L.textOutline + 4), pad = 16 * s, y0 = 90 * L.ppd + pad, h = 2 * y0;
+    const c = document.createElement('canvas'); c.width = Math.ceil(w * k); c.height = Math.ceil(h * k);
+    const real = this.ctx; this.ctx = c.getContext('2d');
+    this.ctx.scale(k, k); this.ctx.translate(w / 2, y0); this.ctx.lineCap = 'butt'; this.ctx.lineJoin = 'round';
+    this._ladderPaint(0, Infinity);
+    this.ctx = real;
+    return { c, w, h, y0 };
+  }
+  /** Ladder in the attitude frame (origin at the centre, horizon-relative): rungs within R px of the centre. */
+  _ladderPaint(pitch, R) {
+    const ctx = this.ctx, L = this.L, s = L.s;
+    const ppd = L.ppd, tick = L.tick, gap = L.rungGap;
     // solid: horizon + positive rungs (end ticks point down toward the horizon)
     let y = pitch * ppd;
     if (Math.abs(y) < R) {                                // horizon: its own, slightly heavier stroke
@@ -353,7 +429,6 @@ export class HUD {
       this._text(str, -lx, y, COL.green, 'right', 'middle');
       this._text(str, lx, y, COL.green, 'left', 'middle');
     }
-    ctx.restore();
   }
 
   _drawBankScale(p) {
@@ -651,11 +726,19 @@ export class HUD {
     const R = L.radarR, x0 = L.radarX, y0 = L.radarY;
     const range = Math.max(1, radar.range || 8000);
     const hdg = (p.heading || 0) * DEG, ch = Math.cos(hdg), sh = Math.sin(hdg);
-    ctx.beginPath(); ctx.arc(x0, y0, R, 0, TAU); ctx.fillStyle = COL.panel; ctx.fill(); this._stroke(COL.green, L.lw);
-    ctx.beginPath(); ctx.arc(x0, y0, R / 2, 0, TAU); ctx.setLineDash(L.dashRing); this._stroke(COL.greenSoft, L.lwThin);
-    ctx.setLineDash(NO_DASH);
-    ctx.beginPath(); ctx.moveTo(x0 - R, y0); ctx.lineTo(x0 + R, y0); ctx.moveTo(x0, y0 - R); ctx.lineTo(x0, y0 + R);
-    ctx.lineWidth = 1; ctx.strokeStyle = COL.greenFaint; ctx.stroke();
+    if (this.cacheLayers) {
+      // budget mode: the static scope (disc, rings, cross) is one cached image (dashed arcs are slow in software)
+      const pad = Math.ceil(L.lw + 2 * L.outline + 2), D = 2 * (R + pad), kk = this.k;
+      let bg = this._radarBg;
+      if (!bg || bg.R !== R || bg.k !== kk) {
+        const c = document.createElement('canvas'); c.width = Math.ceil(D * kk); c.height = Math.ceil(D * kk);
+        const real = this.ctx; this.ctx = c.getContext('2d'); this.ctx.scale(kk, kk);
+        this._radarScope(R + pad, R + pad, R);
+        this.ctx = real;
+        bg = this._radarBg = { c, R, k: kk, pad, D };
+      }
+      ctx.drawImage(bg.c, x0 - R - bg.pad, y0 - R - bg.pad, bg.D, bg.D);
+    } else this._radarScope(x0, y0, R);
     // north marker rotates with the heading (player-up display)
     const thN = -Math.PI / 2 - hdg;
     ctx.font = L.fTiny;
@@ -732,6 +815,15 @@ export class HUD {
     const rk = Math.round(range / 100);
     if (rk !== this._rngKey) { this._rngKey = rk; this._rngStr = 'RDR ' + fDec1(rk / 10) + ' KM'; }
     ctx.font = L.fTiny; this._text(this._rngStr, x0 - R, y0 - R - 4 * s, COL.greenSoft, 'left', 'bottom');
+  }
+
+  _radarScope(x0, y0, R) {
+    const ctx = this.ctx, L = this.L;
+    ctx.beginPath(); ctx.arc(x0, y0, R, 0, TAU); ctx.fillStyle = COL.panel; ctx.fill(); this._stroke(COL.green, L.lw);
+    ctx.beginPath(); ctx.arc(x0, y0, R / 2, 0, TAU); ctx.setLineDash(L.dashRing); this._stroke(COL.greenSoft, L.lwThin);
+    ctx.setLineDash(NO_DASH);
+    ctx.beginPath(); ctx.moveTo(x0 - R, y0); ctx.lineTo(x0 + R, y0); ctx.moveTo(x0, y0 - R); ctx.lineTo(x0, y0 + R);
+    ctx.lineWidth = 1; ctx.strokeStyle = COL.greenFaint; ctx.stroke();
   }
 
   // ---- top-left: score block ----------------------------------------------------------------------------------
@@ -1155,7 +1247,7 @@ export class HUD {
   // ---- edge effects -------------------------------------------------------------------------------------------
   _drawDamage(v) {
     const L = this.L;
-    if (!(v > 0) || !L.dmgGrad) return;
+    if (!(v > 0) || !L.dmgGrad || this.cacheLayers) return;   // (budget mode: PostFX's red edge pulse carries it alone)
     const ctx = this.ctx;
     ctx.globalAlpha = this.alpha * clamp(v, 0, 1);
     ctx.fillStyle = L.dmgGrad; ctx.fillRect(0, 0, L.w, L.h);

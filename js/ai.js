@@ -7,7 +7,8 @@ import { AIRCRAFT_TYPES } from './missions.js';
 //   target aircraft: the player, or one of the player's squadmates. While its flight holds (js/flights.js) it flies
 //   the holding pattern instead: orbit, escort or climb-out as the flight lead, formation on the lead otherwise.
 // WingmanBrain (the player's immortal squadmates): loose formation on a lead, engages the bandit the game assigns with
-//   EnemyBrain's pursuit, defeats incoming missiles with flares, keeps within 3 km of the lead while fighting.
+//   EnemyBrain's pursuit, defeats incoming missiles with flares (enemy aces and bosses have none: they Cobra), keeps
+//   within 3 km of the lead while fighting.
 const _local = new THREE.Vector3(), _toP = new THREE.Vector3(), _fwd = new THREE.Vector3(), _pFwd = new THREE.Vector3();
 const _q = new THREE.Quaternion(), _pt = new THREE.Vector3(), _up = new THREE.Vector3(), _tmp = new THREE.Vector3();
 const _rel = new THREE.Vector3(), _vr = new THREE.Vector3(), _hf = new THREE.Vector3(), _slot = new THREE.Vector3(), _away = new THREE.Vector3();
@@ -19,11 +20,20 @@ const LAUNCH_GAP = 1.5;   // s: the AI never launches at one target within this 
 // then UNLOAD + UNLOAD_SKILL x skill s unloaded with the pull capped at UNLOAD_PULL (skill 0.95: 1.95 s, then 2.4 s;
 // other aces than bosses unload 0.8 s longer)
 const PULL_MAX = 1.0, PULL_MAX_SKILL = 1.0, UNLOAD = 3.5, UNLOAD_SKILL = -1.2, UNLOAD_PULL = 0.3;
-// ...and flares: per incoming missile a boss pops them with odds FLARE_P_BOSS (other aces FLARE_P_ACE), x (0.6 + 0.4 x
-// skill), once the time to impact is under FLARE_TTI x 0.5-1.5, at most once per FLARE_RELOAD s (a follow-up shot after a
-// flare burst connects). A player missile in a close tail chase can't be out-turned late, so this is how an ace beats a
-// good shot some of the time.
-const FLARE_P_BOSS = 0.42, FLARE_P_ACE = 0.35, FLARE_RELOAD = 7, FLARE_TTI = 1.2;
+// No flares: a player missile in a close tail chase can't be out-turned late, so breaks alone rarely save an ace.
+// Limit break (aces and bosses): a post-stall Cobra (Aircraft.startPostStall, js/aircraft.js:
+// nose past vertical, a flat spin, speed collapsing toward the stall). When the soonest player-team missile on it is
+// under COBRA_TTI s (+ 0-COBRA_TTI_VAR random) from impact and it has the room (clear of the ground and the ceiling, fast
+// enough to have speed to bleed), every missile on it within COBRA_LOCK s (x 0.85-1.15) of impact loses its lock and the
+// pop-up and speed collapse take the jet off their courses: one Cobra defeats a whole salvo. It then flies slow:
+// COBRA_RECOVER s after the maneuver with the pull capped at COBRA_RECOVER_PULL and no breaks (missiles fired after it
+// connect), and a boss's next Cobra waits COBRA_CD + 0-COBRA_CD_VAR s from the start of this one. Halve the volley: one
+// half baits the Cobra, the other lands in the recovery.
+const COBRA_TTI = 0.45, COBRA_TTI_VAR = 0.55, COBRA_LOCK = 1.9, COBRA_DUR = 2.0, COBRA_RECOVER = 2.6, COBRA_RECOVER_PULL = 0.4;
+const COBRA_CD = 6, COBRA_CD_VAR = 4;
+// Regular aces (ace: true, no bars) fly the same Cobra, tuned down: a COBRA_CD_ACE + 0-COBRA_CD_ACE_VAR s cooldown, and per
+// incoming missile they go for it only with odds COBRA_P_ACE + COBRA_P_ACE_SKILL x skill (bosses always do).
+const COBRA_CD_ACE = 12, COBRA_CD_ACE_VAR = 6, COBRA_P_ACE = 0.4, COBRA_P_ACE_SKILL = 0.3;
 // Altitude game (bandits only, EnemyBrain.altGame): out of a close turning fight a bandit wants 300-800 m (by skill) over
 // its target; holding flights orbit there, slot-waiters stack above it, attackers dive in from it and zoom back up.
 export const ALT_CEILING = 4500;  // m ASL: hard cap, enforced in the steering. Highest terrain is ~2.6 km; matches the
@@ -96,14 +106,17 @@ export class EnemyBrain {
     // Break discipline (aces and bosses: AIRCRAFT_TYPES entries with ace or bars; everyone else keeps the plain rule
     // below): consistency, not capability. Per incoming missile the brain rolls a plan (_planBreak): a break at the time
     // to impact it judges right (an ace's ~0.7-1.8 s, spread by skill), an early break as soon as it notices the launch,
-    // or a misjudged one (no missile break), and whether to answer it with flares (FLARE_*). A guns-on threat makes it
+    // or a misjudged one (no missile break), and whether it goes for the Cobra limit break (COBRA_*) if that's ready.
+    // A guns-on threat makes it
     // break after a reaction delay instead of on the first frame. A max-G pull costs energy: after PULL_MAX s of
     // continuous hard pull (skill-scaled) it must unload for a few seconds (pull capped, no fresh break), so back-to-back
     // perfect breaks aren't free and a stable tail position gets its shot.
     this.breakDiscipline = false;   // (resolved from the aircraft's type name in update)
     this._typeName = null; this._boss = false;
     this._mslId = -1; this._mslPlan = 2; this._mslTti = 0; this._mslNotice = 0;
-    this._pull = 0; this._tired = 0; this._gunT = 0; this._gunDelay = -1; this._mslFlare = false; this._flareTti = 0; this._flareT = 0;
+    this._pull = 0; this._tired = 0; this._gunT = 0; this._gunDelay = -1; this._cobraGo = false;
+    this._cobraCd = 0; this._cobraTti = COBRA_TTI; this._recover = 0;   // (rerolled per Cobra)
+    this.cobras = 0;                // stats: boss Cobras flown
   }
 
   /** Roll how this brain will answer missile m (break discipline above). */
@@ -114,8 +127,17 @@ export class EnemyBrain {
     const pMiss = (this._boss ? 0.2 : 0.3) + 0.3 * (1 - s), pEarly = 0.08 + 0.3 * Math.max(0, s - 0.55);
     this._mslPlan = r < pMiss ? 0 : r < pMiss + pEarly ? 1 : 2;
     this._mslTti = (0.9 + 0.6 * s) * (0.45 + 0.8 * Math.random());              // timed: break once the tti is under this
-    this._mslFlare = Math.random() < (this._boss ? FLARE_P_BOSS : FLARE_P_ACE) * (0.6 + 0.4 * s);
-    this._flareTti = FLARE_TTI * (0.5 + Math.random());
+    this._cobraGo = this._boss || Math.random() < COBRA_P_ACE + COBRA_P_ACE_SKILL * s;
+  }
+
+  /** Room for a Cobra: clear of the ground (and not about to pop toward it), under the ceiling, and fast enough that
+   *  bleeding the speed means something. */
+  _cobraRoom() {
+    const ac = this.ac, ss = ac.speedScale || 1;
+    ac.getUp(_up);
+    if (this._agl < 450 || this._aheadAgl < 350 || (_up.y < -0.25 && this._agl < 1500)) return false;
+    if (ac.position.y > ALT_CEILING - 250 && _up.y > 0.3) return false;
+    return ac.speed > FLIGHT.MIN_SPEED * Math.min(1, ss * 1.2) * 1.9;
   }
 
   // Steer toward a world point; writes pitch/roll/yaw into controls. gain scales aggressiveness.
@@ -334,6 +356,7 @@ export class EnemyBrain {
       this._typeName = ac.name; const T = AIRCRAFT_TYPES[ac.name];
       this.breakDiscipline = !(this instanceof WingmanBrain) && !!T && (T.ace === true || T.bars > 0);
       this._boss = !!T && T.bars > 0;   // bosses misjudge less and recover faster than the other aces
+      if (this.breakDiscipline) this._cobraTti = COBRA_TTI + COBRA_TTI_VAR * Math.random();
     }
     if (!this.breakDiscipline) breakNow = missileInbound && (this.skill < 0.55 || minTti < 0.9 + this.skill * 0.6);
     else {
@@ -343,7 +366,6 @@ export class EnemyBrain {
         if (m.id !== this._mslId) this._planBreak(m);
         if (m.age >= this._mslNotice) {
           breakNow = this._mslPlan === 1 || (this._mslPlan === 2 && minTti < this._mslTti);
-          if (this._mslFlare && this._flareT <= 0 && minTti < this._flareTti) { weapons.deployFlares(ac); this._flareT = FLARE_RELOAD; this._mslFlare = false; }
         }
       }
       // guns-on threat: break after a reaction delay (rolled when the threat appears), not on the first frame
@@ -351,9 +373,9 @@ export class EnemyBrain {
         if (this._gunDelay < 0) this._gunDelay = (1.0 + 1.2 * (1 - this.skill)) * (0.5 + Math.random());
         this._gunT += dt; threatened = this._gunT >= this._gunDelay;
       } else { this._gunT = Math.max(0, this._gunT - dt); if (this._gunT === 0) this._gunDelay = -1; }
-      this._tired = Math.max(0, this._tired - dt); this._flareT -= dt;
-      if (this._tired > 0) { breakNow = false; threatened = false; }   // unloading (energy, below): no fresh break
-    }
+      this._tired = Math.max(0, this._tired - dt); this._recover = Math.max(0, this._recover - dt); this._cobraCd -= dt;
+      if (this._tired > 0 || this._recover > 0) { breakNow = false; threatened = false; }   // unloading
+    }                                                                  // (energy, below) or after a Cobra: no fresh break
 
     // Terrain / boundary / ceiling overrides. A passive transit closing on its goal over open sea (diving onto a ship)
     // ignores the sea-level floor: hitting the goal is the point
@@ -371,6 +393,26 @@ export class EnemyBrain {
         && gx * _fwd.x + gy * _fwd.y + gz * _fwd.z > 0.86 * Math.sqrt(goalD * goalD + gy * gy)) lowTerrain = false;
     } else this._diving = false;
     const outOfBounds = Math.abs(ac.position.x) > this.worldHalf * 0.9 || Math.abs(ac.position.z) > this.worldHalf * 0.9;
+    // Boss limit break (COBRA_*): the maneuver flies the jet (no steering, no guns) until it ends; the ground or the
+    // ceiling cut it short
+    if (this.breakDiscipline) {
+      let fly = ac.postStall;
+      if (fly) { if (lowTerrain || ac.position.y > ALT_CEILING + 150) ac.abortPostStall(); }
+      else if (missileInbound && this._cobraGo && this._cobraCd <= 0 && !lowTerrain && this._threatMsl.age >= this._mslNotice && minTti < this._cobraTti && this._cobraRoom()) {
+        if (ac.startPostStall({ dur: COBRA_DUR * (0.9 + 0.2 * Math.random()), spins: 1, dir: Math.random() < 0.5 ? -1 : 1 })) {
+          weapons.breakLock(ac, COBRA_LOCK * (0.85 + 0.3 * Math.random()));
+          if (weapons.vaporBurst) weapons.vaporBurst(ac);
+          this._cobraCd = this._boss ? COBRA_CD + COBRA_CD_VAR * Math.random() : COBRA_CD_ACE + COBRA_CD_ACE_VAR * Math.random(); this._cobraTti = COBRA_TTI + COBRA_TTI_VAR * Math.random();
+          this._recover = COBRA_DUR * 1.1 + COBRA_RECOVER; this._tired = 0; this._pull = 0; this.cobras++;
+          this.state = 'pursue'; this.stateTime = 0; this.burst = 0; fly = true;
+        }
+      }
+      if (fly) {
+        controls.pitch = controls.roll = controls.yaw = 0; controls.throttleDelta = 1;
+        ac.setControls(controls);
+        return;
+      }
+    }
 
     let fireGun = false;
     if (lowTerrain) {
@@ -513,7 +555,8 @@ export class EnemyBrain {
     // energy (break discipline): PULL_MAX s of continuous max-G pull (a break, or a hard turn after its target) must be
     // paid for by unloading for UNLOAD s, the pull capped at UNLOAD_PULL. Never while terrain avoidance flies
     if (this.breakDiscipline && !lowTerrain) {
-      if (this._tired > 0) controls.pitch = Math.min(controls.pitch, UNLOAD_PULL);
+      if (this._recover > 0) { controls.pitch = Math.min(controls.pitch, COBRA_RECOVER_PULL); controls.throttleDelta = 1; }
+      else if (this._tired > 0) controls.pitch = Math.min(controls.pitch, UNLOAD_PULL);
       else if (controls.pitch > 0.8) {
         this._pull += dt;
         if (this._pull > PULL_MAX + PULL_MAX_SKILL * this.skill) {

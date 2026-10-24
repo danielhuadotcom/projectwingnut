@@ -28,7 +28,7 @@
 // Usage (js/main.js):
 //   const run = new InfinityRun({ difficulty: DIFFICULTY, missileLoad: FLIGHT.MAX_MISSILES, missileDamage: weapons.missileDamage });
 //   const plan = run.nextRound();       // { round, seed, groups (mission format), ramp: { diff, skillBase, ... }, ... }
-//   run.recordKill('air', 'NV-62');     // the player's kills: returns the points, adds them to run.score
+//   run.recordKill('air', 'NV-15C');     // the player's kills: returns the points, adds them to run.score
 //   run.clearRound();                   // AREA CLEAR: returns INTERMISSION; hull = run.repairedHealth(hull)
 //   const end = run.finish('SHOT DOWN'); // saves a new local best: { round, roundsCleared, kills, score, best, newBest }
 
@@ -65,11 +65,11 @@ const BOUNTY_POINTS = 2500;                // per boss bar
 // Tock and Chime, cruise missiles (they need an allied fleet to fly at), mission props (cargo crate, moored ships), and
 // the battleship, carrier and siege crawler: 9-13 missiles each at Mercenary, more than a round's surface budget allows.
 const AIR_POOL = [
-  ['SLEET-2', 1, 3], ['NV-48', 1, 3], ['NV-11', 1, 2], ['SCAUP II', 1, 1], ['KD-12U', 1, 1],
-  ['GUST-5', 2, 2], ['KD-38H', 2, 1], ['EIDER IV', 3, 2], ['KD-260', 3, 1], ['NV-62', 4, 3],
-  ['NV-73', 5, 3], ['HAILSTONE-3', 5, 2], ['NV-56N', 6, 2], ['KD-910', 6, 1], ['FLURRY-4', 7, 2],
-  ['SQUALL-7', 8, 2], ['KD-480E', 8, 1], ['FALLWIND-6', 9, 2], ['SQUALL-7T', 11, 2], ['Q07', 13, 2],
-  ['Q09', 13, 2], ['NV-73 CUCKOO', 14, 1], ['Q11', 15, 2], ['Q09 SHEARPIN', 17, 1], ['Q10', 18, 1],
+  ['SLEET-21', 1, 3], ['NV-16', 1, 3], ['NV-4', 1, 2], ['SCAUP II', 1, 1], ['KD-12U', 1, 1],
+  ['GUST-37', 2, 2], ['KD-28H', 2, 1], ['EIDER-8B', 3, 2], ['KD-17', 3, 1], ['NV-15C', 4, 3],
+  ['NV-18E', 5, 3], ['HAILSTONE-25', 5, 2], ['NV-14', 6, 2], ['KD-52', 6, 1], ['FLURRY-29', 7, 2],
+  ['SQUALL-27', 8, 2], ['KD-480E', 8, 1], ['FALLWIND-31', 9, 2], ['SQUALL-30', 11, 2], ['Q07', 13, 2],
+  ['Q09', 13, 2], ['NV-18E CUCKOO', 14, 1], ['Q11', 15, 2], ['Q09 SHEARPIN', 17, 1], ['Q10', 18, 1],
 ];
 const GROUND_POOL = [
   ['aa', 1, 3], ['tank', 1, 2], ['truck', 1, 1], ['container', 1, 1], ['artillery', 2, 2], ['radar', 2, 1],
@@ -86,7 +86,7 @@ const NAVAL_POOL = [
 const TYPE_MAX = {
   aa: 14, sam: 12, 'c-ram': 10, 'l-sam': 6, railgun: 4, extractor: 2, hangar: 3, refinery: 4, 'comm tower': 2, substation: 3,
   radar: 4, boat: 16, cruiser: 4, 'railgun frigate': 4, frigate: 4, 'cargo ship': 3, 'armed cargo': 3, 'spy ship': 2,
-  'KD-480E': 2, 'KD-910': 3, 'KD-260': 3, 'KD-12U': 3,
+  'KD-480E': 2, 'KD-52': 3, 'KD-17': 3, 'KD-12U': 3,
 };
 const FILLERS = [['aa', 3], ['sam', 3], ['c-ram', 2], ['l-sam', 1]];   // cheap land threats that stand in for costly units
 const CONVOY = new Set(['tank', 'truck', 'artillery']);
@@ -228,7 +228,7 @@ export function unitPoints(kind, type) {
   if (kind === 'air') {
     if (t.bars > 0) return BOUNTY_POINTS * t.bars;
     const armed = t.armed === false ? 0.6 : t.armed === 'gun' ? 0.8 : 1;
-    p = 1000 * (0.6 + 0.4 * ((t.hp || 35) * 2) / 70) * armed * (type === 'NV-73 CUCKOO' ? 2 : 1);
+    p = 1000 * (0.6 + 0.4 * ((t.hp || 35) * 2) / 70) * armed * (type === 'NV-18E CUCKOO' ? 2 : 1);
   } else {
     const threat = t.shoots ? 1 + 0.75 * Math.min(t.range || 0, 8000) / 8000 : 1;
     p = 300 * (0.5 + 0.5 * t.hp / 50) * threat;

@@ -149,12 +149,12 @@ function check() {
   // local best: no storage (node), storage that throws, working storage
   const run = new I.InfinityRun({ difficulty: DIFFICULTY, missileLoad, missileDamage, seed: 7 });
   ok(I.loadBest() === null, 'best: empty without storage');
-  run.nextRound(); run.recordKill('air', 'NV-62'); run.recordKill('ground', 'aa'); run.clearRound(); run.nextRound();
-  ok(run.score === I.killPoints('air', 'NV-62', 1) + I.killPoints('ground', 'aa', 1) && run.kills === 2 && run.roundsCleared === 1, 'run: score, kills, rounds');
+  run.nextRound(); run.recordKill('air', 'NV-15C'); run.recordKill('ground', 'aa'); run.clearRound(); run.nextRound();
+  ok(run.score === I.killPoints('air', 'NV-15C', 1) + I.killPoints('ground', 'aa', 1) && run.kills === 2 && run.roundsCleared === 1, 'run: score, kills, rounds');
   ok(run.repairedHealth(50) === 85 && run.repairedHealth(90) === 100, 'run: hull +35 %, capped');
   const end = run.finish('SHOT DOWN');
   ok(end.newBest && end.saved === false && end.best.score === run.score && I.loadBest().score === run.score, 'best: lasts the session without storage');
-  ok(run.finish('again') === end && run.recordKill('air', 'NV-62') === 0, 'run: finish is final');
+  ok(run.finish('again') === end && run.recordKill('air', 'NV-15C') === 0, 'run: finish is final');
   const throwing = { getItem() { throw new Error('blocked'); }, setItem() { throw new Error('blocked'); }, removeItem() { throw new Error('blocked'); } };
   globalThis.localStorage = throwing;
   let threw = false;

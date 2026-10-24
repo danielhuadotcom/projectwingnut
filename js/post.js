@@ -26,17 +26,20 @@ import * as THREE from 'https://cdnjs.cloudflare.com/ajax/libs/three.js/0.170.0/
 // read ~0.5 ms, R11G11B10F ~0.28 ms) and ALU-bound second, which is what the format / pass layout above optimises.
 // =====================================================================================================
 
-const MIN_SCALE = 0.5;
+const MIN_SCALE = 0.45;
 const MAX_SCALE = 1.0;
 
 // Quality presets (MSAA samples and render scale are separate setters). start: first bloom level (1 = half res,
 // 2 = quarter res); bright/down/up: filter tap counts (13 = CoD:AW 36-texel filter, 4 = box; 9 = 3x3 tent, 4 = 4-tap);
 // flare: 0 off, 1 glare + streak only, 2 full (ghosts + halo); ca: chromatic aberration; grain: grain multiplier.
+// bloom: 0 skips the whole bloom chain (bright, down and up passes; the composite adds a 1x1 black texture) and lean: 1
+// always uses the lean composite (one bilinear scene tap: no RCAS sharpening, no FXAA), so 'verylow' is a tone map only.
 // 'ultra' is exactly the original bloom. 'high' differs only by the 4-tap bright prefilter (-0.28 ms at 1080p on
 // integrated GPU; the bright pass is sampler-bound): a slightly tighter glow on thin bright lines (tracers), elsewhere within
 // ~1/255. Presets only change uniforms and the bloom chain's start level -- never a shader program or a render-target
 // format -- so runtime switches cannot trigger pipeline (re)compiles.
 export const POST_QUALITY = {
+  verylow: { start: 2, bright: 4,  down: 4,  up: 4, flare: 0, ca: 0, grain: 0, bloom: 0, lean: 1 },
   low:    { start: 2, bright: 4,  down: 4,  up: 4, flare: 1, ca: 0, grain: 0.35 },
   medium: { start: 2, bright: 13, down: 13, up: 9, flare: 2, ca: 1, grain: 1 },
   high:   { start: 1, bright: 4,  down: 13, up: 9, flare: 2, ca: 1, grain: 1 },
@@ -270,7 +273,7 @@ void main() {
   // ---- scene colour at the output pixel (exposed HDR) ----
   vec3 c0, hdr;
 #if FULL == 0
-  c0 = texture2D(tScene, suv).rgb;      // exactly on a texel centre (internal == output)
+  c0 = sceneTap(suv);                   // on a texel centre (internal == output), else bilinear ('verylow' upscale)
   hdr = max(c0, vec3(0.0)) * uExposure;
 #else
   // 5 taps: centre + 4 diagonals at +-0.5 input texel (bilinear: 2x2 box averages at native res, as in FXAA console)
@@ -385,7 +388,7 @@ export class PostFX {
    * @param {number} pixelRatio   output pixels per CSS px (the canvas' pixel ratio, NOT multiplied by the render scale)
    * @param {{samples?: number, renderScale?: number, quality?: string, compactHDR?: boolean}} [options]
    *        samples: MSAA samples of the HDR scene target (0, 2, 4; default 4)
-   *        renderScale: internal resolution scale 0.5..1 (default 1); quality: 'low'|'medium'|'high'|'ultra' (default 'high')
+   *        renderScale: internal resolution scale 0.45..1 (default 1); quality: 'verylow'|'low'|'medium'|'high'|'ultra' (default 'high')
    *        compactHDR: use R11G11B10F for the bloom chain and the multisampled scene target (default true); false =
    *        RGBA16F everywhere (more precision headroom, ~1.3 ms slower at 4x MSAA 1080p on an integrated laptop GPU)
    */
@@ -483,6 +486,8 @@ export class PostFX {
     this._mats = [this._brightMat, this._downMat, this._upMat, this._upFinalMat, this._compLean, this._compFull];
     this._warmed = false;           // both composite programs drawn once (see _warmComposite)
     this._vpTmp = new THREE.Vector4();
+    this._black = new THREE.DataTexture(new Uint8Array([0, 0, 0, 255]), 1, 1);   // tBloom with the bloom chain off
+    this._black.needsUpdate = true;
 
     // ---- render targets ----
     this.rtScene = null;
@@ -551,7 +556,7 @@ export class PostFX {
     return this.activeSamples;
   }
 
-  /** Quality preset: 'low' | 'medium' | 'high' | 'ultra' (bloom chain, flare, chromatic aberration, grain). */
+  /** Quality preset: 'verylow' | 'low' | 'medium' | 'high' | 'ultra' (bloom chain, flare, chromatic aberration, grain). */
   setQuality(q) {
     const key = POST_QUALITY[q] ? q : 'high';
     const prev = this._q;
@@ -617,55 +622,59 @@ export class PostFX {
     finally { if (shrink) { rt.width = allocW; rt.height = allocH; } }
     if (prof) { prof.endPass(); prof.beginPass('bloom'); }
 
-    // 2. bloom bright pass (scene -> level 0 at 1/2 or 1/4 res)
     r.autoClear = false;    // every post pass fully overwrites its (sub-rect) target
-    const tri = this._tri, fsScene = this._fsScene, cam = this._fsCam;
-    const L = this._levels, n = L.length;
-    const du = this._downU;
-    const th = Math.max(0, this.bloomThreshold);
-    const knee = Math.max(1e-4, th * Math.max(0, this.bloomKnee));
-    du.tSrc.value = rt.texture; du.uSrc.value = this._sceneSrc; du.uSrcMax.value = this._sceneMax;
-    du.uExposure.value = Math.max(0, this.exposure);
-    du.uThreshold.value.set(th, th - knee, 2 * knee, 0.25 / knee);
-    du.uKaris.value = Math.max(0, this.bloomKaris);
     const q = this._q;
-    du.uWide.value = q.bright === 13 ? 1 : 0;
-    tri.material = this._brightMat;
-    r.setRenderTarget(L[0].down);
-    r.render(fsScene, cam);
-
-    // 3. progressive downsample
-    du.uWide.value = q.down === 13 ? 1 : 0;
-    tri.material = this._downMat;
-    for (let i = 1; i < n; i++) {
-      du.tSrc.value = L[i - 1].down.texture; du.uSrc.value = L[i - 1].src; du.uSrcMax.value = L[i - 1].max;
-      r.setRenderTarget(L[i].down);
+    const tri = this._tri, fsScene = this._fsScene, cam = this._fsCam;
+    let bloomTex = this._black;
+    if (q.bloom !== 0) {
+      // 2. bloom bright pass (scene -> level 0 at 1/2 or 1/4 res)
+      const L = this._levels, n = L.length;
+      const du = this._downU;
+      const th = Math.max(0, this.bloomThreshold);
+      const knee = Math.max(1e-4, th * Math.max(0, this.bloomKnee));
+      du.tSrc.value = rt.texture; du.uSrc.value = this._sceneSrc; du.uSrcMax.value = this._sceneMax;
+      du.uExposure.value = Math.max(0, this.exposure);
+      du.uThreshold.value.set(th, th - knee, 2 * knee, 0.25 / knee);
+      du.uKaris.value = Math.max(0, this.bloomKaris);
+      du.uWide.value = q.bright === 13 ? 1 : 0;
+      tri.material = this._brightMat;
+      r.setRenderTarget(L[0].down);
       r.render(fsScene, cam);
-    }
 
-    // 4. progressive upsample (tent + scatter blend); the last pass also applies bloomStrength and adds the flare
-    const uu = this._upU;
-    const radius = THREE.MathUtils.clamp(this.bloomRadius, 0, 3);
-    uu.uRadius.value = radius;
-    uu.uScatter.value = THREE.MathUtils.clamp(0.4 + 0.3 * radius, 0.05, 0.92);
-    uu.uStrength.value = Math.max(0, this.bloomStrength);
-    uu.uTent.value = q.up === 9 ? 1 : 0;
-    this._updateFlare();
-    let low = L[n - 1].down, lowLv = L[n - 1];
-    for (let i = n - 2; i >= 0; i--) {
-      tri.material = i === 0 ? this._upFinalMat : this._upMat;
-      uu.tLow.value = low.texture; uu.uLow.value = lowLv.src; uu.uLowMax.value = lowLv.max;
-      uu.tHigh.value = L[i].down.texture; uu.uHigh.value = L[i].src;
-      r.setRenderTarget(L[i].up);
-      r.render(fsScene, cam);
-      low = L[i].up; lowLv = L[i];
+      // 3. progressive downsample
+      du.uWide.value = q.down === 13 ? 1 : 0;
+      tri.material = this._downMat;
+      for (let i = 1; i < n; i++) {
+        du.tSrc.value = L[i - 1].down.texture; du.uSrc.value = L[i - 1].src; du.uSrcMax.value = L[i - 1].max;
+        r.setRenderTarget(L[i].down);
+        r.render(fsScene, cam);
+      }
+
+      // 4. progressive upsample (tent + scatter blend); the last pass also applies bloomStrength and adds the flare
+      const uu = this._upU;
+      const radius = THREE.MathUtils.clamp(this.bloomRadius, 0, 3);
+      uu.uRadius.value = radius;
+      uu.uScatter.value = THREE.MathUtils.clamp(0.4 + 0.3 * radius, 0.05, 0.92);
+      uu.uStrength.value = Math.max(0, this.bloomStrength);
+      uu.uTent.value = q.up === 9 ? 1 : 0;
+      this._updateFlare();
+      let low = L[n - 1].down, lowLv = L[n - 1];
+      for (let i = n - 2; i >= 0; i--) {
+        tri.material = i === 0 ? this._upFinalMat : this._upMat;
+        uu.tLow.value = low.texture; uu.uLow.value = lowLv.src; uu.uLowMax.value = lowLv.max;
+        uu.tHigh.value = L[i].down.texture; uu.uHigh.value = L[i].src;
+        r.setRenderTarget(L[i].up);
+        r.render(fsScene, cam);
+        low = L[i].up; lowLv = L[i];
+      }
+      bloomTex = low.texture;
     }
 
     if (prof) { prof.endPass(); prof.beginPass('composite'); }
     // 5. composite -> canvas (native resolution)
     const cu = this._compU;
     cu.tScene.value = rt.texture;
-    cu.tBloom.value = low.texture;
+    cu.tBloom.value = bloomTex;
     cu.uExposure.value = Math.max(0, this.exposure);
     const chroma = q.ca ? Math.max(0, this.chromatic) : 0;
     // CA offset in output px ~ r^3 * chroma * 0.0018 * width -> skip the two extra taps where it is < 0.3 px
@@ -679,7 +688,7 @@ export class PostFX {
     cu.uSharp.value = sharp;
     const fx = this.fxaa && this.activeSamples === 0 ? 1 : 0;
     cu.uFxaa.value = fx;
-    const full = upscaled || sharp > 0 || fx === 1;
+    const full = !q.lean && (upscaled || sharp > 0 || fx === 1);
     if (!this._warmed) this._warmComposite(full ? this._compLean : this._compFull);
     tri.material = full ? this._compFull : this._compLean;
     r.setRenderTarget(null);
@@ -695,6 +704,7 @@ export class PostFX {
     this._disposeTargets();
     for (const m of this._mats) m.dispose();
     this._mats.length = 0;
+    this._black.dispose();
     this._fsGeo.dispose();
     this._tri.material = null;
   }

@@ -24,7 +24,7 @@ import { NIGHT_FX } from './timeofday.js';
 //    shadows, puffs) and a world-aligned copy of the original large-scale biome noise (so forest/snow layouts are
 //    unchanged).
 //  - Terrain vertices outside the view frustum are culled cheaply in the vertex shader; fog/haze is per vertex.
-//  - setQuality('low' | 'medium' | 'high' | 'ultra') switches shader variants / grid density / puff count at runtime.
+//  - setQuality('verylow' | 'low' | 'medium' | 'high' | 'ultra') switches shader variants / grid density / puff count at runtime.
 
 export const WORLD_HALF = 20000;      // playable half-size (m)
 export const SEA_LEVEL = 0;
@@ -506,9 +506,13 @@ function gradeSkyLut(out, base, scale, g = null) {
 //         (false = exact bilinear heights everywhere, i.e. the original terrain geometry)
 // detail: terrain detail layers (1: 48 m relief + biome breakup, 2: + 18 m, 3: + 8 m near the camera, 4: + 3 m micro)
 // water: wave normal layers (2..4); foam: shoreline foam; refl: reflected-terrain march taps (0 = sky and clouds only)
-// puffG: billboard puff grid (puffG² puffs)
+// puffG: billboard puff grid (puffG² puffs; 0 = no puffs, the mesh is hidden)
+// (verylow: 40-cell rings of 24 m cells, 30 % fewer terrain triangles than low and still finer than the 43 m heightmap)
+// lite: 1 = flat-lit terrain (no baked cast shadow, cloud shadow or snow/sand glint), and no terrain shadow bakes at all
+//       (setLighting / the idle queue skip them; the channel is brought up to date when a tier without lite returns)
 // ============================================================================
 const QUALITY = {
+  verylow: { levels: [40, 40, 40, 40, 40, 40, 40, 40], cell0: 24, peaks: true, detail: 1, water: 1, foam: 0, refl: 0, puffG: 0, lite: 1 },
   low:    { levels: [48, 48, 48, 48, 48, 48, 48, 48], cell0: 16, peaks: true, detail: 1, water: 2, foam: 1, refl: 0, puffG: 6 },
   medium: { levels: [64, 64, 64, 64, 64, 64, 64, 64], cell0: 16, peaks: true, detail: 2, water: 2, foam: 1, refl: 3, puffG: 8 },
   high:   { levels: [128, 128, 128, 128, 128, 128, 128, 128], cell0: 8, peaks: false, detail: 3, water: 3, foam: 1, refl: 7, puffG: 8 },
@@ -720,7 +724,7 @@ void main() {
 
 // ---------------------------------------------------------------------------- SEA SURFACE
 // Shared by the terrain draw (which renders the sea surface itself, see TERRAIN_FRAG) and the water mesh (underwater
-// camera only). defines: WATER (2..4 wave normal layers), FOAM (0/1), REFL (terrain reflection taps, 0 = off)
+// camera only). defines: WATER (1..4 wave normal layers), FOAM (0/1), REFL (terrain reflection taps, 0 = off)
 //  - Waves: scrolling, rotated layers of the baked wave-slope texture (uWaves, see BAKE_WAVE_FRAG; each layer holds a
 //    4-octave directional spectrum), with the wind roughness varied by the cloud-coverage field (rougher water under
 //    the cloud bands, drifting with them; reuses the cloud-shadow fetch and breaks up the tiling).
@@ -749,8 +753,10 @@ const float WK1 = 0.30, WK2 = 0.22, WK3 = 0.13, WK4 = 0.07;                     
 const float WVAR_REST = 0.0;
 #elif WATER == 3
 const float WVAR_REST = WK4 * WK4 * 0.11;
-#else
+#elif WATER == 2
 const float WVAR_REST = (WK3 * WK3 + WK4 * WK4) * 0.11;
+#else
+const float WVAR_REST = (WK2 * WK2 + WK3 * WK3 + WK4 * WK4) * 0.11;
 #endif
 // one wave layer: adds the world-space slope to g, the sub-texel (filtered-away) slope variance to v; returns height
 float waveLayer(vec2 uv, mat2 M, float k, inout vec2 g, inout float v) {
@@ -773,7 +779,9 @@ vec3 seaSurface(vec2 p, float dist, vec3 V) {
   vec2 g = vec2(0.0);
   float var = WVAR_REST;
   float wh = waveLayer((WR1 * p) * WT1 + t * vec2(0.0060, 0.0011), WR1, WK1, g, var);
+#if WATER >= 2
   wh += waveLayer((WR2 * p) * WT2 + g * 0.3 + t * vec2(-0.0102, 0.0182), WR2, WK2, g, var);   // warped by layer 1
+#endif
 #if WATER >= 3
   waveLayer((WR3 * p) * WT3 + t * vec2(0.0420, -0.0311), WR3, WK3, g, var);
 #endif
@@ -1029,7 +1037,11 @@ void main() {
   vec4 aux = texture(uAux, hmUV(xz));
   vec3 N = vec3(aux.r * 2.0 - 1.0, 0.0, aux.g * 2.0 - 1.0);
   N.y = sqrt(max(1.0 - dot(N.xz, N.xz), 0.0));
+#if LITE
+  float shadow = 1.0;               // (no cast-shadow bake on this tier: the channel may hold another light direction)
+#else
   float shadow = aux.b;
+#endif
   float ao = aux.a;
 
   // detail from the tiling noise texture (R = value, GB = d/dp); mip filtering fades it with distance
@@ -1087,13 +1099,19 @@ void main() {
   // lighting
   float ndl = max(dot(Nd, uSunDir), 0.0);
   float selfSh = smoothstep(-0.1, 0.25, dot(N, uSunDir));
+#if LITE
+  vec3 direct = uSunColor * (ndl * selfSh);
+#else
   float cs = cloudShadow(xz, h);
   vec3 direct = uSunColor * (ndl * shadow * selfSh * cs);
+#endif
   vec3 amb = mix(uGroundAmb, uSkyAmb, Nd.y * 0.5 + 0.5) * ao * (1.0 - 0.3 * wForest);
   vec3 col = alb * (direct + amb);
+#if !LITE
   vec3 Hv = normalize(uSunDir + V);
   float spec = pow(max(dot(Nd, Hv), 0.0), 24.0) * (wSnow * 0.35 + wSand * 0.12) * shadow * cs;
   col += uSunColor * spec;
+#endif
 
   // aerial perspective (per vertex)
   gl_FragColor = vec4(col * vFogT + vHaze * (1.0 - vFogT), 1.0);
@@ -1462,6 +1480,7 @@ export class World {
     this._shadowCache = new Map();         // baked terrain shadow channel per light direction (setLighting)
     this._lutBase = new Map();             // ungraded sky table per sun height (gradeSkyLut makes the graded one)
     { const n = HM_N * HM_N, ch = new Uint8Array(n), aux = this._aux; for (let i = 0; i < n; i++) ch[i] = aux[i * 4 + 2]; this._shadowCache.set(SUN_DEFAULT_KEY, ch); }
+    this._auxDir = SUN_DEFAULT_KEY; this._wantDir = null; this._noShadow = false;   // aux's shadow direction; a skipped swap (lite)
     this._bakeQueue = []; this._bakeJob = null; this._bakeTimer = 0;   // idle-time lighting bakes (queueLighting)
     this._envInto = null; this._envVar = null; this._envDefer = 0;     // environment targets (_buildEnvironment)
     this._shadowKey = null; this._shadowPrev = null; this._shadowWait = 0;   // a shadow change deferred to the next frame
@@ -1485,7 +1504,7 @@ export class World {
     this._cell0 = 8;
     this._terrainMat = new THREE.ShaderMaterial({
       uniforms: U, vertexShader: TERRAIN_VERT, fragmentShader: TERRAIN_FRAG, fog: false,
-      defines: { NLEV: 1, CELL0: '8.0', LHALF_INIT: '64.0', LLOD_INIT: '0.0', DETAIL: 3, WATER: 3, FOAM: 1, REFL: 7 },
+      defines: { NLEV: 1, CELL0: '8.0', LHALF_INIT: '64.0', LLOD_INIT: '0.0', DETAIL: 3, WATER: 3, FOAM: 1, REFL: 7, LITE: 0 },
     });
     this._terrainGeo = new THREE.BufferGeometry();
     this.terrain = new THREE.Mesh(this._terrainGeo, this._terrainMat);
@@ -1663,7 +1682,7 @@ export class World {
   /** Queue the bakes for a light direction { elev, az } (degrees), as a preset names it. */
   queueLighting(sun, first = false) {
     const key = sun.elev + '/' + sun.az;
-    if (this._shadowCache.has(key) && this._lutBase.has(lutKey(this._sunY(sun)))) return;
+    if ((this._noShadow || this._shadowCache.has(key)) && this._lutBase.has(lutKey(this._sunY(sun)))) return;
     if (this._bakeJob && this._bakeJob.key === key) return;
     const i = this._bakeQueue.findIndex((q) => q.key === key);
     if (i >= 0) { if (!first) return; this._bakeQueue.splice(i, 1); }
@@ -1694,7 +1713,7 @@ export class World {
         const q = this._bakeQueue.shift();
         if (!q) return true;
         const d = this._sunVec(q.sun, _bakeV), sy = d.y;
-        J = this._bakeJob = { key: q.key, sy, shadow: this._shadowCache.has(q.key) ? null : shadowJob([d.x, d.y, d.z]),
+        J = this._bakeJob = { key: q.key, sy, shadow: this._noShadow || this._shadowCache.has(q.key) ? null : shadowJob([d.x, d.y, d.z]),
           lut: this._lutBase.has(lutKey(sy)) ? null : new Float32Array(SKY_LUT_W * SKY_LUT_H * 4), row: 0 };
       }
       if (J.shadow && shadowJobStep(this._height, J.shadow, until)) { this._shadowCache.set(J.key, J.shadow.ch); J.shadow = null; }
@@ -1751,9 +1770,9 @@ export class World {
   }
 
   /**
-   * Rendering quality: 'low' | 'medium' | 'high' | 'ultra'. Callable at any time (shader variants recompile once and
+   * Rendering quality: 'verylow' | 'low' | 'medium' | 'high' | 'ultra'. Callable at any time (shader variants recompile once and
    * are cached by three; the terrain grid is rebuilt when its density changes). `overrides` (optional, for testing)
-   * replaces individual preset fields: { levels, cell0, detail, water, foam, refl, puffG }.
+   * replaces individual preset fields: { levels, cell0, detail, water, foam, refl, puffG, lite }.
    */
   setQuality(q, overrides = null) {
     if (!QUALITY[q] || (q === this.quality && !overrides)) return;
@@ -1771,12 +1790,17 @@ export class World {
     const td = this._terrainMat.defines;
     const lods = cfg.levels.map((m, L) => f(cfg.peaks ? +Math.max(-1, Math.log2(cfg.cell0 * (1 << L) / HM_STEP) + MAXMIP_BIAS).toFixed(3) : -1));
     Object.assign(td, { NLEV: cfg.levels.length, CELL0: f(cfg.cell0), LHALF_INIT: cfg.levels.map((m) => f(m / 2)).join(','),
-      LLOD_INIT: lods.join(','), DETAIL: cfg.detail, WATER: cfg.water, FOAM: cfg.foam, REFL: cfg.refl });
+      LLOD_INIT: lods.join(','), DETAIL: cfg.detail, WATER: cfg.water, FOAM: cfg.foam, REFL: cfg.refl, LITE: cfg.lite ? 1 : 0 });
     this._terrainMat.needsUpdate = true;
     Object.assign(this._waterMat.defines, { WATER: cfg.water, FOAM: cfg.foam, REFL: cfg.refl });
     this._waterMat.needsUpdate = true;
     this.puffs.count = cfg.puffG * cfg.puffG;
-    this.uniforms.uPuffG.value = cfg.puffG;
+    this.puffs.visible = cfg.puffG > 0;
+    this.uniforms.uPuffG.value = Math.max(1, cfg.puffG);
+    const wasLite = this._noShadow;
+    this._noShadow = !!cfg.lite;
+    // back from a lite tier: the shadow channel catches up with the current light direction (cached, else baked now)
+    if (wasLite && !this._noShadow && this._wantDir && this._wantDir !== this._auxDir) { const k = this._wantDir; this._wantDir = null; this._applyShadow(k, this._auxDir); }
   }
 
   // Re-center everything on the camera, advance animation.
@@ -1913,6 +1937,8 @@ export class World {
   _flushShadow() { if (this._shadowKey) { const k = this._shadowKey; this._shadowKey = null; this._applyShadow(k, this._shadowPrev); } }
   /** Terrain shadow channel for the current light direction: from the cache, else baked (~100 ms) and cached. */
   _applyShadow(dirKey, prevDir) {
+    if (this._noShadow) { this._wantDir = dirKey; return; }   // lite tier: no bake (and no copy), the shader ignores it
+    if (this._auxDir) prevDir = this._auxDir;                 // what aux actually holds (a lite tier may have skipped swaps)
     const aux = this._aux, n = HM_N * HM_N, C = this._shadowCache;
     if (!C.has(prevDir)) { const keep = new Uint8Array(n); for (let i = 0; i < n; i++) keep[i] = aux[i * 4 + 2]; C.set(prevDir, keep); }
     this._finishBake(dirKey);
@@ -1924,6 +1950,7 @@ export class World {
     }
     for (let i = 0; i < n; i++) aux[i * 4 + 2] = ch[i];
     this.auxTexture.needsUpdate = true;
+    this._auxDir = dirKey; this._wantDir = null;
   }
   /** Settlement / harbour lights (night presets): static sprites on low, gentle land, clustered by a noise field and
    *  thickest near the coast. Built once on first use, ~2-3k points, one draw call while visible. */

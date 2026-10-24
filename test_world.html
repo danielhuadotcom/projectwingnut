@@ -15,13 +15,13 @@ import { World, WORLD_HALF, SEA_LEVEL } from './js/world.js';
 // URL parameters (all optional):
 //   view=1..6   camera preset (1 cruise 900 m, 2 above the clouds, 3 bench-like 700 m, 4 snow massif, 5 into the sun low, 6 below the clouds)
 //   t=<s>       freeze the animation clock (camera path + water/cloud animation) for deterministic screenshots
-//   q=low|medium|high|ultra   world.setQuality(q) after construction
+//   q=verylow|low|medium|high|ultra   world.setQuality(q) after construction
 //   hide=terrain,water,sky,clouds,puffs   hide world meshes
 //   msaa=<n>    MSAA samples of the preview HDR target (default 4, like the game)
 //   prof=1      GPU timer queries: whole scene (even frames) vs. per-object (odd frames), logs a WORLD_PROF line
 //   prof=scene  GPU timer query around the whole scene render every frame (pass-style, no per-object queries)
 //   sun=az,el   degrees; calls world.setSunDirection (az measured from -Z toward -X)
-//   cycle=1     switch world quality every 45 frames (low -> medium -> high -> ultra), logs WORLD_Q lines
+//   cycle=1     switch world quality every 45 frames (verylow -> low -> medium -> high -> ultra), logs WORLD_Q lines
 //   cam=x,y,z,yaw,pitch   fixed camera pose (degrees; overrides view, no camera motion)
 window.addEventListener('error', (e) => console.error('WORLD_ERROR ' + (e.message || e)));
 window.addEventListener('unhandledrejection', (e) => console.error('WORLD_ERROR ' + (e.reason && e.reason.message || e.reason)));
@@ -49,7 +49,7 @@ try {
   // quality preset + optional overrides (levels=128,128,96,..  cell0=8  detail=3  water=3  foam=1  puffG=8), cull=0 disables terrain culling
   const ov = {};
   if (params.has('levels')) ov.levels = params.get('levels').split(',').map(Number);
-  for (const k of ['cell0', 'detail', 'water', 'foam', 'refl', 'puffG']) if (params.has(k)) ov[k] = Number(params.get(k));
+  for (const k of ['cell0', 'detail', 'water', 'foam', 'refl', 'puffG', 'lite']) if (params.has(k)) ov[k] = Number(params.get(k));
   if (world.setQuality && (params.has('q') || Object.keys(ov).length)) world.setQuality(params.get('q') || 'high', Object.keys(ov).length ? ov : null);
   if (params.get('cull') === '0') world.cullTerrain = false;
   if (params.has('sun') && world.setSunDirection) {
@@ -175,7 +175,7 @@ try {
     }
     if (frames === 1) console.log('WORLD_OK draws=' + worldDraws + ' tris=' + worldTris);
     if (params.has('cycle') && world.setQuality && frames % 45 === 0) {
-      const order = ['low', 'medium', 'high', 'ultra'];
+      const order = ['verylow', 'low', 'medium', 'high', 'ultra'];
       const q = order[(order.indexOf(world.quality) + 1) % order.length];
       const t1 = performance.now(); world.setQuality(q);
       console.log(`WORLD_Q ${q} set in ${(performance.now() - t1).toFixed(1)} ms, previous frame draws=${worldDraws} tris=${worldTris}`);

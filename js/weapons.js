@@ -788,6 +788,7 @@ export class Missile {
     this.owner = null;
     this.target = null;                          // Aircraft (or FlareDecoy) being guided to; null = unguided / track lost
     this.decoyedFrom = null;                     // the aircraft it was chasing before a flare spoofed it (else null)
+    this.shookFrom = null;                       // the aircraft whose evasion broke its lock (breakLock; else null)
     this.unguided = false;                       // fired without a target: flies straight for its whole life
     this.groundLaunch = false;                   // fired by an `isGround` launcher (pops up, no rail drop)
     this.turnScale = 1;                          // per-shot multiplier on the turn limit (game balance hook)
@@ -1572,7 +1573,7 @@ export class Weapons {
     m.prev.copy(m.position);
     m.forward.copy(_fwd);
     m.unguided = m.target === null;        // no target: flies straight (no seeker, no ballistic sag)
-    m.decoyedFrom = null;
+    m.decoyedFrom = null; m.shookFrom = null;
     m.alive = true; m.age = 0; m.speed = m.velocity.length();
     m.ignited = false; m.boosting = false;
     m.smokeAcc = rnd(); m.flameAcc = rnd();
@@ -1624,7 +1625,7 @@ export class Weapons {
           this._dt = dt; this._tOff = 0;
         }
       }
-      if (!m.alive) { m.owner = null; m.target = null; m.decoyedFrom = null; this._missilePool.push(m); continue; }
+      if (!m.alive) { m.owner = null; m.target = null; m.decoyedFrom = null; m.shookFrom = null; this._missilePool.push(m); continue; }
       arr[w++] = m;
       m.mesh.updateMatrix();
       m.mesh.matrixWorld.copy(m.mesh.matrix);
@@ -1955,6 +1956,41 @@ export class Weapons {
       if (this._decoy(m, b)) spoofed++;
     }
     return spoofed;
+  }
+
+  /**
+   * Broken lock (js/ai.js: an ace's well-timed max-G break, a boss's post-stall Cobra): every live missile guiding on
+   * `aircraft` with a time to impact under `maxTti` s (just `only`, when given) loses its track: it flies on along its
+   * last course (ballistic once the motor is out) and misses unless that course still carries it through the fuse
+   * radius (the fuse stays live). The jet's own maneuver after the call is what takes it off that course.
+   * @returns {number} missiles that lost their lock
+   */
+  breakLock(aircraft, maxTti, only = null) {
+    if (!aircraft || !aircraft.position) return 0;
+    const p = aircraft.position, av = aircraft.velocity || _zero, ms = this.missiles;
+    let n = 0;
+    for (let i = 0; i < ms.length; i++) {
+      const m = ms[i];
+      if (!m.alive || m.target !== aircraft || (only !== null && m !== only)) continue;
+      const rx = m.position.x - p.x, ry = m.position.y - p.y, rz = m.position.z - p.z, d = Math.sqrt(rx * rx + ry * ry + rz * rz);
+      const vc = Math.max(50, -(rx * (m.velocity.x - av.x) + ry * (m.velocity.y - av.y) + rz * (m.velocity.z - av.z)) / Math.max(d, 1));
+      if (d / vc >= maxTti) continue;
+      m.target = null; m.shookFrom = aircraft; n++;
+    }
+    return n;
+  }
+
+  /** Condensation burst around a jet (the boss Cobra's onset, js/ai.js): a dozen white vapor puffs that bloom off the
+   *  airframe and hang back in the air. Plain smoke-pool sprites, no glow. */
+  vaporBurst(aircraft) {
+    if (!aircraft || !aircraft.position) return;
+    const p = aircraft.position, v = aircraft.velocity || _zero, t = this.time, s = aircraft.visualScale || 1;
+    for (let k = 0; k < 14; k++) {
+      randDir(_v0);
+      const r = rand(2, 7) * s;
+      this._puff(p.x + _v0.x * r, p.y + _v0.y * r * 0.5, p.z + _v0.z * r, v.x * 0.55 + _v0.x * rand(10, 22), v.y * 0.55 + _v0.y * rand(6, 14),
+        v.z * 0.55 + _v0.z * rand(10, 22), rand(0.9, 1.6), rand(5, 8) * s, rand(18, 28) * s, 0.96, 0.97, 1, 0.6, 2.2, 0, 0, 0, 0.8, t, 0, 0, 0, 0.03);
+    }
   }
 
   _allocFlare() {

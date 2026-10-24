@@ -40,6 +40,7 @@ const KICK_GROW = 0.12;                // light-up kick: plume grows by this fra
 const FLOW = 14;                       // turbulence advection speed (reference m/s, visual not physical)
 
 const QUALITY = {          // envelope ray-march steps: min (across the plume) .. max (along it, chase/rear views)
+  verylow: { steps: 4, minSteps: 2, q: 0, diamonds: 3 },
   low: { steps: 5, minSteps: 3, q: 0, diamonds: 4 },
   medium: { steps: 7, minSteps: 4, q: 1, diamonds: 5 },
   high: { steps: 10, minSteps: 6, q: 2, diamonds: 5 },

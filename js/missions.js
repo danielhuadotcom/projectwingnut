@@ -22,12 +22,13 @@
 //   battleship and rename her the Hand-Me-Down (M7, M19); the Concord answers the push on Kelderwick with thunderglass
 //   warheads, the Glassfall (M15).
 //
-// AIRCRAFT MAKERS (type keys double as HUD labels: upper case, at most 14 characters):
-//   Nordvane Aerowerk    Concord state fighter works          NV-## (N = naval)       NV-62, NV-56N; Bodkin missiles
-//   Halde Windworks      the Concord's rival house            WIND-mark               SQUALL-7, FALLWIND-6, HAILSTONE-3
+// AIRCRAFT MAKERS (type keys double as HUD labels: upper case, at most 14 characters). Types with a numbered real-world
+// counterpart keep the maker's prefix but take the real-world number (NV-16 = F-16-class, EIDER-8B = AV-8B-class):
+//   Nordvane Aerowerk    Concord state fighter works          NV-<real number>        NV-15C, NV-14; Bodkin missiles
+//   Halde Windworks      the Concord's rival house            WIND-<real number>      SQUALL-27, FALLWIND-31, HAILSTONE-25
 //   Orrery Works         Concord black-budget prototypes      Q + hour on a dial      Q07, Q09, Q11; Q12 tops the dial
-//   Tidewright Yards     League boatbuilders                  SEABIRD + Roman mark    EIDER IV, SCAUP II
-//   Kettle & Daughters   heavy and utility airframes          KD-### + role letter    KD-480E (radar), KD-38H (rotor)
+//   Tidewright Yards     League boatbuilders                  SEABIRD-<real number>   EIDER-8B; SCAUP II (Roman mark)
+//   Kettle & Daughters   heavy and utility airframes          KD-<number> + role      KD-17, KD-28H (rotor); KD-480E, KD-12U
 //   Aces fly a base type with extra durability; their key is base code + callsign ('Q09 TICK', 'Q12 MAINSPRING').
 //
 // CONVENTIONS (as js/main.js and js/targets.js consume them):
@@ -91,29 +92,29 @@
 //     side of the mission's allied fleet and flies at its escorts. One that gets within ~150 m of an allied hull is consumed and
 //     sinks the nearest live escort (once none are left it bursts harmlessly on the flagship); it counts as resolved
 //     for the phase, with no score. Needs a naval allies group joining at or before that phase.
-//   ESTIMATES: speeds of the AI-only types, a few agility values, every KD-38H value, HP of refineries, containers, oil
+//   ESTIMATES: speeds of the AI-only types, a few agility values, every KD-28H value, HP of refineries, containers, oil
 //     tanks, extractors and the M1 crate, and all surface-unit sizes (modeled on real ship and vehicle classes); each note
 //     says which. Colors come from a small shared palette so main.js's color-keyed aircraft pool can reuse airframes.
 
 // ------------------------------------------------------------------------------------------------------------------------
 // Enemy aircraft. Palette: Concord grey 0x5d6670 | Concord light 0x8a929a | Halde slate 0x56606a | Orrery black 0x353a42 |
 // utility 0xb4b9bf | bomber 0x1c1d20 | kelp camo 0x56663a | Chime oxblood 0x7d1212 | mercenary gunmetal 0x2a2a2f |
-// missile 0xd6d6d6 | SLEET-2 has its own (0x6b7178).
+// missile 0xd6d6d6 | SLEET-21 has its own (0x6b7178).
 export const AIRCRAFT_TYPES = {
   // ---- line fighters ----
-  'SLEET-2':     { role: 'interceptor', hp: 35, speedKmh: 2500, roll: 170, pitch: 85,  yaw: 10, color: 0x6b7178, accent: 0xc0392b, ai: { kmh: [300, 1100, 1800], roll: 200, pitch: 25, yaw: 25 }, note: "Halde Windworks' first jet, a light delta interceptor (MiG-21-class) still flown by Concord reservists and anyone who buys surplus." },
-  'GUST-5':      { role: 'strike',      hp: 40, speedKmh: 2700, roll: 165, pitch: 70,  yaw: 15, color: 0x5d6670, accent: 0xd8232a, ai: { kmh: [200, 1000, 1200], roll: 200, pitch: 45, yaw: 25 }, note: 'Halde canard-delta strike jet (Viggen-class) built to fly from mountain roads. Spec sheets disagree on top speed (2,700 vs 2,500 km/h); the higher figure is used.' },
-  'NV-11':       { role: 'strike',      hp: 35, speedKmh: 2500, roll: 250, pitch: 75,  yaw: 10, color: 0x5d6670, accent: 0xd8232a, ai: { kmh: [300, 1000, 1800], roll: 150, pitch: 65, yaw: 10 }, note: "Nordvane's first heavy jet, a two-seat fighter-bomber (Phantom-class): old, loud and still everywhere." },
-  'NV-48':       { role: 'fighter',     hp: 35, speedKmh: 2500, roll: 210, pitch: 85,  yaw: 15, color: 0x5d6670, accent: 0xd8232a, ai: { kmh: [300, 1000, 1800], roll: 200, pitch: 40, yaw: 25 }, note: "Nordvane's light multirole fighter (F-16-class), the Concord's cheap and cheerful workhorse." },
-  'NV-62':       { role: 'fighter',     hp: 35, speedKmh: 2500, roll: 170, pitch: 90,  yaw: 15, color: 0x5d6670, accent: 0xd8232a, ai: { kmh: [300, 1000, 1800], roll: 200, pitch: 50, yaw: 25 }, note: "Nordvane's heavy air-superiority fighter (F-15C-class) and the most common jet in the Concord's inventory." },
-  'NV-73':       { role: 'multirole',   hp: 35, speedKmh: 3000, roll: 210, pitch: 95,  yaw: 15, color: 0x5d6670, accent: 0xd8232a, ai: { kmh: [300, 1000, 1400], roll: 250, pitch: 50, yaw: 35 }, note: "Nordvane's twin-engine multirole fighter (Super Hornet-class), at home on carriers or runways." },
-  'EIDER IV':    { role: 'multirole',   hp: 35, speedKmh: 2500, roll: 200, pitch: 100, yaw: 12, color: 0x5d6670, accent: 0xd8232a, ai: { kmh: [300, 1100, 1800], roll: 200, pitch: 25, yaw: 25 }, note: 'Tidewright Yards jump jet (Harrier II-class) that launches from cliff ledges and ship decks. The League sold a batch to the Concord before the war and regrets it.' },
-  'NV-56N':      { role: 'interceptor', hp: 35, speedKmh: 3500, roll: 180, pitch: 88,  yaw: 10, color: 0x8a929a, accent: 0xd8232a, ai: { kmh: [300, 1000, 1800], roll: 200, pitch: 50, yaw: 25 }, note: "Nordvane's naval swing-wing interceptor (Tomcat-class); Concord carriers launch these in pairs." },
-  'FALLWIND-6':  { role: 'interceptor', hp: 35, speedKmh: 3600, roll: 100, pitch: 65,  yaw: 8,  color: 0x8a929a, accent: 0xd8232a, ai: { kmh: [300, 1100, 1800], roll: 200, pitch: 25, yaw: 25 }, note: 'Halde high-speed interceptor (MiG-31-class), named for the katabatic wind that drops off the glaciers: very fast, turns like a freight train.' },
-  'FLURRY-4':    { role: 'fighter',     hp: 35, speedKmh: 2900, roll: 200, pitch: 100, yaw: 12, color: 0x56606a, accent: 0xb3262e, ai: { kmh: [300, 1100, 1800], roll: 200, pitch: 50, yaw: 25 }, note: 'Halde agile twin-tail fighter (MiG-29-class).' },
-  'SQUALL-7':    { role: 'fighter',     hp: 35, speedKmh: 2500, roll: 175, pitch: 85,  yaw: 15, color: 0x56606a, accent: 0xb3262e, ai: { kmh: [300, 1000, 1800], roll: 250, pitch: 50, yaw: 50 }, note: 'Halde heavy twin-engine air-superiority fighter (Su-27-class); carries four missiles.' },
-  'SQUALL-7T':   { role: 'fighter',     hp: 65, speedKmh: 3500, roll: 185, pitch: 90,  yaw: 15, color: 0x56606a, accent: 0xb3262e, ai: { kmh: [300, 1000, 1800], roll: 300, pitch: 75, yaw: 25 }, note: 'Two-seat Squall (Su-30-class): heavier, tougher and better at finding you. Main fields come from its own spec sheet.' },
-  'HAILSTONE-3': { role: 'attacker',    hp: 35, speedKmh: 1600, roll: 150, pitch: 55,  yaw: 5,  color: 0x56606a, accent: 0xb3262e, ai: { kmh: [300, 1100, 1800], roll: 200, pitch: 25, yaw: 25 }, note: 'Halde armored ground-attack jet (Su-25-class): slow, sturdy and happiest swarming ships and ground troops.' },
+  'SLEET-21':     { role: 'interceptor', hp: 35, speedKmh: 2500, roll: 170, pitch: 85,  yaw: 10, color: 0x6b7178, accent: 0xc0392b, ai: { kmh: [300, 1100, 1800], roll: 200, pitch: 25, yaw: 25 }, note: "Halde Windworks' first jet, a light delta interceptor (MiG-21-class) still flown by Concord reservists and anyone who buys surplus." },
+  'GUST-37':      { role: 'strike',      hp: 40, speedKmh: 2700, roll: 165, pitch: 70,  yaw: 15, color: 0x5d6670, accent: 0xd8232a, ai: { kmh: [200, 1000, 1200], roll: 200, pitch: 45, yaw: 25 }, note: 'Halde canard-delta strike jet (Viggen-class) built to fly from mountain roads. Spec sheets disagree on top speed (2,700 vs 2,500 km/h); the higher figure is used.' },
+  'NV-4':       { role: 'strike',      hp: 35, speedKmh: 2500, roll: 250, pitch: 75,  yaw: 10, color: 0x5d6670, accent: 0xd8232a, ai: { kmh: [300, 1000, 1800], roll: 150, pitch: 65, yaw: 10 }, note: "Nordvane's first heavy jet, a two-seat fighter-bomber (Phantom-class): old, loud and still everywhere." },
+  'NV-16':       { role: 'fighter',     hp: 35, speedKmh: 2500, roll: 210, pitch: 85,  yaw: 15, color: 0x5d6670, accent: 0xd8232a, ai: { kmh: [300, 1000, 1800], roll: 200, pitch: 40, yaw: 25 }, note: "Nordvane's light multirole fighter (F-16-class), the Concord's cheap and cheerful workhorse." },
+  'NV-15C':       { role: 'fighter',     hp: 35, speedKmh: 2500, roll: 170, pitch: 90,  yaw: 15, color: 0x5d6670, accent: 0xd8232a, ai: { kmh: [300, 1000, 1800], roll: 200, pitch: 50, yaw: 25 }, note: "Nordvane's heavy air-superiority fighter (F-15C-class) and the most common jet in the Concord's inventory." },
+  'NV-18E':       { role: 'multirole',   hp: 35, speedKmh: 3000, roll: 210, pitch: 95,  yaw: 15, color: 0x5d6670, accent: 0xd8232a, ai: { kmh: [300, 1000, 1400], roll: 250, pitch: 50, yaw: 35 }, note: "Nordvane's twin-engine multirole fighter (Super Hornet-class), at home on carriers or runways." },
+  'EIDER-8B':    { role: 'multirole',   hp: 35, speedKmh: 2500, roll: 200, pitch: 100, yaw: 12, color: 0x5d6670, accent: 0xd8232a, ai: { kmh: [300, 1100, 1800], roll: 200, pitch: 25, yaw: 25 }, note: 'Tidewright Yards jump jet (Harrier II-class) that launches from cliff ledges and ship decks. The League sold a batch to the Concord before the war and regrets it.' },
+  'NV-14':      { role: 'interceptor', hp: 35, speedKmh: 3500, roll: 180, pitch: 88,  yaw: 10, color: 0x8a929a, accent: 0xd8232a, ai: { kmh: [300, 1000, 1800], roll: 200, pitch: 50, yaw: 25 }, note: "Nordvane's naval swing-wing interceptor (Tomcat-class); Concord carriers launch these in pairs." },
+  'FALLWIND-31':  { role: 'interceptor', hp: 35, speedKmh: 3600, roll: 100, pitch: 65,  yaw: 8,  color: 0x8a929a, accent: 0xd8232a, ai: { kmh: [300, 1100, 1800], roll: 200, pitch: 25, yaw: 25 }, note: 'Halde high-speed interceptor (MiG-31-class), named for the katabatic wind that drops off the glaciers: very fast, turns like a freight train.' },
+  'FLURRY-29':    { role: 'fighter',     hp: 35, speedKmh: 2900, roll: 200, pitch: 100, yaw: 12, color: 0x56606a, accent: 0xb3262e, ai: { kmh: [300, 1100, 1800], roll: 200, pitch: 50, yaw: 25 }, note: 'Halde agile twin-tail fighter (MiG-29-class).' },
+  'SQUALL-27':    { role: 'fighter',     hp: 35, speedKmh: 2500, roll: 175, pitch: 85,  yaw: 15, color: 0x56606a, accent: 0xb3262e, ai: { kmh: [300, 1000, 1800], roll: 250, pitch: 50, yaw: 50 }, note: 'Halde heavy twin-engine air-superiority fighter (Su-27-class); carries four missiles.' },
+  'SQUALL-30':   { role: 'fighter',     hp: 65, speedKmh: 3500, roll: 185, pitch: 90,  yaw: 15, color: 0x56606a, accent: 0xb3262e, ai: { kmh: [300, 1000, 1800], roll: 300, pitch: 75, yaw: 25 }, note: 'Two-seat Squall (Su-30-class): heavier, tougher and better at finding you. Main fields come from its own spec sheet.' },
+  'HAILSTONE-25': { role: 'attacker',    hp: 35, speedKmh: 1600, roll: 150, pitch: 55,  yaw: 5,  color: 0x56606a, accent: 0xb3262e, ai: { kmh: [300, 1100, 1800], roll: 200, pitch: 25, yaw: 25 }, note: 'Halde armored ground-attack jet (Su-25-class): slow, sturdy and happiest swarming ships and ground troops.' },
   // ---- Orrery Works prototypes ----
   'Q07':         { role: 'prototype',   hp: 70, speedKmh: 3200, roll: 180, pitch: 95,  yaw: 15, color: 0x353a42, accent: 0xe0a020, ai: { kmh: [300, 1000, 1800], roll: 300, pitch: 85, yaw: 25 }, note: 'Orrery Works thrust-vectoring canard prototype (Su-37-class); carries four missiles.' },
   'Q09':         { role: 'prototype',   hp: 70, speedKmh: 3200, roll: 190, pitch: 110, yaw: 15, color: 0x353a42, accent: 0xe0a020, ai: { kmh: [300, 1000, 1800], roll: 200, pitch: 82.5, yaw: 25 }, note: 'Orrery Works canard and vectored-nozzle demonstrator (F-15 S/MTD-class), now in limited service.' },
@@ -121,15 +122,15 @@ export const AIRCRAFT_TYPES = {
   'Q11':         { role: 'prototype',   hp: 70, speedKmh: 3200, roll: 180, pitch: 105, yaw: 20, color: 0x353a42, accent: 0xe0a020, ai: { kmh: [300, 1000, 1800], roll: 300, pitch: 50, yaw: 25 }, note: 'Orrery Works stealth air-dominance prototype; an original shape with no real-world counterpart.' },
   // ---- support and utility (AI-only types: agility = reference AI values unless marked estimated) ----
   'KD-480E':     { role: 'awacs',       armed: false, hp: 100, speedKmh: 850, roll: 20, pitch: 5,  yaw: 5,  color: 0xb4b9bf, accent: 0x4f565e, ai: { kmh: [300, 450, 1800], roll: 20, pitch: 5, yaw: 5 }, note: "Kettle & Daughters airborne radar picket (737 AEW&C-class), the Concord's eye in the sky. Speed estimated." },
-  'KD-260':      { role: 'transport',   armed: false, hp: 76,  speedKmh: 830, roll: 30, pitch: 21, yaw: 12, color: 0xb4b9bf, accent: 0x4f565e, ai: { kmh: [200, null, 1800], roll: 30, pitch: 21, yaw: 12.5 }, note: 'Kettle & Daughters heavy transport (C-17-class); its turrets are for show and its wreck keeps a hitbox. Speed estimated; the AI speed is a 200..1800 table and agility uses its maxima.' },
-  'KD-910':      { role: 'bomber',      armed: false, hp: 76,  speedKmh: 900, roll: 15, pitch: 20, yaw: 10, color: 0x1c1d20, accent: 0xb22222, ai: { kmh: [300, 400, 900], roll: 15, pitch: 20, yaw: 10 }, note: 'Kettle & Daughters strategic bomber (B-52-class): jet black with a red tail; the tail gun is negligible. Speed = AI max.' },
+  'KD-17':      { role: 'transport',   armed: false, hp: 76,  speedKmh: 830, roll: 30, pitch: 21, yaw: 12, color: 0xb4b9bf, accent: 0x4f565e, ai: { kmh: [200, null, 1800], roll: 30, pitch: 21, yaw: 12.5 }, note: 'Kettle & Daughters heavy transport (C-17-class); its turrets are for show and its wreck keeps a hitbox. Speed estimated; the AI speed is a 200..1800 table and agility uses its maxima.' },
+  'KD-52':      { role: 'bomber',      armed: false, hp: 76,  speedKmh: 900, roll: 15, pitch: 20, yaw: 10, color: 0x1c1d20, accent: 0xb22222, ai: { kmh: [300, 400, 900], roll: 15, pitch: 20, yaw: 10 }, note: 'Kettle & Daughters strategic bomber (B-52-class): jet black with a red tail; the tail gun is negligible. Speed = AI max.' },
   'KD-12U':      { role: 'drone',       armed: false, hp: 20,  speedKmh: 750, roll: 100, pitch: 30, yaw: 10, color: 0xb4b9bf, accent: 0x4f565e, ai: { kmh: [300, 550, 1800], roll: 100, pitch: 30, yaw: 25 }, note: 'Kettle & Daughters unarmed recon drone, about as sturdy as a kite. Speed and yaw estimated.' },
   'SCAUP II':    { role: 'floatplane',  armed: 'gun', hp: 35,  speedKmh: 400, roll: 150, pitch: 75, yaw: 15, color: 0x56663a, accent: 0xb9a36b, ai: { kmh: [200, 400, 1800], roll: 200, pitch: 100, yaw: 25 }, note: 'Tidewright Yards fishery-patrol floatplane with one machine gun; the Saltjaw Corsairs steal them by the dozen and paint them kelp green. Main fields estimated (speed = AI cruise).' },
-  'KD-38H':      { role: 'helicopter',  hp: 30, speedKmh: 300, roll: 90, pitch: 45, yaw: 45, color: 0x56663a, accent: 0xb9a36b, note: 'Kettle & Daughters attack helicopter (Mi-28-class) with missiles and a chin gun; flies in flights of eight. Every value estimated (one-missile soft target).' },
+  'KD-28H':      { role: 'helicopter',  hp: 30, speedKmh: 300, roll: 90, pitch: 45, yaw: 45, color: 0x56663a, accent: 0xb9a36b, note: 'Kettle & Daughters attack helicopter (Mi-28-class) with missiles and a chin gun; flies in flights of eight. Every value estimated (one-missile soft target).' },
   'BODKIN':      { role: 'cruise missile', armed: false, hp: 10, speedKmh: 1000, roll: 150, pitch: 100, yaw: 25, color: 0xd6d6d6, accent: 0xc0392b, ai: { kmh: [300, 1000, 1800], roll: 150, pitch: 100, yaw: 25 }, note: "Nordvane Arsenal's standard cruise missile: fragile, and it jinks away from incoming missiles. Speed = AI cruise." },
   'THUNDERHEAD': { role: 'cruise missile', armed: false, hp: 70, speedKmh: 1200, roll: 300, pitch: 200, yaw: 25, color: 0xd6d6d6, accent: 0xc0392b, ai: { kmh: [300, 1200, 1800], roll: 300, pitch: 200, yaw: 25 }, note: 'A Bodkin with a thunderglass warhead, the weapon of the Glassfall: much tougher and far more agile. Speed = AI cruise.' },
   // ---- Chime Squadron and company (base-type stats; durability converted at 32 HP per missile) ----
-  'NV-73 CUCKOO':   { role: 'multirole', ace: true, hp: 35,  speedKmh: 3000, roll: 210, pitch: 95,  yaw: 15, color: 0x353a42, accent: 0xe0a020, ai: { kmh: [300, 1000, 1400], roll: 250, pitch: 50, yaw: 35 }, note: "Cuckoo Flight, Chime Squadron's cadets, in gilded NV-73s; they pop out to evict you from Tarnfell (Housewarming). Worth double points, no extra durability." },
+  'NV-18E CUCKOO':   { role: 'multirole', ace: true, hp: 35,  speedKmh: 3000, roll: 210, pitch: 95,  yaw: 15, color: 0x353a42, accent: 0xe0a020, ai: { kmh: [300, 1000, 1400], roll: 250, pitch: 50, yaw: 35 }, note: "Cuckoo Flight, Chime Squadron's cadets, in gilded NV-18Es; they pop out to evict you from Tarnfell (Housewarming). Worth double points, no extra durability." },
   'Q07 CHIME':      { role: 'prototype', ace: true, hp: 200, speedKmh: 3200, roll: 180, pitch: 95,  yaw: 15, color: 0x7d1212, accent: 0x151515, ai: { kmh: [300, 1000, 1800], roll: 300, pitch: 85, yaw: 25 }, note: "Chime Squadron, the Concord's clockwork elite, in oxblood-and-black Q07s: about 6 missiles each (200 HP); post-stall flips to dodge missiles." },
   'Q11 CHIME':      { role: 'prototype', ace: true, hp: 200, speedKmh: 3200, roll: 180, pitch: 105, yaw: 20, color: 0x7d1212, accent: 0x151515, ai: { kmh: [300, 1000, 1800], roll: 300, pitch: 50, yaw: 25 }, note: 'Chime Squadron in oxblood-and-black Q11s: about 6 missiles each (200 HP); post-stall flips to dodge missiles.' },
   'Q09 TICK':       { role: 'prototype', ace: true, hp: 130, speedKmh: 3200, roll: 190, pitch: 110, yaw: 15, color: 0x353a42, accent: 0xe0a020, ai: { kmh: [300, 1000, 1800], roll: 200, pitch: 82.5, yaw: 25 }, note: 'Tick, of the interceptor twins Tick and Tock (Rush Hour), never more than a beat apart: about 4 missiles (130 HP).' },
@@ -173,7 +174,7 @@ export const GROUND_TYPES = {
   'railgun frigate': { shape: 'prism', size: [32, 18, 127],  hp: 220, refHp: 50,  shoots: 'missile', range: 5000, naval: true, note: 'Frigate refitted with a cannon, a railgun and a SAM. Deadly in numbers.' },
   cruiser:           { shape: 'prism', size: [21, 28, 186],  hp: 260, refHp: 25,  shoots: 'missile', range: 5000, naval: true, note: 'Missile cruiser (Slava-class size): bow cannon, 2 SAMs, 2 AA guns.' },
   battleship:        { shape: 'prism', size: [40, 36, 279],  hp: 650, refHp: 150, shoots: 'missile', range: 6000, naval: true, note: 'Railgun-era battleship, 279 m: turret batteries, 4 cannons, 4 SAMs, 6 AA guns.' },
-  carrier:           { shape: 'box',   size: [77, 24, 333],  hp: 450, refHp: 150, shoots: 'gun',     range: 2000, naval: true, note: 'Fleet carrier (Nimitz-class size): 4 CIWS + 1 SAM. Launches NV-56N pairs (a 4-ship NV-56N group in the same phase stands in).' },
+  carrier:           { shape: 'box',   size: [77, 24, 333],  hp: 450, refHp: 150, shoots: 'gun',     range: 2000, naval: true, note: 'Fleet carrier (Nimitz-class size): 4 CIWS + 1 SAM. Launches NV-14 pairs (a 4-ship NV-14 group in the same phase stands in).' },
   'cargo ship':      { shape: 'box',   size: [32, 22, 190],  hp: 120, refHp: 50,  shoots: false,                  naval: true, note: 'Unarmed bulk carrier.' },
   'armed cargo':     { shape: 'box',   size: [32, 22, 190],  hp: 200, refHp: 50,  shoots: 'missile', range: 3500, naval: true, note: 'Militarized cargo ship: 4 micro-SAM launchers in the holds.' },
   'spy ship':        { shape: 'prism', size: [16, 18, 102],  hp: 120, refHp: 50,  shoots: false,                  naval: true, note: 'Unarmed intelligence ship with twin radomes.' },
@@ -207,12 +208,12 @@ export const MISSIONS = [
         { kind: 'naval', type: 'cruiser', count: 2, area: 'fleet', distance: 5100, difficulty: 'mercenary' },
         { kind: 'naval', type: 'armed cargo', count: 2, area: 'fleet', distance: 5500, difficulty: 'mercenary' },
         { kind: 'air', type: 'SCAUP II', count: 3, formation: 'loose', position: 'low', distance: 1500, near: 'boat', task: 'patrol', difficulty: 'mercenary' },
-        { kind: 'air', type: 'NV-73', count: 3, formation: 'vee', position: 'high', distance: 3000, near: 'aa', task: 'patrol', difficulty: 'mercenary' },
+        { kind: 'air', type: 'NV-18E', count: 3, formation: 'vee', position: 'high', distance: 3000, near: 'aa', task: 'patrol', difficulty: 'mercenary' },
       ] },
       { label: 'The buyers arrive', groups: [
-        { kind: 'air', type: 'NV-62', count: 3, formation: 'vee', position: 'ahead', distance: 6800, task: 'engage' },
-        { kind: 'air', type: 'NV-11', count: 3, formation: 'vee', position: 'ahead', distance: 6900, task: 'engage' },
-        { kind: 'air', type: 'NV-11', count: 2, formation: 'pair', distance: 600, near: 'aa', after: 5, task: 'scramble' },        // the buyers' escort, parked on the fort's strip
+        { kind: 'air', type: 'NV-15C', count: 3, formation: 'vee', position: 'ahead', distance: 6800, task: 'engage' },
+        { kind: 'air', type: 'NV-4', count: 3, formation: 'vee', position: 'ahead', distance: 6900, task: 'engage' },
+        { kind: 'air', type: 'NV-4', count: 2, formation: 'pair', distance: 600, near: 'aa', after: 5, task: 'scramble' },        // the buyers' escort, parked on the fort's strip
         { kind: 'air', type: 'Q07', count: 1, formation: 'pair', distance: 600, near: 'aa', after: 10, task: 'scramble', difficulty: 'mercenary' },  // also parked on the strip
         { kind: 'air', type: 'Q07', count: 4, formation: 'vee', position: 'ahead', distance: 7000, task: 'engage', difficulty: 'mercenary' },  // 5 -> 4 (phase air cap)
         { kind: 'air', type: 'Q09', count: 3, formation: 'vee', position: 'high', distance: 7000, task: 'engage', difficulty: 'mercenary' },
@@ -231,25 +232,25 @@ export const MISSIONS = [
     //   orbit, Squalls screen the last one.
     phases: [
       { label: 'Border patrol', groups: [
-        { kind: 'air', type: 'NV-62', count: 6, formation: 'vee', position: 'behind', distance: 5000, after: 5, task: 'engage' },
-        { kind: 'air', type: 'NV-62', count: 6, formation: 'vee', position: 'left', distance: 5200, after: 5, task: 'engage' },
-        { kind: 'air', type: 'NV-73', count: 1, formation: 'pair', position: 'right', distance: 5000, after: 5, task: 'engage', difficulty: 'mercenary' },  // extras 6 -> 4 (phase air cap): 2/2/2 -> 1/1/2
-        { kind: 'air', type: 'SQUALL-7T', count: 1, formation: 'pair', position: 'behind', distance: 5400, after: 5, task: 'engage', difficulty: 'mercenary' },
+        { kind: 'air', type: 'NV-15C', count: 6, formation: 'vee', position: 'behind', distance: 5000, after: 5, task: 'engage' },
+        { kind: 'air', type: 'NV-15C', count: 6, formation: 'vee', position: 'left', distance: 5200, after: 5, task: 'engage' },
+        { kind: 'air', type: 'NV-18E', count: 1, formation: 'pair', position: 'right', distance: 5000, after: 5, task: 'engage', difficulty: 'mercenary' },  // extras 6 -> 4 (phase air cap): 2/2/2 -> 1/1/2
+        { kind: 'air', type: 'SQUALL-30', count: 1, formation: 'pair', position: 'behind', distance: 5400, after: 5, task: 'engage', difficulty: 'mercenary' },
         { kind: 'air', type: 'Q07', count: 2, formation: 'pair', position: 'behind', distance: 5600, after: 5, task: 'engage', difficulty: 'mercenary' },
       ] },
       { label: 'They brought an AWACS', groups: [
         { kind: 'air', type: 'KD-480E', count: 1, formation: 'line', position: 'high', distance: 3500, task: 'patrol' },
-        { kind: 'air', type: 'NV-62', count: 4, formation: 'vee', position: 'ahead', distance: 6200, task: 'engage' },
-        { kind: 'air', type: 'NV-62', count: 4, formation: 'vee', position: 'right', distance: 6200, task: 'engage' },
-        { kind: 'air', type: 'NV-62', count: 1, formation: 'pair', position: 'left', distance: 6100, task: 'engage', difficulty: 'mercenary' },
+        { kind: 'air', type: 'NV-15C', count: 4, formation: 'vee', position: 'ahead', distance: 6200, task: 'engage' },
+        { kind: 'air', type: 'NV-15C', count: 4, formation: 'vee', position: 'right', distance: 6200, task: 'engage' },
+        { kind: 'air', type: 'NV-15C', count: 1, formation: 'pair', position: 'left', distance: 6100, task: 'engage', difficulty: 'mercenary' },
         { kind: 'air', type: 'Q09', count: 1, formation: 'pair', position: 'left', distance: 6200, task: 'engage', difficulty: 'mercenary' },
-        { kind: 'air', type: 'NV-11', count: 3, formation: 'vee', position: 'high', distance: 6400, task: 'engage', difficulty: 'mercenary' },
+        { kind: 'air', type: 'NV-4', count: 3, formation: 'vee', position: 'high', distance: 6400, task: 'engage', difficulty: 'mercenary' },
       ] },
       { label: 'Squall flight', groups: [
         { kind: 'air', type: 'KD-480E', count: 1, formation: 'line', position: 'high', distance: 4000, task: 'patrol' },
-        { kind: 'air', type: 'SQUALL-7', count: 4, formation: 'vee', near: 'KD-480E', task: 'escort' },
-        { kind: 'air', type: 'FALLWIND-6', count: 1, formation: 'pair', position: 'high', distance: 6400, task: 'engage', difficulty: 'mercenary' },
-        { kind: 'air', type: 'NV-73', count: 4, formation: 'vee', position: 'left', distance: 6200, task: 'engage', difficulty: 'mercenary' },
+        { kind: 'air', type: 'SQUALL-27', count: 4, formation: 'vee', near: 'KD-480E', task: 'escort' },
+        { kind: 'air', type: 'FALLWIND-31', count: 1, formation: 'pair', position: 'high', distance: 6400, task: 'engage', difficulty: 'mercenary' },
+        { kind: 'air', type: 'NV-18E', count: 4, formation: 'vee', position: 'left', distance: 6200, task: 'engage', difficulty: 'mercenary' },
       ] },
     ],
   },
@@ -266,27 +267,27 @@ export const MISSIONS = [
         { kind: 'naval', type: 'cruiser', count: 2, area: 'fleet', distance: 5100 },
         { kind: 'naval', type: 'frigate', count: 3, area: 'fleet', distance: 4800 },
         { kind: 'ground', type: 'aa', count: 9, area: 'coastline', distance: 4800 },
-        { kind: 'air', type: 'NV-62', count: 4, formation: 'vee', position: 'ahead', distance: 2500, near: 'aa', task: 'patrol' },
+        { kind: 'air', type: 'NV-15C', count: 4, formation: 'vee', position: 'ahead', distance: 2500, near: 'aa', task: 'patrol' },
         { kind: 'air', type: 'KD-12U', count: 2, formation: 'pair', position: 'high', distance: 3100, task: 'patrol', optional: true },
         { kind: 'naval', type: 'battleship', count: 1, area: 'fleet', distance: 5500, difficulty: 'mercenary' },
         { kind: 'naval', type: 'carrier', count: 1, area: 'fleet', distance: 5500, difficulty: 'mercenary' },
         { kind: 'naval', type: 'railgun frigate', count: 2, area: 'fleet', distance: 5100, difficulty: 'mercenary' },
-        { kind: 'air', type: 'NV-56N', count: 3, formation: 'vee', position: 'left', distance: 2500, near: 'carrier', task: 'patrol', difficulty: 'mercenary' },
-        { kind: 'air', type: 'NV-56N', count: 4, formation: 'pair', distance: 800, near: 'carrier', after: 20, task: 'scramble', difficulty: 'mercenary' },  // carrier launches
+        { kind: 'air', type: 'NV-14', count: 3, formation: 'vee', position: 'left', distance: 2500, near: 'carrier', task: 'patrol', difficulty: 'mercenary' },
+        { kind: 'air', type: 'NV-14', count: 4, formation: 'pair', distance: 800, near: 'carrier', after: 20, task: 'scramble', difficulty: 'mercenary' },  // carrier launches
       ] },
       { label: 'Tarnfell Air Station', groups: [
         { kind: 'ground', type: 'aa', count: 12, area: 'base', distance: 4000 },
         { kind: 'ground', type: 'sam', count: 8, area: 'base', distance: 4400 },
-        { kind: 'air', type: 'NV-48', count: 5, formation: 'pair', distance: 800, near: 'sam', after: 2, task: 'scramble' },         // scrambling from the runway
-        { kind: 'air', type: 'KD-260', count: 4, formation: 'line', distance: 900, near: 'sam', after: 10, task: 'scramble' },       // scrambling from the runway
+        { kind: 'air', type: 'NV-16', count: 5, formation: 'pair', distance: 800, near: 'sam', after: 2, task: 'scramble' },         // scrambling from the runway
+        { kind: 'air', type: 'KD-17', count: 4, formation: 'line', distance: 900, near: 'sam', after: 10, task: 'scramble' },       // scrambling from the runway
         { kind: 'ground', type: 'l-sam', count: 1, area: 'base', distance: 4800, difficulty: 'mercenary' },
         { kind: 'ground', type: 'c-ram', count: 3, area: 'base', distance: 4000, difficulty: 'mercenary' },
         { kind: 'ground', type: 'railgun', count: 2, area: 'base', distance: 4400, difficulty: 'mercenary' },
         { kind: 'air', type: 'Q09', count: 2, formation: 'pair', position: 'high', distance: 3000, near: 'sam', task: 'patrol', difficulty: 'mercenary' },
       ] },
       { label: 'Cuckoo Flight', groups: [
-        { kind: 'air', type: 'NV-73 CUCKOO', count: 6, formation: 'vee', position: 'ahead', distance: 6400, task: 'engage', flight: 4 },
-        { kind: 'air', type: 'FLURRY-4', count: 4, formation: 'vee', position: 'high', distance: 6500, task: 'engage', flight: 4, difficulty: 'mercenary' },  // Cuckoo Flight's second wing
+        { kind: 'air', type: 'NV-18E CUCKOO', count: 6, formation: 'vee', position: 'ahead', distance: 6400, task: 'engage', flight: 4 },
+        { kind: 'air', type: 'FLURRY-29', count: 4, formation: 'vee', position: 'high', distance: 6500, task: 'engage', flight: 4, difficulty: 'mercenary' },  // Cuckoo Flight's second wing
       ] },
     ],
   },
@@ -309,12 +310,12 @@ export const MISSIONS = [
         { kind: 'ground', type: 'bunker', count: 2, area: 'ridge', distance: 5100 },
         { kind: 'ground', type: 'sam', count: 2, area: 'base', distance: 4800 },
         { kind: 'ground', type: 'aa', count: 4, area: 'base', distance: 4800 },
-        { kind: 'air', type: 'KD-910', count: 4, formation: 'line', position: 'high', distance: 2500, near: 'tank', task: 'patrol' },
-        { kind: 'air', type: 'NV-62', count: 2, formation: 'pair', position: 'ahead', distance: 3000, near: 'tank', task: 'patrol' },
-        { kind: 'air', type: 'NV-48', count: 2, formation: 'pair', position: 'left', distance: 3000, near: 'tank', task: 'patrol' },
+        { kind: 'air', type: 'KD-52', count: 4, formation: 'line', position: 'high', distance: 2500, near: 'tank', task: 'patrol' },
+        { kind: 'air', type: 'NV-15C', count: 2, formation: 'pair', position: 'ahead', distance: 3000, near: 'tank', task: 'patrol' },
+        { kind: 'air', type: 'NV-16', count: 2, formation: 'pair', position: 'left', distance: 3000, near: 'tank', task: 'patrol' },
         { kind: 'ground', type: 'c-ram', count: 4, area: 'base', distance: 4800, difficulty: 'mercenary' },
         { kind: 'ground', type: 'siege crawler', count: 1, area: 'scattered', distance: 5100, difficulty: 'mercenary' },
-        { kind: 'air', type: 'SQUALL-7T', count: 4, formation: 'vee', position: 'right', distance: 3000, near: 'tank', task: 'patrol', difficulty: 'mercenary' },
+        { kind: 'air', type: 'SQUALL-30', count: 4, formation: 'vee', position: 'right', distance: 3000, near: 'tank', task: 'patrol', difficulty: 'mercenary' },
       ] },
       { label: 'Second push', groups: [
         { kind: 'ground', type: 'tank', count: 6, area: 'convoy', distance: 4400 },
@@ -324,11 +325,11 @@ export const MISSIONS = [
         { kind: 'ground', type: 'sam', count: 6, area: 'base', distance: 4800 },
         { kind: 'ground', type: 'aa', count: 7, area: 'base', distance: 4800 },
         { kind: 'ground', type: 'comm tower', count: 1, area: 'base', distance: 5100 },
-        { kind: 'air', type: 'KD-38H', count: 6, formation: 'loose', position: 'low', distance: 1500, near: 'tank', task: 'patrol' },
-        { kind: 'air', type: 'HAILSTONE-3', count: 3, formation: 'vee', position: 'low', distance: 2000, near: 'tank', task: 'patrol' },
-        { kind: 'air', type: 'KD-910', count: 3, formation: 'line', position: 'high', distance: 5700, after: 20 },
-        { kind: 'air', type: 'GUST-5', count: 2, formation: 'pair', position: 'left', distance: 6200, task: 'engage', optional: true },
-        { kind: 'air', type: 'NV-73', count: 2, formation: 'pair', position: 'right', distance: 6200, task: 'engage', optional: true },
+        { kind: 'air', type: 'KD-28H', count: 6, formation: 'loose', position: 'low', distance: 1500, near: 'tank', task: 'patrol' },
+        { kind: 'air', type: 'HAILSTONE-25', count: 3, formation: 'vee', position: 'low', distance: 2000, near: 'tank', task: 'patrol' },
+        { kind: 'air', type: 'KD-52', count: 3, formation: 'line', position: 'high', distance: 5700, after: 20 },
+        { kind: 'air', type: 'GUST-37', count: 2, formation: 'pair', position: 'left', distance: 6200, task: 'engage', optional: true },
+        { kind: 'air', type: 'NV-18E', count: 2, formation: 'pair', position: 'right', distance: 6200, task: 'engage', optional: true },
         { kind: 'ground', type: 'l-sam', count: 2, area: 'base', distance: 5100, difficulty: 'mercenary' },
         { kind: 'ground', type: 'railgun', count: 2, area: 'base', distance: 4800, difficulty: 'mercenary' },
         { kind: 'ground', type: 'siege crawler', count: 2, area: 'scattered', distance: 5100, difficulty: 'mercenary' },
@@ -344,8 +345,8 @@ export const MISSIONS = [
     //   the last wave pushes in.
     phases: [
       { label: 'Dawn raid', stagger: 45, groups: [
-        { kind: 'air', type: 'NV-48', count: 3, formation: 'vee', position: 340, distance: 3500, task: 'patrol' },
-        { kind: 'air', type: 'NV-56N', count: 6, formation: 'vee', position: 20, distance: 3500, task: 'patrol' },
+        { kind: 'air', type: 'NV-16', count: 3, formation: 'vee', position: 340, distance: 3500, task: 'patrol' },
+        { kind: 'air', type: 'NV-14', count: 6, formation: 'vee', position: 20, distance: 3500, task: 'patrol' },
         { kind: 'ground', type: 'aa', count: 10, area: 'scattered', distance: 4000, optional: true },
         { kind: 'ground', type: 'l-sam', count: 4, area: 'base', distance: 4800, optional: true },
         { kind: 'naval', type: 'cruiser', count: 2, area: 'fleet', distance: 5500, optional: true },
@@ -354,17 +355,17 @@ export const MISSIONS = [
         { kind: 'naval', type: 'armed cargo', count: 2, area: 'fleet', distance: 5500, optional: true, difficulty: 'mercenary' },
       ] },
       { label: 'Ferries away', stagger: 45, groups: [
-        { kind: 'air', type: 'NV-48', count: 3, formation: 'vee', position: 70, distance: 3500, task: 'patrol' },
-        { kind: 'air', type: 'NV-56N', count: 6, formation: 'vee', position: 110, distance: 3500, task: 'patrol' },
+        { kind: 'air', type: 'NV-16', count: 3, formation: 'vee', position: 70, distance: 3500, task: 'patrol' },
+        { kind: 'air', type: 'NV-14', count: 6, formation: 'vee', position: 110, distance: 3500, task: 'patrol' },
       ] },
       { label: 'Pursuit', stagger: 45, groups: [
-        { kind: 'air', type: 'NV-48', count: 3, formation: 'vee', position: 250, distance: 3500, task: 'patrol' },
-        { kind: 'air', type: 'NV-56N', count: 6, formation: 'vee', position: 290, distance: 3500, task: 'patrol' },
-        { kind: 'air', type: 'NV-56N', count: 1, formation: 'pair', position: 270, distance: 2800, task: 'patrol', difficulty: 'mercenary' },
+        { kind: 'air', type: 'NV-16', count: 3, formation: 'vee', position: 250, distance: 3500, task: 'patrol' },
+        { kind: 'air', type: 'NV-14', count: 6, formation: 'vee', position: 290, distance: 3500, task: 'patrol' },
+        { kind: 'air', type: 'NV-14', count: 1, formation: 'pair', position: 270, distance: 2800, task: 'patrol', difficulty: 'mercenary' },
       ] },
       { label: 'Last boat out', groups: [
-        { kind: 'air', type: 'NV-48', count: 5, formation: 'vee', position: 'ahead', distance: 6200, task: 'engage' },
-        { kind: 'air', type: 'NV-48', count: 5, formation: 'vee', position: 20, distance: 6500, task: 'engage' },
+        { kind: 'air', type: 'NV-16', count: 5, formation: 'vee', position: 'ahead', distance: 6200, task: 'engage' },
+        { kind: 'air', type: 'NV-16', count: 5, formation: 'vee', position: 20, distance: 6500, task: 'engage' },
         { kind: 'air', type: 'KD-480E', count: 1, formation: 'line', position: 'high', distance: 4000, task: 'patrol' },
         { kind: 'ground', type: 'sam', count: 1, area: 'base', distance: 4400, optional: true },
         { kind: 'ground', type: 'aa', count: 7, area: 'scattered', distance: 4000, optional: true },
@@ -389,19 +390,19 @@ export const MISSIONS = [
         { kind: 'ground', type: 'oil tank', count: 3, area: 'base', distance: 4000, optional: true },
         { kind: 'ground', type: 'radar', count: 2, area: 'ridge', distance: 4800, optional: true },
         { kind: 'ground', type: 'comm tower', count: 2, area: 'ridge', distance: 4800, optional: true },
-        { kind: 'air', type: 'NV-48', count: 6, formation: 'vee', position: 'ahead', distance: 5500, after: 8, task: 'engage' },
-        { kind: 'air', type: 'NV-11', count: 6, formation: 'vee', position: 'left', distance: 5000, after: 40, task: 'engage' },
+        { kind: 'air', type: 'NV-16', count: 6, formation: 'vee', position: 'ahead', distance: 5500, after: 8, task: 'engage' },
+        { kind: 'air', type: 'NV-4', count: 6, formation: 'vee', position: 'left', distance: 5000, after: 40, task: 'engage' },
         { kind: 'ground', type: 'c-ram', count: 6, area: 'base', distance: 4400, difficulty: 'mercenary' },  // extras split across phases 1-2 like the SAMs and AA
         { kind: 'ground', type: 'l-sam', count: 1, area: 'ridge', distance: 4800, difficulty: 'mercenary' },
-        { kind: 'air', type: 'NV-11', count: 1, formation: 'pair', position: 'right', distance: 5000, after: 40, task: 'engage', difficulty: 'mercenary' },
+        { kind: 'air', type: 'NV-4', count: 1, formation: 'pair', position: 'right', distance: 5000, after: 40, task: 'engage', difficulty: 'mercenary' },
         { kind: 'air', type: 'Q09', count: 1, formation: 'pair', position: 'right', distance: 5000, after: 50, task: 'engage', difficulty: 'mercenary' },
-        { kind: 'air', type: 'FLURRY-4', count: 1, formation: 'pair', position: 'high', distance: 5000, after: 50, task: 'engage', difficulty: 'mercenary' },
+        { kind: 'air', type: 'FLURRY-29', count: 1, formation: 'pair', position: 'high', distance: 5000, after: 50, task: 'engage', difficulty: 'mercenary' },
       ] },
       { label: 'Summit rigs', groups: [
         { kind: 'ground', type: 'extractor', count: 3, area: 'base', distance: 4800 },
         { kind: 'ground', type: 'sam', count: 10, area: 'base', distance: 4800 },
         { kind: 'ground', type: 'aa', count: 6, area: 'base', distance: 4800 },
-        { kind: 'air', type: 'SQUALL-7', count: 6, formation: 'vee', position: 'ahead', distance: 5000, after: 15, task: 'engage' },
+        { kind: 'air', type: 'SQUALL-27', count: 6, formation: 'vee', position: 'ahead', distance: 5000, after: 15, task: 'engage' },
         { kind: 'ground', type: 'c-ram', count: 5, area: 'base', distance: 4800, difficulty: 'mercenary' },
         { kind: 'ground', type: 'railgun', count: 2, area: 'base', distance: 4800, difficulty: 'mercenary' },
         { kind: 'air', type: 'Q07', count: 3, formation: 'vee', position: 'left', distance: 5000, after: 25, task: 'engage', difficulty: 'mercenary' },
@@ -426,10 +427,10 @@ export const MISSIONS = [
     //   escort the Bodkin run.
     phases: [
       { label: 'Concord pickets', stagger: 30, groups: [
-        { kind: 'air', type: 'NV-73', count: 6, formation: 'vee', position: 'high', distance: 3000, near: 'cruiser', task: 'patrol' },
-        { kind: 'air', type: 'NV-48', count: 2, formation: 'pair', position: 'left', distance: 3000, near: 'railgun frigate', task: 'patrol' },
-        { kind: 'air', type: 'NV-11', count: 2, formation: 'pair', position: 'right', distance: 3000, near: 'railgun frigate', task: 'patrol' },
-        { kind: 'air', type: 'FLURRY-4', count: 2, formation: 'pair', position: 'ahead', distance: 3000, near: 'cruiser', task: 'patrol' },
+        { kind: 'air', type: 'NV-18E', count: 6, formation: 'vee', position: 'high', distance: 3000, near: 'cruiser', task: 'patrol' },
+        { kind: 'air', type: 'NV-16', count: 2, formation: 'pair', position: 'left', distance: 3000, near: 'railgun frigate', task: 'patrol' },
+        { kind: 'air', type: 'NV-4', count: 2, formation: 'pair', position: 'right', distance: 3000, near: 'railgun frigate', task: 'patrol' },
+        { kind: 'air', type: 'FLURRY-29', count: 2, formation: 'pair', position: 'ahead', distance: 3000, near: 'cruiser', task: 'patrol' },
         { kind: 'air', type: 'KD-480E', count: 2, formation: 'pair', position: 'high', distance: 3500, task: 'patrol' },      // above the cloud deck
         { kind: 'naval', type: 'boat', count: 6, area: 'scattered', distance: 4000 },
         { kind: 'naval', type: 'cruiser', count: 3, area: 'fleet', distance: 5100 },
@@ -437,21 +438,21 @@ export const MISSIONS = [
         { kind: 'naval', type: 'spy ship', count: 1, area: 'fleet', distance: 4800 },
       ] },
       { label: 'Shield the Hand-Me-Down', groups: [
-        { kind: 'air', type: 'SQUALL-7T', count: 4, formation: 'vee', position: 'right', distance: 5500, task: 'engage' },
-        { kind: 'air', type: 'HAILSTONE-3', count: 8, formation: 'loose', position: 'left', distance: 5500, task: 'engage' },
+        { kind: 'air', type: 'SQUALL-30', count: 4, formation: 'vee', position: 'right', distance: 5500, task: 'engage' },
+        { kind: 'air', type: 'HAILSTONE-25', count: 8, formation: 'loose', position: 'left', distance: 5500, task: 'engage' },
         { kind: 'naval', type: 'cruiser', count: 4, area: 'fleet', distance: 5100 },
         { kind: 'naval', type: 'frigate', count: 3, area: 'fleet', distance: 4800 },
         { kind: 'naval', type: 'railgun frigate', count: 2, area: 'fleet', distance: 5500 },
         { kind: 'naval', type: 'carrier', count: 1, area: 'fleet', distance: 5500, difficulty: 'mercenary' },
         { kind: 'naval', type: 'battleship', count: 2, area: 'fleet', distance: 5500, difficulty: 'mercenary' },
         { kind: 'air', type: 'Q07', count: 1, formation: 'pair', position: 'ahead', distance: 6400, task: 'engage', difficulty: 'mercenary' },  // 2 -> 1 (phase air cap)
-        { kind: 'air', type: 'NV-56N', count: 3, formation: 'pair', distance: 800, near: 'carrier', after: 20, task: 'scramble', difficulty: 'mercenary' },  // 8 -> 3 (phase air cap); also stands in for carrier launches
+        { kind: 'air', type: 'NV-14', count: 3, formation: 'pair', distance: 800, near: 'carrier', after: 20, task: 'scramble', difficulty: 'mercenary' },  // 8 -> 3 (phase air cap); also stands in for carrier launches
       ] },
       { label: 'Bodkins inbound', groups: [
         { kind: 'air', type: 'BODKIN', count: 5, formation: 'line', position: 'right', distance: 6000, target: 'fleet' },   // at the Hand-Me-Down's escorts
         { kind: 'air', type: 'BODKIN', count: 5, formation: 'line', position: 'right', distance: 6500, target: 'fleet' },
-        { kind: 'air', type: 'FALLWIND-6', count: 4, formation: 'vee', near: 'BODKIN', task: 'escort' },
-        { kind: 'air', type: 'SQUALL-7T', count: 2, formation: 'pair', near: 'BODKIN', task: 'escort', difficulty: 'mercenary' },  // 4 -> 2 (phase air cap)
+        { kind: 'air', type: 'FALLWIND-31', count: 4, formation: 'vee', near: 'BODKIN', task: 'escort' },
+        { kind: 'air', type: 'SQUALL-30', count: 2, formation: 'pair', near: 'BODKIN', task: 'escort', difficulty: 'mercenary' },  // 4 -> 2 (phase air cap)
       ] },
     ],
   },
@@ -465,20 +466,20 @@ export const MISSIONS = [
     //   AWACS; the aces merge head-on.
     phases: [
       { label: 'First convoy', groups: [
-        { kind: 'air', type: 'KD-260', count: 3, formation: 'line', position: 'ahead', distance: 5100 },
-        { kind: 'air', type: 'NV-56N', count: 4, formation: 'vee', near: 'KD-260', task: 'escort' },
+        { kind: 'air', type: 'KD-17', count: 3, formation: 'line', position: 'ahead', distance: 5100 },
+        { kind: 'air', type: 'NV-14', count: 4, formation: 'vee', near: 'KD-17', task: 'escort' },
       ] },
       { label: 'Second convoy', groups: [
-        { kind: 'air', type: 'KD-260', count: 3, formation: 'line', position: 'left', distance: 5100 },
-        { kind: 'air', type: 'SQUALL-7', count: 4, formation: 'vee', position: 'left', distance: 5800, task: 'engage' },
-        { kind: 'air', type: 'NV-62', count: 4, formation: 'vee', position: 'right', distance: 6200, after: 20, task: 'engage' },
+        { kind: 'air', type: 'KD-17', count: 3, formation: 'line', position: 'left', distance: 5100 },
+        { kind: 'air', type: 'SQUALL-27', count: 4, formation: 'vee', position: 'left', distance: 5800, task: 'engage' },
+        { kind: 'air', type: 'NV-15C', count: 4, formation: 'vee', position: 'right', distance: 6200, after: 20, task: 'engage' },
       ] },
       { label: 'Heavy convoy', groups: [
-        { kind: 'air', type: 'KD-260', count: 4, formation: 'line', position: 'ahead', distance: 5400 },
+        { kind: 'air', type: 'KD-17', count: 4, formation: 'line', position: 'ahead', distance: 5400 },
         { kind: 'air', type: 'KD-480E', count: 2, formation: 'pair', position: 'high', distance: 3800, task: 'patrol' },
-        { kind: 'air', type: 'NV-56N', count: 3, formation: 'vee', position: 'left', distance: 6000, task: 'engage' },
-        { kind: 'air', type: 'FALLWIND-6', count: 3, formation: 'vee', near: 'KD-480E', task: 'escort' },
-        { kind: 'air', type: 'SQUALL-7', count: 4, formation: 'vee', position: 'ahead', distance: 6000, task: 'engage' },
+        { kind: 'air', type: 'NV-14', count: 3, formation: 'vee', position: 'left', distance: 6000, task: 'engage' },
+        { kind: 'air', type: 'FALLWIND-31', count: 3, formation: 'vee', near: 'KD-480E', task: 'escort' },
+        { kind: 'air', type: 'SQUALL-27', count: 4, formation: 'vee', position: 'ahead', distance: 6000, task: 'engage' },
       ] },
       { label: 'Tick and Tock', groups: [
         { kind: 'air', type: 'Q09 TICK', count: 1, formation: 'pair', position: 'ahead', distance: 6000, task: 'engage' },
@@ -501,7 +502,7 @@ export const MISSIONS = [
         { kind: 'ground', type: 'c-ram', count: 5, area: 'ridge', distance: 4400 },
         { kind: 'ground', type: 'aa', count: 7, area: 'ridge', distance: 4400 },
         { kind: 'ground', type: 'radar', count: 1, area: 'ridge', distance: 4800 },
-        { kind: 'air', type: 'FALLWIND-6', count: 4, formation: 'vee', position: 'high', distance: 2500, near: 'radar', task: 'patrol' },
+        { kind: 'air', type: 'FALLWIND-31', count: 4, formation: 'vee', position: 'high', distance: 2500, near: 'radar', task: 'patrol' },
       ] },
       { label: 'Site Pliers', groups: [
         { kind: 'ground', type: 'l-sam', count: 2, area: 'ridge', distance: 5100 },
@@ -509,23 +510,23 @@ export const MISSIONS = [
         { kind: 'ground', type: 'aa', count: 4, area: 'ridge', distance: 4400 },
         { kind: 'ground', type: 'radar', count: 1, area: 'ridge', distance: 4800 },
         { kind: 'ground', type: 'comm tower', count: 1, area: 'ridge', distance: 4800 },
-        { kind: 'air', type: 'KD-38H', count: 3, formation: 'loose', position: 'low', distance: 1500, near: 'comm tower', task: 'patrol' },
-        { kind: 'air', type: 'NV-62', count: 4, formation: 'vee', position: 'left', distance: 6200, task: 'engage' },
+        { kind: 'air', type: 'KD-28H', count: 3, formation: 'loose', position: 'low', distance: 1500, near: 'comm tower', task: 'patrol' },
+        { kind: 'air', type: 'NV-15C', count: 4, formation: 'vee', position: 'left', distance: 6200, task: 'engage' },
         { kind: 'air', type: 'Q09', count: 1, formation: 'pair', position: 'left', distance: 6300, task: 'engage', difficulty: 'mercenary' },
       ] },
       { label: 'Sites Vise and Clamp', groups: [
         { kind: 'ground', type: 'l-sam', count: 5, area: 'ridge', distance: 5100 },
         { kind: 'ground', type: 'c-ram', count: 5, area: 'ridge', distance: 4400 },
         { kind: 'ground', type: 'sam', count: 2, area: 'ridge', distance: 4400 },
-        { kind: 'air', type: 'NV-56N', count: 3, formation: 'vee', distance: 800, near: 'sam', after: 15, task: 'scramble' },       // scrambling from a tunnel runway
-        { kind: 'air', type: 'NV-73', count: 3, formation: 'vee', distance: 900, near: 'sam', after: 25, task: 'scramble' },
+        { kind: 'air', type: 'NV-14', count: 3, formation: 'vee', distance: 800, near: 'sam', after: 15, task: 'scramble' },       // scrambling from a tunnel runway
+        { kind: 'air', type: 'NV-18E', count: 3, formation: 'vee', distance: 900, near: 'sam', after: 25, task: 'scramble' },
       ] },
       { label: 'Site Chisel', groups: [
         { kind: 'ground', type: 'l-sam', count: 7, area: 'ridge', distance: 5100 },
         { kind: 'ground', type: 'c-ram', count: 5, area: 'ridge', distance: 4400 },
-        { kind: 'air', type: 'KD-38H', count: 6, formation: 'loose', position: 'low', distance: 1500, near: 'c-ram', task: 'patrol' },
-        { kind: 'air', type: 'NV-62', count: 8, formation: 'vee', position: 'ahead', distance: 6800, task: 'engage' },
-        { kind: 'air', type: 'NV-62', count: 2, formation: 'pair', position: 'left', distance: 6200, after: 20, task: 'engage', difficulty: 'mercenary' },  // 4 -> 2 (phase air cap)
+        { kind: 'air', type: 'KD-28H', count: 6, formation: 'loose', position: 'low', distance: 1500, near: 'c-ram', task: 'patrol' },
+        { kind: 'air', type: 'NV-15C', count: 8, formation: 'vee', position: 'ahead', distance: 6800, task: 'engage' },
+        { kind: 'air', type: 'NV-15C', count: 2, formation: 'pair', position: 'left', distance: 6200, after: 20, task: 'engage', difficulty: 'mercenary' },  // 4 -> 2 (phase air cap)
       ] },
       { label: 'Site Anvil', groups: [
         { kind: 'ground', type: 'l-sam', count: 3, area: 'ridge', distance: 5100 },
@@ -548,11 +549,11 @@ export const MISSIONS = [
         { kind: 'ground', type: 'c-ram', count: 3, area: 'base', distance: 4800 },
         { kind: 'ground', type: 'l-sam', count: 3, area: 'base', distance: 5100 },
         { kind: 'ground', type: 'comm tower', count: 1, area: 'base', distance: 5100, optional: true },
-        { kind: 'air', type: 'NV-73', count: 4, formation: 'vee', position: 'ahead', distance: 6200, task: 'engage' },
-        { kind: 'air', type: 'NV-73', count: 3, formation: 'vee', position: 'left', distance: 4500, after: 40, task: 'engage' },
-        { kind: 'air', type: 'NV-56N', count: 2, formation: 'pair', position: 'right', distance: 6200, task: 'engage' },
-        { kind: 'air', type: 'NV-62', count: 2, formation: 'pair', position: 'high', distance: 6300, task: 'engage' },
-        { kind: 'air', type: 'SQUALL-7', count: 3, formation: 'vee', position: 'ahead', distance: 4500, after: 20, task: 'engage' },
+        { kind: 'air', type: 'NV-18E', count: 4, formation: 'vee', position: 'ahead', distance: 6200, task: 'engage' },
+        { kind: 'air', type: 'NV-18E', count: 3, formation: 'vee', position: 'left', distance: 4500, after: 40, task: 'engage' },
+        { kind: 'air', type: 'NV-14', count: 2, formation: 'pair', position: 'right', distance: 6200, task: 'engage' },
+        { kind: 'air', type: 'NV-15C', count: 2, formation: 'pair', position: 'high', distance: 6300, task: 'engage' },
+        { kind: 'air', type: 'SQUALL-27', count: 3, formation: 'vee', position: 'ahead', distance: 4500, after: 20, task: 'engage' },
       ] },
       { label: 'The Choir', groups: [
         { kind: 'ground', type: 'radar', count: 4, area: 'base', distance: 4400 },
@@ -570,12 +571,12 @@ export const MISSIONS = [
         { kind: 'ground', type: 'aa', count: 13, area: 'scattered', distance: 4400 },
         { kind: 'ground', type: 'hangar', count: 3, area: 'base', distance: 4400, optional: true },
         { kind: 'ground', type: 'oil tank', count: 3, area: 'base', distance: 4800, optional: true },
-        { kind: 'air', type: 'NV-73', count: 4, formation: 'vee', position: 'ahead', distance: 6400, task: 'engage' },
-        { kind: 'air', type: 'NV-73', count: 3, formation: 'pair', distance: 800, near: 'hangar', after: 15, task: 'scramble' },        // taking off
-        { kind: 'air', type: 'FALLWIND-6', count: 4, formation: 'vee', position: 'high', distance: 2500, near: 'railgun', task: 'patrol' },
-        { kind: 'air', type: 'NV-62', count: 1, formation: 'pair', position: 'left', distance: 6200, task: 'engage' },
-        { kind: 'air', type: 'NV-56N', count: 1, formation: 'pair', position: 'left', distance: 6300, task: 'engage' },
-        { kind: 'air', type: 'KD-260', count: 2, formation: 'line', distance: 900, near: 'hangar', after: 25, task: 'scramble' },       // taking off
+        { kind: 'air', type: 'NV-18E', count: 4, formation: 'vee', position: 'ahead', distance: 6400, task: 'engage' },
+        { kind: 'air', type: 'NV-18E', count: 3, formation: 'pair', distance: 800, near: 'hangar', after: 15, task: 'scramble' },        // taking off
+        { kind: 'air', type: 'FALLWIND-31', count: 4, formation: 'vee', position: 'high', distance: 2500, near: 'railgun', task: 'patrol' },
+        { kind: 'air', type: 'NV-15C', count: 1, formation: 'pair', position: 'left', distance: 6200, task: 'engage' },
+        { kind: 'air', type: 'NV-14', count: 1, formation: 'pair', position: 'left', distance: 6300, task: 'engage' },
+        { kind: 'air', type: 'KD-17', count: 2, formation: 'line', distance: 900, near: 'hangar', after: 25, task: 'scramble' },       // taking off
       ] },
     ],
   },
@@ -588,35 +589,35 @@ export const MISSIONS = [
     //   reinforcement pairs arrive from all sides at intervals; Chime and its escorts push from bearing 230.
     phases: [
       { label: 'Ice Gate furball', stagger: 10, groups: [
-        { kind: 'air', type: 'NV-73', count: 5, formation: 'vee', position: 'ahead', distance: 5000, task: 'engage' },
-        { kind: 'air', type: 'NV-56N', count: 2, formation: 'pair', position: 320, distance: 3200, task: 'patrol' },
-        { kind: 'air', type: 'NV-62', count: 2, formation: 'pair', position: 40, distance: 3200, task: 'patrol' },
-        { kind: 'air', type: 'NV-48', count: 2, formation: 'pair', position: 'high', distance: 3800, task: 'patrol' },
-        { kind: 'air', type: 'SQUALL-7', count: 1, formation: 'pair', position: 285, distance: 3900, task: 'patrol' },
-        { kind: 'air', type: 'FALLWIND-6', count: 1, formation: 'pair', position: 75, distance: 3900, task: 'patrol' },
-        { kind: 'air', type: 'EIDER IV', count: 1, formation: 'pair', position: 340, distance: 4000, task: 'patrol' },
-        { kind: 'air', type: 'KD-260', count: 2, formation: 'line', position: 20, distance: 6000, optional: true },
+        { kind: 'air', type: 'NV-18E', count: 5, formation: 'vee', position: 'ahead', distance: 5000, task: 'engage' },
+        { kind: 'air', type: 'NV-14', count: 2, formation: 'pair', position: 320, distance: 3200, task: 'patrol' },
+        { kind: 'air', type: 'NV-15C', count: 2, formation: 'pair', position: 40, distance: 3200, task: 'patrol' },
+        { kind: 'air', type: 'NV-16', count: 2, formation: 'pair', position: 'high', distance: 3800, task: 'patrol' },
+        { kind: 'air', type: 'SQUALL-27', count: 1, formation: 'pair', position: 285, distance: 3900, task: 'patrol' },
+        { kind: 'air', type: 'FALLWIND-31', count: 1, formation: 'pair', position: 75, distance: 3900, task: 'patrol' },
+        { kind: 'air', type: 'EIDER-8B', count: 1, formation: 'pair', position: 340, distance: 4000, task: 'patrol' },
+        { kind: 'air', type: 'KD-17', count: 2, formation: 'line', position: 20, distance: 6000, optional: true },
       ] },
       { label: 'Concord piles in', groups: [
-        { kind: 'air', type: 'SQUALL-7T', count: 2, formation: 'pair', position: 'ahead', distance: 6800, task: 'engage' },
-        { kind: 'air', type: 'NV-11', count: 2, formation: 'pair', position: 300, distance: 6600, after: 5, task: 'engage' },
-        { kind: 'air', type: 'SLEET-2', count: 2, formation: 'pair', position: 60, distance: 6600, after: 15, task: 'engage' },
-        { kind: 'air', type: 'NV-73', count: 2, formation: 'pair', position: 'high', distance: 6900, after: 20, task: 'engage' },
-        { kind: 'air', type: 'EIDER IV', count: 2, formation: 'pair', position: 'behind', distance: 4000, after: 25, task: 'engage' },
-        { kind: 'air', type: 'NV-48', count: 2, formation: 'pair', position: 'low', distance: 6600, after: 35, task: 'engage' },
+        { kind: 'air', type: 'SQUALL-30', count: 2, formation: 'pair', position: 'ahead', distance: 6800, task: 'engage' },
+        { kind: 'air', type: 'NV-4', count: 2, formation: 'pair', position: 300, distance: 6600, after: 5, task: 'engage' },
+        { kind: 'air', type: 'SLEET-21', count: 2, formation: 'pair', position: 60, distance: 6600, after: 15, task: 'engage' },
+        { kind: 'air', type: 'NV-18E', count: 2, formation: 'pair', position: 'high', distance: 6900, after: 20, task: 'engage' },
+        { kind: 'air', type: 'EIDER-8B', count: 2, formation: 'pair', position: 'behind', distance: 4000, after: 25, task: 'engage' },
+        { kind: 'air', type: 'NV-16', count: 2, formation: 'pair', position: 'low', distance: 6600, after: 35, task: 'engage' },
       ] },
       { label: 'They keep coming', groups: [
-        { kind: 'air', type: 'NV-73', count: 2, formation: 'pair', position: 'ahead', distance: 6800, task: 'engage' },
-        { kind: 'air', type: 'SLEET-2', count: 2, formation: 'pair', position: 290, distance: 6600, after: 10, task: 'engage' },
-        { kind: 'air', type: 'FALLWIND-6', count: 2, formation: 'pair', position: 70, distance: 6700, after: 20, task: 'engage' },
-        { kind: 'air', type: 'EIDER IV', count: 2, formation: 'pair', position: 'high', distance: 6900, after: 30, task: 'engage' },
-        { kind: 'air', type: 'NV-48', count: 4, formation: 'vee', position: 'behind', distance: 4000, after: 40, task: 'engage' },
+        { kind: 'air', type: 'NV-18E', count: 2, formation: 'pair', position: 'ahead', distance: 6800, task: 'engage' },
+        { kind: 'air', type: 'SLEET-21', count: 2, formation: 'pair', position: 290, distance: 6600, after: 10, task: 'engage' },
+        { kind: 'air', type: 'FALLWIND-31', count: 2, formation: 'pair', position: 70, distance: 6700, after: 20, task: 'engage' },
+        { kind: 'air', type: 'EIDER-8B', count: 2, formation: 'pair', position: 'high', distance: 6900, after: 30, task: 'engage' },
+        { kind: 'air', type: 'NV-16', count: 4, formation: 'vee', position: 'behind', distance: 4000, after: 40, task: 'engage' },
       ] },
       { label: 'Chime strikes the hour', groups: [
         { kind: 'air', type: 'Q07 CHIME', count: 4, formation: 'vee', position: 230, distance: 6300, task: 'engage', flight: 4 },
         { kind: 'air', type: 'Q11 CHIME', count: 4, formation: 'vee', position: 225, distance: 6500, task: 'engage', flight: 4 },
-        { kind: 'air', type: 'NV-62', count: 4, formation: 'vee', position: 235, distance: 6000, task: 'engage' },
-        { kind: 'air', type: 'FLURRY-4', count: 4, formation: 'vee', position: 222, distance: 6000, task: 'engage' },
+        { kind: 'air', type: 'NV-15C', count: 4, formation: 'vee', position: 235, distance: 6000, task: 'engage' },
+        { kind: 'air', type: 'FLURRY-29', count: 4, formation: 'vee', position: 222, distance: 6000, task: 'engage' },
       ] },
     ],
   },
@@ -639,9 +640,9 @@ export const MISSIONS = [
         { kind: 'naval', type: 'frigate', count: 1, area: 'fleet', distance: 4800 },
         { kind: 'naval', type: 'spy ship', count: 1, area: 'fleet', distance: 5100 },
         { kind: 'naval', type: 'cargo ship', count: 4, area: 'fleet', distance: 5500, optional: true },
-        { kind: 'air', type: 'KD-38H', count: 5, formation: 'loose', position: 'low', distance: 1500, near: 'railgun', task: 'patrol' },
-        { kind: 'air', type: 'KD-38H', count: 4, formation: 'loose', distance: 800, near: 'sam', after: 20, task: 'scramble' },
-        { kind: 'air', type: 'EIDER IV', count: 6, formation: 'vee', position: 'ahead', distance: 1500, near: 'c-ram', task: 'patrol' },
+        { kind: 'air', type: 'KD-28H', count: 5, formation: 'loose', position: 'low', distance: 1500, near: 'railgun', task: 'patrol' },
+        { kind: 'air', type: 'KD-28H', count: 4, formation: 'loose', distance: 800, near: 'sam', after: 20, task: 'scramble' },
+        { kind: 'air', type: 'EIDER-8B', count: 6, formation: 'vee', position: 'ahead', distance: 1500, near: 'c-ram', task: 'patrol' },
       ] },
       { label: 'Pendulum', groups: [
         { kind: 'air', type: 'Q04 PENDULUM', count: 1, formation: 'pair', position: 'low', distance: 600, near: 'railgun', task: 'engage' },
@@ -664,7 +665,7 @@ export const MISSIONS = [
         { kind: 'ground', type: 'bunker', count: 3, area: 'base', distance: 4400 },
         { kind: 'ground', type: 'refinery', count: 6, area: 'base', distance: 4400 },
         { kind: 'ground', type: 'container', count: 6, area: 'base', distance: 4400 },
-        { kind: 'air', type: 'NV-62', count: 4, formation: 'vee', position: 'high', distance: 2500, near: 'refinery', task: 'patrol' },
+        { kind: 'air', type: 'NV-15C', count: 4, formation: 'vee', position: 'high', distance: 2500, near: 'refinery', task: 'patrol' },
       ] },
       { label: 'Home Fleet at anchor', groups: [
         { kind: 'naval', type: 'moored carrier', count: 1, area: 'fleet', distance: 4800 },
@@ -678,7 +679,7 @@ export const MISSIONS = [
         { kind: 'naval', type: 'spy ship', count: 2, area: 'fleet', distance: 5500, optional: true },
       ] },
       { label: 'Escorts rushing home', groups: [
-        { kind: 'air', type: 'NV-48', count: 3, formation: 'vee', position: 'ahead', distance: 6600, task: 'engage' },
+        { kind: 'air', type: 'NV-16', count: 3, formation: 'vee', position: 'ahead', distance: 6600, task: 'engage' },
         { kind: 'air', type: 'Q07', count: 6, formation: 'vee', position: 'left', distance: 6600, task: 'engage' },
       ] },
     ],
@@ -701,9 +702,9 @@ export const MISSIONS = [
         { kind: 'ground', type: 'aa', count: 12, area: 'scattered', distance: 4400 },
         { kind: 'ground', type: 'sam', count: 2, area: 'base', distance: 4400 },
         { kind: 'ground', type: 'l-sam', count: 1, area: 'base', distance: 4800 },
-        { kind: 'air', type: 'KD-38H', count: 4, formation: 'loose', position: 'low', distance: 1500, near: 'cruiser', task: 'patrol' },
-        { kind: 'air', type: 'NV-48', count: 5, formation: 'vee', position: 'ahead', distance: 2500, near: 'aa', task: 'patrol' },
-        { kind: 'air', type: 'NV-62', count: 6, formation: 'vee', near: 'KD-38H', task: 'escort' },
+        { kind: 'air', type: 'KD-28H', count: 4, formation: 'loose', position: 'low', distance: 1500, near: 'cruiser', task: 'patrol' },
+        { kind: 'air', type: 'NV-16', count: 5, formation: 'vee', position: 'ahead', distance: 2500, near: 'aa', task: 'patrol' },
+        { kind: 'air', type: 'NV-15C', count: 6, formation: 'vee', near: 'KD-28H', task: 'escort' },
       ] },
       { label: 'Retreating columns', groups: [
         { kind: 'ground', type: 'tank', count: 8, area: 'convoy', distance: 4400 },
@@ -712,8 +713,8 @@ export const MISSIONS = [
         { kind: 'ground', type: 'aa', count: 12, area: 'scattered', distance: 4400 },
         { kind: 'ground', type: 'sam', count: 2, area: 'base', distance: 4400 },
         { kind: 'ground', type: 'railgun', count: 2, area: 'base', distance: 5100 },
-        { kind: 'air', type: 'KD-38H', count: 4, formation: 'loose', position: 'low', distance: 1500, near: 'tank', task: 'patrol' },
-        { kind: 'air', type: 'NV-48', count: 5, formation: 'vee', position: 'ahead', distance: 6400, task: 'engage' },
+        { kind: 'air', type: 'KD-28H', count: 4, formation: 'loose', position: 'low', distance: 1500, near: 'tank', task: 'patrol' },
+        { kind: 'air', type: 'NV-16', count: 5, formation: 'vee', position: 'ahead', distance: 6400, task: 'engage' },
       ] },
     ],
   },
@@ -727,16 +728,16 @@ export const MISSIONS = [
     //   but never clear the phase), and 7 reach Kelderwick, 5-7 s apart; the mission completes after the last one.
     phases: [
       { label: 'Kelderwick air cover', groups: [
-        { kind: 'air', type: 'NV-48', count: 6, formation: 'vee', position: 'ahead', distance: 5500, task: 'engage' },
-        { kind: 'air', type: 'NV-56N', count: 3, formation: 'vee', position: 'left', distance: 5600, task: 'engage' },
-        { kind: 'air', type: 'NV-56N', count: 3, formation: 'pair', distance: 800, near: 'l-sam', after: 15, task: 'scramble' },      // scrambling from hardened city shelters
-        { kind: 'air', type: 'FLURRY-4', count: 4, formation: 'vee', position: 'ahead', distance: 5000, after: 40, task: 'engage' },
+        { kind: 'air', type: 'NV-16', count: 6, formation: 'vee', position: 'ahead', distance: 5500, task: 'engage' },
+        { kind: 'air', type: 'NV-14', count: 3, formation: 'vee', position: 'left', distance: 5600, task: 'engage' },
+        { kind: 'air', type: 'NV-14', count: 3, formation: 'pair', distance: 800, near: 'l-sam', after: 15, task: 'scramble' },      // scrambling from hardened city shelters
+        { kind: 'air', type: 'FLURRY-29', count: 4, formation: 'vee', position: 'ahead', distance: 5000, after: 40, task: 'engage' },
         { kind: 'ground', type: 'l-sam', count: 6, area: 'scattered', distance: 4800 },
       ] },
       { label: 'Thunderheads inbound', glassfall: { impacts: 7 }, groups: [
         { kind: 'air', type: 'THUNDERHEAD', count: 6, formation: 'line', position: 'ahead', distance: 4800, optional: true },
         { kind: 'air', type: 'THUNDERHEAD', count: 6, formation: 'line', position: 'left', distance: 4600, after: 12, optional: true },
-        { kind: 'air', type: 'NV-56N', count: 4, formation: 'pair', distance: 800, near: 'l-sam', after: 5, task: 'scramble' },      // scrambling from hardened city shelters
+        { kind: 'air', type: 'NV-14', count: 4, formation: 'pair', distance: 800, near: 'l-sam', after: 5, task: 'scramble' },      // scrambling from hardened city shelters
       ] },
     ],
   },
@@ -766,8 +767,8 @@ export const MISSIONS = [
         { kind: 'ground', type: 'c-ram', count: 6, area: 'base', distance: 4400 },
         { kind: 'ground', type: 'aa', count: 9, area: 'scattered', distance: 4400 },
         { kind: 'ground', type: 'sam', count: 3, area: 'base', distance: 4800 },
-        { kind: 'air', type: 'NV-56N', count: 2, formation: 'pair', position: 'ahead', distance: 1500, near: 'radar', task: 'patrol' },
-        { kind: 'air', type: 'NV-73', count: 4, formation: 'vee', distance: 800, near: 'railgun', after: 10, task: 'scramble' },
+        { kind: 'air', type: 'NV-14', count: 2, formation: 'pair', position: 'ahead', distance: 1500, near: 'radar', task: 'patrol' },
+        { kind: 'air', type: 'NV-18E', count: 4, formation: 'vee', distance: 800, near: 'railgun', after: 10, task: 'scramble' },
       ] },
       { label: 'Siege crawlers', groups: [
         { kind: 'ground', type: 'siege crawler', count: 2, area: 'scattered', distance: 4800 },
@@ -784,11 +785,11 @@ export const MISSIONS = [
     phases: [
       { label: 'Holdouts', stagger: 30, groups: [
         { kind: 'ground', type: 'aa', count: 8, area: 'scattered', distance: 4000 },
-        { kind: 'air', type: 'KD-38H', count: 5, formation: 'loose', position: 'left', distance: 1500, near: 'aa', task: 'patrol' },
-        { kind: 'air', type: 'KD-38H', count: 3, formation: 'loose', position: 'right', distance: 2500, near: 'aa', task: 'patrol' },
-        { kind: 'air', type: 'NV-56N', count: 2, formation: 'pair', position: 'ahead', distance: 3200, task: 'patrol' },
-        { kind: 'air', type: 'NV-11', count: 2, formation: 'pair', position: 'left', distance: 3000, task: 'patrol' },
-        { kind: 'air', type: 'SQUALL-7', count: 2, formation: 'pair', position: 'right', distance: 3000, task: 'patrol' },
+        { kind: 'air', type: 'KD-28H', count: 5, formation: 'loose', position: 'left', distance: 1500, near: 'aa', task: 'patrol' },
+        { kind: 'air', type: 'KD-28H', count: 3, formation: 'loose', position: 'right', distance: 2500, near: 'aa', task: 'patrol' },
+        { kind: 'air', type: 'NV-14', count: 2, formation: 'pair', position: 'ahead', distance: 3200, task: 'patrol' },
+        { kind: 'air', type: 'NV-4', count: 2, formation: 'pair', position: 'left', distance: 3000, task: 'patrol' },
+        { kind: 'air', type: 'SQUALL-27', count: 2, formation: 'pair', position: 'right', distance: 3000, task: 'patrol' },
       ] },
       { label: "Chime's last round", groups: [
         { kind: 'air', type: 'Q07 CHIME', count: 4, formation: 'vee', position: 0, distance: 6600, task: 'engage', flight: 4 },
@@ -808,14 +809,14 @@ export const MISSIONS = [
     //   launches jets.
     phases: [
       { label: 'Screening group', groups: [
-        { kind: 'air', type: 'NV-73', count: 6, formation: 'vee', position: 'ahead', distance: 1500, near: 'cruiser', task: 'patrol' },
+        { kind: 'air', type: 'NV-18E', count: 6, formation: 'vee', position: 'ahead', distance: 1500, near: 'cruiser', task: 'patrol' },
         { kind: 'naval', type: 'cruiser', count: 3, area: 'fleet', distance: 4800 },
         { kind: 'naval', type: 'cargo ship', count: 4, area: 'fleet', distance: 5100 },
       ] },
       { label: 'Carrier group', stagger: 40, groups: [
         { kind: 'air', type: 'Q11', count: 6, formation: 'vee', position: 'ahead', distance: 6400, task: 'engage' },
         { kind: 'air', type: 'Q11', count: 6, formation: 'vee', position: 'left', distance: 2000, near: 'carrier', task: 'patrol' },
-        { kind: 'air', type: 'NV-56N', count: 4, formation: 'pair', distance: 800, near: 'carrier', after: 15, task: 'scramble' },      // carrier launches
+        { kind: 'air', type: 'NV-14', count: 4, formation: 'pair', distance: 800, near: 'carrier', after: 15, task: 'scramble' },      // carrier launches
         { kind: 'naval', type: 'carrier', count: 1, area: 'fleet', distance: 5500 },
         { kind: 'naval', type: 'cruiser', count: 3, area: 'fleet', distance: 5100 },
         { kind: 'naval', type: 'frigate', count: 5, area: 'fleet', distance: 4800 },
@@ -826,7 +827,7 @@ export const MISSIONS = [
         { kind: 'naval', type: 'cruiser', count: 3, area: 'fleet', distance: 5100 },
         { kind: 'naval', type: 'railgun frigate', count: 3, area: 'fleet', distance: 4800 },
         { kind: 'naval', type: 'boat', count: 16, area: 'scattered', distance: 4000 },
-        { kind: 'air', type: 'NV-56N', count: 4, formation: 'pair', distance: 800, near: 'carrier', after: 5, task: 'scramble' },       // carrier launches
+        { kind: 'air', type: 'NV-14', count: 4, formation: 'pair', distance: 800, near: 'carrier', after: 5, task: 'scramble' },       // carrier launches
       ] },
     ],
   },
@@ -852,12 +853,12 @@ export const MISSIONS = [
         { kind: 'ground', type: 'sam', count: 5, area: 'base', distance: 4400 },
         { kind: 'ground', type: 'aa', count: 6, area: 'scattered', distance: 4400 },
         { kind: 'ground', type: 'railgun', count: 1, area: 'base', distance: 4800 },
-        { kind: 'air', type: 'NV-11', count: 4, formation: 'vee', position: 'ahead', distance: 2000, near: 'gun emplacement', task: 'patrol' },
+        { kind: 'air', type: 'NV-4', count: 4, formation: 'vee', position: 'ahead', distance: 2000, near: 'gun emplacement', task: 'patrol' },
         { kind: 'air', type: 'Q09', count: 6, formation: 'vee', position: 'left', distance: 2500, near: 'bunker', task: 'patrol' },
       ] },
       { label: 'Sky over Lanternport', groups: [
-        { kind: 'air', type: 'NV-62', count: 8, formation: 'vee', position: 'ahead', distance: 5500, task: 'engage' },
-        { kind: 'air', type: 'NV-56N', count: 5, formation: 'vee', position: 'right', distance: 5500, task: 'engage' },
+        { kind: 'air', type: 'NV-15C', count: 8, formation: 'vee', position: 'ahead', distance: 5500, task: 'engage' },
+        { kind: 'air', type: 'NV-14', count: 5, formation: 'vee', position: 'right', distance: 5500, task: 'engage' },
         { kind: 'air', type: 'KD-480E', count: 2, formation: 'pair', position: 'high', distance: 4000, task: 'patrol' },
         { kind: 'ground', type: 'sam', count: 3, area: 'base', distance: 4000, optional: true },
         { kind: 'ground', type: 'aa', count: 6, area: 'scattered', distance: 4000, optional: true },
@@ -869,14 +870,14 @@ export const MISSIONS = [
         { kind: 'naval', type: 'battleship', count: 1, area: 'fleet', distance: 5100 },
         { kind: 'naval', type: 'carrier', count: 1, area: 'fleet', distance: 5500 },
         { kind: 'naval', type: 'cruiser', count: 8, area: 'fleet', distance: 4800 },
-        { kind: 'air', type: 'NV-56N', count: 4, formation: 'pair', distance: 800, near: 'carrier', after: 15, task: 'scramble' },      // carrier launches
+        { kind: 'air', type: 'NV-14', count: 4, formation: 'pair', distance: 800, near: 'carrier', after: 15, task: 'scramble' },      // carrier launches
       ] },
       { label: 'Lighthouse batteries', stagger: 45, groups: [
         { kind: 'ground', type: 'sam', count: 6, area: 'base', distance: 4000 },
         { kind: 'ground', type: 'gun emplacement', count: 12, area: 'base', distance: 4000 },
         { kind: 'ground', type: 'aa', count: 12, area: 'base', distance: 4000 },
-        { kind: 'air', type: 'KD-38H', count: 5, formation: 'loose', position: 'low', distance: 1500, near: 'gun emplacement', task: 'patrol' },
-        { kind: 'air', type: 'KD-38H', count: 3, formation: 'loose', position: 'low', distance: 1500, near: 'sam', task: 'patrol' },
+        { kind: 'air', type: 'KD-28H', count: 5, formation: 'loose', position: 'low', distance: 1500, near: 'gun emplacement', task: 'patrol' },
+        { kind: 'air', type: 'KD-28H', count: 3, formation: 'loose', position: 'low', distance: 1500, near: 'sam', task: 'patrol' },
       ] },
     ],
   },

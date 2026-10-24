@@ -21,7 +21,7 @@
 <body>
 <div id="banner" hidden></div>
 <script type="module">
-import { Menu, loadSettings, saveSettings, DEFAULT_SETTINGS, CREDITS, SETTING_DEFS } from './js/menu.js';
+import { Menu, loadSettings, saveSettings, DEFAULT_SETTINGS, CREDITS, SETTING_DEFS, DIFFICULTY_PICKS, DIFFICULTY_PICKED_KEY, loadDifficultyPicked, saveDifficultyPicked } from './js/menu.js';
 import { MISSIONS, countUnits } from './js/missions.js';
 import { Input, shapeAxis, STICK_EXPO } from './js/input.js';
 import { loadBest, saveBest, BEST_KEY } from './js/infinity.js';
@@ -74,13 +74,15 @@ const press = (...names) => { step(1 / 60, names.map((n) => NAMES[n])); step(1 /
 // The menu ignores input for a moment after it opens (0.25 s; 0.8 s for the debrief), timed on the wall clock (Menu.show sets
 // _lockUntil from performance.now()), so a fake dt can't skip it: wait out the remaining lock for real, then step.
 const settle = async () => { await new Promise((r) => setTimeout(r, Math.max(0, (menu._lockUntil || 0) - performance.now()) + 20)); step(1.0); };
-const focused = () => { const f = menu.el.querySelector('.is-focus'); if (!f) return null; const d = f.dataset; return d.act || d.key || d.tab || (d.mission !== undefined ? 'm' + d.mission : '?'); };
+const focused = () => { const f = menu.el.querySelector('.is-focus'); if (!f) return null; const d = f.dataset; return d.act || d.key || d.tab || d.diff || (d.mission !== undefined ? 'm' + d.mission : '?'); };
 const last = () => calls[calls.length - 1] || [];
 // layout-agnostic: press each direction (up to 4 times) until `target` has focus
 const reach = (target, ...dirs) => { for (const d of dirs) for (let i = 0; i < 4 && focused() !== target; i++) press(d); return focused() === target; };
 const scr = (n) => menu.el.querySelector(`[data-screen="${n}"]`);
 const backup = (() => { try { return localStorage.getItem('wingnut.settings'); } catch { return null; } })();
 const bestBackup = (() => { try { return localStorage.getItem(BEST_KEY); } catch { return null; } })();
+const pickedBackup = (() => { try { return localStorage.getItem(DIFFICULTY_PICKED_KEY); } catch { return null; } })();
+saveDifficultyPicked(true);   // the flows below launch straight away; the first-run picker has its own section near the end
 const before = { ...settings };
 
 async function runSelfTest() {
@@ -119,6 +121,16 @@ async function runSelfTest() {
   const q0 = settings.quality;
   press('right'); check('right cycles Quality', settings.quality !== q0 && last()[0] === 'set' && last()[1] === 'quality', [q0, settings.quality]);
   press('left'); check('left cycles back', settings.quality === q0, settings.quality);
+  { const opts = SETTING_DEFS.find((d) => d.key === 'quality').options.map((o) => o[0]);
+    check('Quality choices: Auto, Very low, Low, Medium, High, Ultra', opts.join() === 'auto,verylow,low,medium,high,ultra', opts);
+    check('Very low is labelled', SETTING_DEFS.find((d) => d.key === 'quality').options[1][1] === 'Very low');
+    const before = settings.quality;
+    menu.setSetting('quality', 'auto'); press('right');
+    check('right from Auto picks Very low', settings.quality === 'verylow', settings.quality);
+    const row = menu.el.querySelector('.m-row[data-key="quality"]');
+    check('the row shows Very low', !!row && /very low/i.test(row.textContent), row && row.textContent);
+    press('left'); check('left from Very low returns to Auto', settings.quality === 'auto', settings.quality);
+    menu.setSetting('quality', before); }
   press('up'); check('up returns to the tab bar', focused() === 'graphics', focused());
   press('right'); check('right on the tab bar switches tab', focused() === 'controls' && !scr('settings').querySelector('[data-tabpanel="controls"]').hidden, focused());
   press('down'); check('first Controls row is Invert pitch', focused() === 'invertPitch', focused());
@@ -198,6 +210,9 @@ async function runSelfTest() {
     const keep = localStorage.getItem('wingnut.settings');
     localStorage.setItem('wingnut.settings', JSON.stringify({ quality: 'high', cameraShake: false, subtitles: false }));
     const old = loadSettings();
+    if (keep === null) localStorage.removeItem('wingnut.settings'); else localStorage.setItem('wingnut.settings', keep);
+    localStorage.setItem('wingnut.settings', JSON.stringify({ quality: 'verylow' }));
+    check('a saved Very low loads back', loadSettings().quality === 'verylow', loadSettings().quality);
     if (keep === null) localStorage.removeItem('wingnut.settings'); else localStorage.setItem('wingnut.settings', keep);
     check('an older save loads Screen flash Off', old.screenFlash === false && old.cameraShake === false && old.quality === 'high', old);
     check('an older save loads the default stick expo', old.expoPitch === STICK_EXPO && old.expoRoll === STICK_EXPO && old.expoYaw === STICK_EXPO, old);
@@ -476,11 +491,114 @@ async function runSelfTest() {
     }
   }
 
+  // FIRST-RUN DIFFICULTY: the picker on the first campaign start, its persistence, cancel, navigation and touch
+  {
+    const P = scr('difficulty'), diffSel = () => P.querySelector('[data-diff][aria-checked="true"]')?.dataset.diff;
+    const diffRow = () => menu.el.querySelector('.m-row[data-key="difficulty"] .m-seg .is-on')?.dataset.val;
+    const d0 = settings.difficulty;
+    saveDifficultyPicked(false); menu._pickedSession = false;
+    menu.setSetting('difficulty', 'normal');
+    check('picked flag clears', !loadDifficultyPicked());
+    menu.show('title'); await settle();
+    check('title focus on Start Campaign', focused() === 'start', focused());
+    let n0 = calls.length;
+    press('ok');
+    check('first Start Campaign opens the difficulty picker, mission not started', menu.open && menu.screen === 'difficulty' && calls.length === n0, [menu.screen, calls.slice(n0)]);
+    check('picker is a modal over the dimmed title', !P.hidden && !scr('title').hidden && scr('title').classList.contains('m-under') && scr('title').inert && P.getAttribute('aria-modal') === 'true');
+    const opts = [...P.querySelectorAll('[data-diff]')];
+    check('lists Easy, Normal, Hard, Mercenary', opts.map((o) => o.dataset.diff).join() === 'easy,normal,hard,mercenary' &&
+      opts.map((o) => o.querySelector('.m-diff-name').firstChild.textContent).join() === 'Easy,Normal,Hard,Mercenary', opts.map((o) => o.textContent));
+    check('Easy pre-selected and focused', diffSel() === 'easy' && focused() === 'easy', [diffSel(), focused()]);
+    const rec = P.querySelectorAll('.m-diff-rec');
+    check('only Easy is tagged Recommended for new players', rec.length === 1 && rec[0].closest('[data-diff]').dataset.diff === 'easy' && rec[0].textContent === 'Recommended for new players');
+    const blurbs = opts.map((o) => o.querySelector('small').textContent), words = blurbs.map((b) => b.split(/\s+/).length);
+    check('one 6-10 word blurb per difficulty', blurbs.every((b, i) => b === DIFFICULTY_PICKS[i][2]) && words.every((w) => w >= 6 && w <= 10), words);
+    check('Mercenary blurb in the designer\'s words', blurbs[3].startsWith('More enemies, no limits.'), blurbs[3]);
+    check('blurbs visible', opts.every((o) => o.querySelector('small').getClientRects().length > 0));
+    press('down'); check('down selects Normal', focused() === 'normal' && diffSel() === 'normal', [focused(), diffSel()]);
+    press('down'); press('down'); check('down reaches Mercenary', focused() === 'mercenary' && diffSel() === 'mercenary', focused());
+    press('down'); check('down from the list reaches Start', focused() === 'diff-ok', focused());
+    press('up'); check('up from Start lands on the selected difficulty', focused() === 'mercenary', focused());
+    check('browsing does not change the setting', settings.difficulty === 'normal' && calls.slice(n0).every((c) => c[0] !== 'set'), calls.slice(n0));
+    press('back');
+    check('B cancels back to the title', menu.screen === 'title' && focused() === 'start' && !calls.slice(n0).some((c) => c[0] === 'start'), [menu.screen, focused()]);
+    check('cancel stores nothing', !loadDifficultyPicked() && settings.difficulty === 'normal');
+    press('ok');
+    check('Start again reopens the picker on Easy', menu.screen === 'difficulty' && diffSel() === 'easy' && focused() === 'easy', [menu.screen, diffSel()]);
+    press('down'); press('down');
+    check('Hard selected', diffSel() === 'hard', diffSel());
+    n0 = calls.length;
+    press('ok');
+    const got = calls.slice(n0);
+    check('A saves the difficulty, then starts mission 1', got.length === 2 && got[0].join() === 'set,difficulty,hard' && got[1].join() === 'start,0' && !menu.open, got);
+    let stored = null; try { stored = JSON.parse(localStorage.getItem('wingnut.settings')); } catch { /* blocked */ }
+    check('difficulty setting persisted', settings.difficulty === 'hard' && stored && stored.difficulty === 'hard' && loadSettings().difficulty === 'hard', stored);
+    check('difficulty picked flag persisted', loadDifficultyPicked() && localStorage.getItem(DIFFICULTY_PICKED_KEY) === '1');
+    check('Settings shows the choice', diffRow() === 'hard', diffRow());
+    menu.show('title'); await settle(); n0 = calls.length; press('ok');
+    check('later Start Campaign skips the picker', last().join() === 'start,0' && calls.length === n0 + 1 && !menu.open, last());
+    { // a new page load (another Menu) reads the stored flag
+      const host = document.createElement('div'); document.body.appendChild(host); const c2 = [];
+      const m2 = new Menu(host, { settings: { ...settings }, missions: MISSIONS, onStart: (i) => c2.push(i) });
+      m2._needsPick() || m2._start(2);
+      check('the flag survives a reload', !m2._needsPick() && c2.join() === '2', c2);
+      m2.dispose(); host.remove();
+    }
+    // Mission Select as the first start, by touch: a tap selects, Start launches
+    saveDifficultyPicked(false); menu._pickedSession = false;
+    menu.show('missions', { selected: 6 }); step(1 / 60);
+    n0 = calls.length;
+    menu.el.querySelector('[data-screen="missions"] [data-act="launch"]').click();
+    check('first launch from Mission Select opens the picker over it', menu.screen === 'difficulty' && scr('missions').classList.contains('m-under') && !calls.slice(n0).some((c) => c[0] === 'start'), menu.screen);
+    P.querySelector('[data-diff="mercenary"]').click();
+    check('tapping a difficulty selects it without starting', menu.screen === 'difficulty' && diffSel() === 'mercenary' && !calls.slice(n0).some((c) => c[0] === 'start'), [diffSel(), last()]);
+    P.querySelector('[data-act="back"]').click();
+    check('tapping Back returns to Mission Select', menu.screen === 'missions' && !calls.slice(n0).some((c) => c[0] === 'start'), menu.screen);
+    menu.el.querySelector('[data-screen="missions"] [data-act="launch"]').click();
+    P.querySelector('[data-diff="easy"]').click();
+    P.querySelector('[data-act="diff-ok"]').click();
+    check('tapping Start launches the selected mission on Easy', last().join() === 'start,6' && settings.difficulty === 'easy' && loadDifficultyPicked() && !menu.open, [last(), settings.difficulty]);
+    // Restore defaults on the Gameplay tab resets the choice: the picker comes back
+    menu.show('settings', { tab: 'gameplay' }); step(1 / 60);
+    scr('settings').querySelector('[data-tabpanel="gameplay"] [data-act="reset-tab"]').click();
+    check('Gameplay Restore defaults clears the flag', !loadDifficultyPicked() && settings.difficulty === DEFAULT_SETTINGS.difficulty);
+    menu.show('title'); await settle(); press('ok');
+    check('after a reset the picker shows again', menu.screen === 'difficulty', menu.screen);
+    press('back');
+    // INFINITY keeps its own ramp: no picker
+    n0 = calls.length; press('down'); press('ok');
+    check('Infinity starts without the picker', last()[0] === 'infinity' && calls.length === n0 + 1 && !menu.open, calls.slice(n0));
+    // Blocked storage: the picker shows once per session (Menu instance), never throws
+    const SP = Storage.prototype, real = { g: SP.getItem, s: SP.setItem, r: SP.removeItem };
+    const boom = () => { throw new DOMException('blocked', 'SecurityError'); };
+    try {
+      SP.getItem = boom; SP.setItem = boom; SP.removeItem = boom;
+      check('blocked storage: flag reads as not picked, save reports failure', !loadDifficultyPicked() && saveDifficultyPicked(true) === false);
+      const host = document.createElement('div'); document.body.appendChild(host); const c3 = [];
+      const m3 = new Menu(host, { settings: { ...settings }, missions: MISSIONS, onStart: (i) => c3.push(i) });
+      m3.show('title');
+      await new Promise((r) => setTimeout(r, Math.max(0, (m3._lockUntil || 0) - performance.now()) + 20));
+      const nav3 = (k) => { for (const e of EDGES) fake[e] = false; fake[k] = true; m3.update(1 / 60, fake); fake[k] = false; m3.update(1 / 60, fake); };
+      nav3('menuConfirm');
+      check('blocked storage: the first start shows the picker', m3.screen === 'difficulty' && !c3.length, m3.screen);
+      nav3('menuConfirm');
+      check('blocked storage: confirming still starts', c3.join() === '0' && !m3.open, c3);
+      m3.show('title');
+      await new Promise((r) => setTimeout(r, Math.max(0, (m3._lockUntil || 0) - performance.now()) + 20));
+      nav3('menuConfirm');
+      check('blocked storage: no picker again this session', c3.join() === '0,0' && !m3.open, [c3, m3.screen]);
+      m3.dispose(); host.remove();
+    } finally { SP.getItem = real.g; SP.setItem = real.s; SP.removeItem = real.r; }
+    check('difficulty screen visited', visited.has('difficulty'));
+    menu.setSetting('difficulty', d0);
+  }
+
   // Restore the stored settings (the game shares this origin)
   for (const key of Object.keys(DEFAULT_SETTINGS)) menu.setSetting(key, before[key]);
   menu.hide();
   try { if (backup === null) localStorage.removeItem('wingnut.settings'); else localStorage.setItem('wingnut.settings', backup); } catch { /* blocked */ }
   try { if (bestBackup === null) localStorage.removeItem(BEST_KEY); else localStorage.setItem(BEST_KEY, bestBackup); } catch { /* blocked */ }
+  try { if (pickedBackup === null) localStorage.removeItem(DIFFICULTY_PICKED_KEY); else localStorage.setItem(DIFFICULTY_PICKED_KEY, pickedBackup); } catch { /* blocked */ }
   calls.length = 0;
   const fails = results.filter((x) => !x.ok).length;
   console.log(fails ? `MENU_FAIL ${fails}/${results.length} checks failed` : `MENU_OK ${results.length} checks · screens ${[...visited].join(',')} · sounds ${JSON.stringify(sounds)}`);

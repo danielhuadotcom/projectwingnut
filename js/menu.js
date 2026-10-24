@@ -26,6 +26,12 @@
 // click, key or touch handler, so clicks and Enter / Space / ←→ on the row ask from the DOM event itself; a gamepad press
 // is no user activation, and when the browser refuses it the row shows a short note. The game's shortcut key calls
 // toggleFullscreen() from its keydown handler.
+// FIRST-RUN DIFFICULTY: the first campaign start (Start Campaign, or a launch from Mission Select) opens a small picker
+// (screen 'difficulty', a modal over the screen that opened it) before onStart: Easy, Normal, Hard, Mercenary with a
+// one-line blurb each (DIFFICULTY_PICKS, from main.js DIFFICULTY), Easy pre-selected and recommended. Starting writes
+// the difficulty setting (onSetting, so Settings shows it) and the 'wingnut.difficultyPicked' flag; Back cancels to the
+// screen that opened it. It never shows again until Settings › Gameplay › Restore defaults clears the flag. When
+// storage fails it shows once per page session. INFINITY skips it (its own ramp).
 
 import { countUnits } from './missions.js';
 import { shapeAxis, STICK_EXPO, EXPO_MAX } from './input.js';
@@ -53,8 +59,8 @@ export const SETTING_TABS = [['graphics', 'Graphics'], ['controls', 'Controls'],
  *  desc: help line; descs: per-value help line (replaces desc). */
 export const SETTING_DEFS = [
   { key: 'quality', tab: 'graphics', type: 'choice', label: 'Quality',
-    options: [['auto', 'Auto'], ['low', 'Low'], ['medium', 'Medium'], ['high', 'High'], ['ultra', 'Ultra']],
-    desc: 'Auto starts from your GPU and steps the level down or up to hold the frame rate.' },
+    options: [['auto', 'Auto'], ['verylow', 'Very low'], ['low', 'Low'], ['medium', 'Medium'], ['high', 'High'], ['ultra', 'Ultra']],
+    desc: 'Auto starts from your GPU and steps the level down if the frame rate cannot hold. Very low is for budget tablets.' },
   { key: 'perfOverlay', tab: 'graphics', type: 'toggle', label: 'Performance overlay',
     desc: 'Frame rate, GPU time and render resolution in the top corner.' },
   // Not saved: the row shows and changes the browser's fullscreen state (FULLSCREEN in the header)
@@ -97,6 +103,26 @@ export const SETTING_DEFS = [
     } },
 ];
 const DEF = Object.fromEntries(SETTING_DEFS.map((d) => [d.key, d]));
+
+/** First-run difficulty picker (FIRST-RUN DIFFICULTY in the header): [value, label, blurb]. Blurbs follow main.js
+ *  DIFFICULTY: attackers at once (aggressors 1/2/4/no cap), enemy missiles after you at once (playerMissiles 1/2/3/4),
+ *  flak guns firing at once (aaGuns 2/4/6/14), extra groups (Hard, Mercenary), enemy HP (x0.8/1/1.15/1.3) and the
+ *  damage you take (armor x0.35/0.5/0.7/1.0). */
+export const DIFFICULTY_PICKS = [
+  ['easy', 'Easy', 'One attacker, one missile, light flak. Softer bandits.'],
+  ['normal', 'Normal', 'Two attackers, two missiles at once. The intended balance.'],
+  ['hard', 'Hard', 'Four attackers, extra enemy groups, tougher bandits, heavier flak.'],
+  ['mercenary', 'Mercenary', 'More enemies, no limits. Toughest bandits, no armor bonus.'],
+];
+export const DIFFICULTY_PICKED_KEY = 'wingnut.difficultyPicked';
+/** True when the first-run picker was completed and stored. Never throws (storage failure reads as not picked). */
+export function loadDifficultyPicked() {
+  try { return localStorage.getItem(DIFFICULTY_PICKED_KEY) === '1'; } catch { return false; }
+}
+/** Store or clear the flag. Returns false when storage is unavailable. */
+export function saveDifficultyPicked(on) {
+  try { if (on) localStorage.setItem(DIFFICULTY_PICKED_KEY, '1'); else localStorage.removeItem(DIFFICULTY_PICKED_KEY); return true; } catch { return false; }
+}
 const FULLSCREEN = 'fullscreen';
 const ROW_KEYS = new Set(['Enter', 'NumpadEnter', 'Space', ' ', 'ArrowLeft', 'ArrowRight']);   // js/input.js confirm / ←→ keys
 
@@ -178,7 +204,8 @@ export const CREDITS = [
 // =================================================================================================================
 // Markup helpers
 // =================================================================================================================
-const SCREENS = ['title', 'missions', 'pause', 'debrief', 'settings', 'controls', 'credits', 'confirm'];
+const SCREENS = ['title', 'missions', 'pause', 'debrief', 'settings', 'controls', 'credits', 'confirm', 'difficulty'];
+const MODALS = new Set(['confirm', 'difficulty']);   // drawn over the dimmed screen beneath
 const ROOTS = new Set(['title', 'pause', 'debrief']);
 const ESC = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ESC[c]);
@@ -285,6 +312,7 @@ export class Menu {
     this._missionSel = 0; this._detailFor = -1; this._missionIndex = -1;
     this._deb = { canNext: false, infinity: false }; this._pending = null; this._pauseInf = false;
     this._dirty = false; this._saveT = 0; this._drag = null; this._px = -1; this._py = -1;
+    this._diffSel = 'easy'; this._pickFor = null; this._pickedSession = false;   // first-run difficulty picker
     this._device = '';
     this._reduced = media('(prefers-reduced-motion: reduce)');
     this._build();
@@ -297,7 +325,7 @@ export class Menu {
   // ---------------------------------------------------------------------------------------------------------------
   /** Any menu visible. */
   get open() { return !!this.el && !this.el.hidden; }
-  /** 'title' | 'missions' | 'pause' | 'debrief' | 'settings' | 'controls' | 'credits' | 'confirm', or null when closed. */
+  /** 'title' | 'missions' | 'pause' | 'debrief' | 'settings' | 'controls' | 'credits' | 'confirm' | 'difficulty', or null when closed. */
   get screen() { return this.open && this._stack.length ? this._stack[this._stack.length - 1].screen : null; }
 
   /**
@@ -458,7 +486,7 @@ export class Menu {
     // the briefing text would launch the selected mission, a tap on the credits text would leave the screen).
     el.setAttribute('data-touch-ignore', '');
     el.innerHTML = '<div class="m-scrim" aria-hidden="true"></div>' + this._htmlTitle() + this._htmlMissions() + this._htmlPause() +
-      this._htmlDebrief() + this._htmlSettings() + this._htmlControls() + this._htmlCredits() + this._htmlConfirm();
+      this._htmlDebrief() + this._htmlSettings() + this._htmlControls() + this._htmlCredits() + this._htmlConfirm() + this._htmlDifficulty();
     this.root.insertBefore(el, this.root.firstChild);
     const q = (sel, r = el) => r.querySelector(sel);
     this._screens = {};
@@ -480,6 +508,7 @@ export class Menu {
     this._kbCard = q('.m-card--kb'); this._creditsEl = q('.m-credits');
     const C = this._screens.confirm;
     this._cf = { title: q('.m-h2', C), text: q('.m-lede', C), yes: q('[data-act="confirm-yes"]', C) };
+    this._diffItems = [...this._screens.difficulty.querySelectorAll('[data-diff]')];
     this._setTab(this._tab);
     this._syncAllRows();
     this._renderKb();
@@ -633,6 +662,25 @@ export class Menu {
       </div></section>`;
   }
 
+  _htmlDifficulty() {
+    const rows = DIFFICULTY_PICKS.map(([v, label, blurb], i) => `<button type="button" class="m-item m-diff" role="radio" aria-checked="false" ` +
+      `data-nav data-group="diff" data-nohover data-diff="${v}"><span class="m-num" aria-hidden="true">${pad2(i + 1)}</span>` +
+      `<span class="m-lbl"><span class="m-diff-name">${esc(label)}${v === 'easy' ? '<em class="m-badge m-diff-rec">Recommended for new players</em>' : ''}</span>` +
+      `<small>${esc(blurb)}</small></span></button>`).join('');
+    return `<section class="m-screen" data-screen="difficulty" role="dialog" aria-modal="true" aria-labelledby="m-diff-h" aria-describedby="m-diff-d" hidden>
+      <div class="m-panel m-panel--pick">
+        <p class="m-eyebrow">First sortie</p>
+        <h2 class="m-h2" id="m-diff-h">Choose difficulty</h2>
+        <p class="m-lede" id="m-diff-d">Change it any time in Settings › Gameplay.</p>
+        <div class="m-list m-diffs" role="radiogroup" aria-labelledby="m-diff-h">${rows}</div>
+        <div class="m-actions m-actions--row m-diff-act">
+          <button type="button" class="m-btn primary" data-nav data-act="diff-ok">Start <span aria-hidden="true">›</span></button>
+          <button type="button" class="m-btn" data-nav data-act="back">Back</button>
+        </div>
+        ${hintFoot([['ud', 'Select'], ['ok', 'Start'], ['back', 'Back']])}
+      </div></section>`;
+  }
+
   // ---------------------------------------------------------------------------------------------------------------
   // Screen state
   // ---------------------------------------------------------------------------------------------------------------
@@ -659,6 +707,7 @@ export class Menu {
       else if (screen === 'controls') this._renderKb();
       else if (screen === 'credits') this._renderCredits();
       else if (screen === 'confirm') this._setConfirm(data);
+      else if (screen === 'difficulty') this._selectDiff('easy');
     }
     this._render();
     const entry = this._stack[this._stack.length - 1];
@@ -672,7 +721,7 @@ export class Menu {
 
   _render() {
     const top = this.screen;
-    const under = top === 'confirm' && this._stack.length > 1 ? this._stack[this._stack.length - 2].screen : null;
+    const under = MODALS.has(top) && this._stack.length > 1 ? this._stack[this._stack.length - 2].screen : null;
     for (const name of SCREENS) {
       const el = this._screens[name], vis = name === top || name === under;
       if (el.hidden === vis) el.hidden = !vis;
@@ -694,6 +743,7 @@ export class Menu {
       case 'pause': return q('[data-act="resume"]');
       case 'debrief': return q(this._deb.infinity ? '[data-act="infinity"]' : this._deb.canNext ? '[data-act="next"]' : '[data-act="retry"]');
       case 'settings': return q(`[data-tab="${this._tab}"]`);
+      case 'difficulty': return q(`[data-diff="${this._diffSel}"]`);
       default: return q('[data-act="back"]');      // controls, credits, confirm (Cancel)
     }
   }
@@ -798,6 +848,28 @@ export class Menu {
     D.el.scrollTop = 0;
   }
 
+  // ---- First-run difficulty picker (FIRST-RUN DIFFICULTY in the header) ------------------------------------------
+  /** The picker still has to run: not chosen this session, and no stored flag (storage failure counts as none). */
+  _needsPick() { return !this._pickedSession && !loadDifficultyPicked(); }
+  /** Start mission i, through the picker on the first campaign start. */
+  _start(i) {
+    if (this._needsPick()) { this._pickFor = i; this._push('difficulty'); } else this._run('onStart', i);
+  }
+  _selectDiff(v) {
+    if (!DIFFICULTY_PICKS.some((p) => p[0] === v)) return;
+    this._diffSel = v;
+    for (const b of this._diffItems) b.setAttribute('aria-checked', String(b.dataset.diff === v));
+  }
+  /** Save the choice (setting + flag) and start the mission the picker was opened for. */
+  _confirmPick() {
+    const i = this._pickFor == null ? 0 : this._pickFor;
+    this._pickFor = null;
+    this._set('difficulty', this._diffSel);
+    this._pickedSession = true;
+    saveDifficultyPicked(true);
+    this._run('onStart', i);
+  }
+
   _renderKb() { if (this._kbCard) this._kbCard.innerHTML = kbCard(this.settings.mouseKeys !== 'advanced'); }
 
   _renderCredits() {
@@ -867,6 +939,7 @@ export class Menu {
   _resetTab() {
     let changed = false;
     for (const d of SETTING_DEFS) if (d.tab === this._tab) changed = this._set(d.key, DEFAULT_SETTINGS[d.key]) || changed;
+    if (this._tab === 'gameplay') { this._pickedSession = false; saveDifficultyPicked(false); }   // the picker comes back
     this._sound(changed ? 'adjust' : 'select');
   }
 
@@ -992,6 +1065,7 @@ export class Menu {
     el.classList.add('is-focus');
     if (el.dataset.tab && el.dataset.tab !== this._tab) this._setTab(el.dataset.tab);
     if (el.dataset.mission !== undefined) this._selectMission(+el.dataset.mission);
+    if (el.dataset.diff) this._selectDiff(el.dataset.diff);
     if (!o.pointer) {
       try { el.focus({ preventScroll: true }); } catch { /* ignore */ }
       this._reveal(el);
@@ -1021,11 +1095,13 @@ export class Menu {
       return;
     }
     if (d.tab) { const first = this._firstInTab(); if (first) this._focus(first); return; }
-    if (d.mission !== undefined) { if (!pointer) this._run('onStart', +d.mission); return; }
+    if (d.mission !== undefined) { if (!pointer) this._start(+d.mission); return; }
+    if (d.diff) { if (!pointer) this._confirmPick(); return; }   // a click only selects (Start launches)
     switch (d.act) {
-      case 'start': this._run('onStart', 0); break;
+      case 'start': this._start(0); break;
       case 'infinity': this._run('onInfinity'); break;
-      case 'launch': if (this.missions.length) this._run('onStart', this._missionSel); break;
+      case 'launch': if (this.missions.length) this._start(this._missionSel); break;
+      case 'diff-ok': this._confirmPick(); break;
       case 'missions': this._push('missions', { selected: this._missionIndex >= 0 ? this._missionIndex : this._missionSel }); break;
       case 'settings': case 'controls': case 'credits': this._push(d.act); break;
       case 'resume': this._run('onResume'); break;
@@ -1051,6 +1127,7 @@ export class Menu {
     if (this._stack.length > 1) {
       this._stack.pop();
       if (top === 'confirm') this._pending = null;
+      if (top === 'difficulty') this._pickFor = null;
       this._enter(this.screen, null, true);
       this._sound('back');
     } else if (top === 'pause' || !ROOTS.has(top)) this._run('onResume', undefined, 'back');   // a sub-screen opened on its own closes
@@ -1180,13 +1257,14 @@ export class Menu {
     if (el.hasAttribute('data-nav')) {
       const was = this._focusEl;
       this._focus(el, { pointer: true, silent: true });     // a tab or mission row is selected by focusing it
-      if ((el.dataset.tab || el.dataset.mission !== undefined)) { if (was !== el) this._sound('move'); return; }
+      if ((el.dataset.tab || el.dataset.mission !== undefined || el.dataset.diff)) { if (was !== el) this._sound('move'); return; }
     }
     this._activate(el, true);
   }
 
   _onDbl(e) {
-    const row = e.target instanceof Element ? e.target.closest('[data-mission]') : null;
-    if (row && this._cur && this._cur.contains(row)) this._run('onStart', +row.dataset.mission);
+    const t = e.target instanceof Element ? e.target : null, row = t && t.closest('[data-mission]'), dif = t && t.closest('[data-diff]');
+    if (row && this._cur && this._cur.contains(row)) this._start(+row.dataset.mission);
+    else if (dif && this._cur && this._cur.contains(dif) && this.screen === 'difficulty') this._confirmPick();
   }
 }

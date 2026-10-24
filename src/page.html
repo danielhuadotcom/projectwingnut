@@ -67,6 +67,7 @@ body { margin: 0; background: var(--bg); color: var(--fg); font-family: var(--mo
 .m-panel--menu { width: min(440px, 100%); }
 .m-panel--debrief { width: min(640px, 100%); }
 .m-panel--confirm { width: min(460px, 100%); }
+.m-panel--pick { width: min(580px, 100%); }
 .m-panel--settings { width: min(800px, 100%); height: min(700px, 100%); }
 .m-panel--wide { width: min(1120px, 100%); }
 .m-panel--missions { height: min(780px, 100%); }
@@ -194,6 +195,17 @@ body { margin: 0; background: var(--bg); color: var(--fg); font-family: var(--mo
 .m-mis[aria-selected="true"] { border-color: var(--line); background: linear-gradient(90deg, rgba(156, 235, 255, 0.18), rgba(156, 235, 255, 0.04)); }
 .m-mis[aria-selected="true"] .m-mis-n { color: var(--hud); }
 .m-mis[aria-selected="true"] .m-mis-name { color: #fff; }
+/* First-run difficulty picker (js/menu.js FIRST-RUN DIFFICULTY): a small modal like Confirm; the chosen row stays lit */
+.m-panel--pick .m-lede { margin-bottom: 14px; }
+.m-diffs { margin-bottom: 18px; }
+.m-diff-act .m-btn.primary { order: 0; flex-basis: 0; }   /* Start | Back on one row, like Confirm */
+.m-diff { min-height: 56px; }
+.m-diff-name { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; }
+.m-diff-rec { font-style: normal; color: var(--accent); border-color: rgba(255, 122, 31, 0.6); }
+.m-diff .m-lbl small { line-height: 1.35; }
+.m-diff[aria-checked="true"] { border-color: var(--line); color: #fff; background: linear-gradient(90deg, rgba(156, 235, 255, 0.16), rgba(156, 235, 255, 0.03) 75%, rgba(156, 235, 255, 0)); }
+.m-diff[aria-checked="true"] .m-num { color: var(--hud); }
+.m-diff[aria-checked="true"]::before { content: ""; position: absolute; left: -1px; top: -1px; bottom: -1px; width: 3px; background: var(--hud); box-shadow: 0 0 12px rgba(156, 235, 255, 0.7); }
 .m-detail { display: flex; flex-direction: column; gap: 14px; padding: 24px 30px 0 28px; }
 .m-detail .m-eyebrow { margin: 0; }
 .m-dname { margin: -4px 0 0; font: 700 clamp(28px, 3vw, 42px)/1 var(--display); letter-spacing: 0.05em; text-transform: uppercase; color: var(--pale); }
@@ -312,6 +324,11 @@ body { margin: 0; background: var(--bg); color: var(--fg); font-family: var(--mo
   .m-dact .m-btn, .m-actions .m-btn.primary { min-height: 44px; }
   .m-deb-stats { margin: 12px 0 14px; }
   .m-lede { margin: 8px 0 14px; }
+  .m-diff { min-height: 40px; }
+  .m-diff .m-lbl small { display: block; }   /* the blurb is the point of the picker */
+  .m-panel--pick { overflow-y: auto; }
+  .m-diffs { margin-bottom: 10px; }
+  .m-diff-rec { padding: 2px 5px; }
   .m-title .m-list { gap: 2px; }          /* six title entries (INFINITY under Start Campaign) */
   .m-title .m-item { min-height: 36px; }
 }
