@@ -33,7 +33,7 @@ const CRIT_EVERY = 5;       // s: a critical call breaks into a line at most thi
 const CRIT_TTL = 2.5, AMBIENT_TTL = 3;
 const DEBRIEF_CAP = 8;      // s past the completion hold the debrief waits for plot lines
 const WSO_SHARE = 0.6;      // share of pool-backed AWACS calls the WSO takes
-const LABELS = { AWACS: 'AWACS CLAUDE', WSO: 'WSO', MAINSPRING: 'MAINSPRING' };
+const LABELS = { AWACS: 'AWACS CLAUDE', WSO: 'WSO SPANNER', MAINSPRING: 'MAINSPRING' };
 // AWACS event keys: priority class, default cooldown (s)
 const CRITICAL = new Set(['missileIncoming', 'pullUp', 'checkSix', 'playerHit', 'lowHealth', 'tunnelCrash', 'outOfBounds', 'playerDown']);
 // Per-trigger cooldowns (s), shared by the AWACS and WSO versions of a call; they start when a line goes on air. Kept

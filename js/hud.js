@@ -29,7 +29,7 @@ const COL = {
   mainspring: '#FF5C6C',
 };
 /** Radio subtitle speaker label -> colour (frame.radio.speaker). */
-const RADIO_COL = { 'AWACS CLAUDE': COL.amber, WSO: COL.wso, MAINSPRING: COL.mainspring };
+const RADIO_COL = { 'AWACS CLAUDE': COL.amber, 'WSO SPANNER': COL.wso, MAINSPRING: COL.mainspring };
 
 const NO_DASH = [];
 const EMPTY = [];

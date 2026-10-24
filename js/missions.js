@@ -94,7 +94,7 @@
 //     looks the same. Distances keep time to engagement short (behavior makes the variety): inbound waves within 7 km
 //     and fast, holding flights within 4.5 km of the anchor, scrambles within 5 km, surface groups about 3.5-5.5 km.
 //       position = 'ahead' | 'left' | 'right' | 'behind' | 'high' | 'low' ('ahead' at +900 m / -350 m) or a bearing in
-//         degrees (0 = ahead, clockwise); distance = m from the anchor (air: 1500-7500), or from the near site.
+//         degrees (0 = ahead, clockwise); distance = m from the anchor (air: 1500-7500; aces 1500-9500), or from the near site.
 //       near = a surface type (this phase's, else the latest earlier phase's): the site is where those units stand and
 //         distance (0-3000, default 0) offsets it toward position. For task 'escort': an air type entering with it.
 //       after = s into the phase before the group enters (waves, ambushes, scrambles); sooner if the field is cleared.
@@ -429,9 +429,9 @@ export const MISSIONS = [
         { kind: 'air', type: 'Q07', count: 3, formation: 'vee', position: 'left', distance: 5000, after: 25, task: 'engage', difficulty: 'mercenary' },
       ] },
       { label: 'Chime Squadron', endAtRemaining: 2, groups: [   // won with two left: the rest of Chime pulls out with Mainspring
-        { kind: 'air', type: 'Q07 MAINSPRING', count: 1, formation: 'pair', position: 'behind', distance: 2300, task: 'engage' },
-        { kind: 'air', type: 'Q07 CHIME', count: 2, formation: 'pair', position: 'behind', distance: 2000, task: 'engage' },
-        { kind: 'air', type: 'Q11 CHIME', count: 1, formation: 'pair', position: 'behind', distance: 2500, task: 'engage' },
+        { kind: 'air', type: 'Q07 MAINSPRING', count: 1, formation: 'pair', position: 'behind', distance: 5000, task: 'engage' },
+        { kind: 'air', type: 'Q07 CHIME', count: 2, formation: 'pair', position: 'behind', distance: 4700, task: 'engage' },
+        { kind: 'air', type: 'Q11 CHIME', count: 1, formation: 'pair', position: 'behind', distance: 5200, task: 'engage' },
       ] },
     ],
   },
@@ -636,9 +636,9 @@ export const MISSIONS = [
         { kind: 'air', type: 'NV-16', count: 4, formation: 'vee', position: 'behind', distance: 4000, after: 40, task: 'engage' },
       ] },
       { label: 'Chime strikes the hour', endAtRemaining: 2, groups: [   // won with two left: Mainspring pulls the survivors out
-        { kind: 'air', type: 'Q07 CHIME', count: 1, formation: 'pair', position: 230, distance: 6500, task: 'engage', mainspring: true },   // unnamed: one of the jets that get away
-        { kind: 'air', type: 'Q07 CHIME', count: 3, formation: 'vee', position: 230, distance: 6300, task: 'engage', flight: 4 },
-        { kind: 'air', type: 'Q11 CHIME', count: 4, formation: 'vee', position: 225, distance: 6500, task: 'engage', flight: 4 },
+        { kind: 'air', type: 'Q07 CHIME', count: 1, formation: 'pair', position: 230, distance: 9000, task: 'engage', mainspring: true },   // unnamed: one of the jets that get away
+        { kind: 'air', type: 'Q07 CHIME', count: 3, formation: 'vee', position: 230, distance: 8800, task: 'engage', flight: 4 },
+        { kind: 'air', type: 'Q11 CHIME', count: 4, formation: 'vee', position: 225, distance: 9000, task: 'engage', flight: 4 },
         { kind: 'air', type: 'NV-15C', count: 4, formation: 'vee', position: 235, distance: 6000, task: 'engage' },
         { kind: 'air', type: 'FLURRY-29', count: 4, formation: 'vee', position: 222, distance: 6000, task: 'engage' },
       ] },
@@ -774,8 +774,8 @@ export const MISSIONS = [
     // Layout (PW Wayback): Mainspring and Shearpin Squadron meet you head-on together.
     phases: [
       { label: 'Mainspring winds back', groups: [
-        { kind: 'air', type: 'Q10 MAINSPRING', count: 1, formation: 'pair', position: 'ahead', distance: 5000, task: 'engage' },
-        { kind: 'air', type: 'Q09 SHEARPIN', count: 4, formation: 'vee', position: 'ahead', distance: 5500, task: 'engage', flight: 4, optional: true },
+        { kind: 'air', type: 'Q10 MAINSPRING', count: 1, formation: 'pair', position: 'ahead', distance: 7500, task: 'engage' },
+        { kind: 'air', type: 'Q09 SHEARPIN', count: 4, formation: 'vee', position: 'ahead', distance: 8000, task: 'engage', flight: 4, optional: true },
       ] },
     ],
   },
@@ -817,8 +817,8 @@ export const MISSIONS = [
         { kind: 'air', type: 'SQUALL-27', count: 2, formation: 'pair', position: 'right', distance: 3000, task: 'patrol' },
       ] },
       { label: "Chime's last round", mainspring: true, groups: [   // Mainspring sends them in over the radio
-        { kind: 'air', type: 'Q07 CHIME', count: 4, formation: 'vee', position: 0, distance: 6600, task: 'engage', flight: 4 },
-        { kind: 'air', type: 'Q11 CHIME', count: 4, formation: 'vee', position: 'high', distance: 6700, task: 'engage', flight: 4 },
+        { kind: 'air', type: 'Q07 CHIME', count: 4, formation: 'vee', position: 0, distance: 9000, task: 'engage', flight: 4 },
+        { kind: 'air', type: 'Q11 CHIME', count: 4, formation: 'vee', position: 'high', distance: 9100, task: 'engage', flight: 4 },
       ] },
     ],
   },
@@ -918,7 +918,7 @@ export const MISSIONS = [
     // Layout (PW Kings): Mainspring meets you head-on (on Mercenary, with four wingmen).
     phases: [
       { label: 'Mainspring', groups: [
-        { kind: 'air', type: 'Q12 MAINSPRING', count: 1, formation: 'pair', position: 'ahead', distance: 4000, task: 'engage' },
+        { kind: 'air', type: 'Q12 MAINSPRING', count: 1, formation: 'pair', position: 'ahead', distance: 6500, task: 'engage' },
         { kind: 'air', type: 'Q10', count: 4, formation: 'vee', position: 'ahead', distance: 4500, task: 'engage', difficulty: 'mercenary' },  // unmarked wingmen, no IFF
       ] },
     ],
@@ -966,7 +966,8 @@ function airPlacementProblems(m, i, g) {
     if (!c) out.push(`escort needs near = an air type of this phase`);
     else if (!spawnsWith(c) || (c.after || 0) !== (g.after || 0) || (c.near && G.indexOf(c) > G.indexOf(g))) out.push(`escort's ${g.near} group must enter first: same after, spawning whenever it does, listed earlier if it has a near`);
   } else if ('near' in g && !m.phases.slice(0, i + 1).some(surface)) out.push(`near '${g.near}' must be a surface type of this or an earlier phase`);
-  if ('distance' in g && !(g.near ? g.distance >= 0 && g.distance <= 3000 : g.distance >= 1500 && g.distance <= 7500)) out.push(g.near ? 'distance from a near site must be 0-3000 m' : 'distance must be 1500-7500 m');
+  const farMax = AIRCRAFT_TYPES[g.type] && AIRCRAFT_TYPES[g.type].ace ? 9500 : 7500;   // aces and Mainspring enter from farther out, leaving room for their radio lines
+  if ('distance' in g && !(g.near ? g.distance >= 0 && g.distance <= 3000 : g.distance >= 1500 && g.distance <= farMax)) out.push(g.near ? 'distance from a near site must be 0-3000 m' : `distance must be 1500-${farMax} m`);
   return out;
 }
 
