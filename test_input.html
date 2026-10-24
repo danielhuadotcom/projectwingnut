@@ -18,12 +18,17 @@
   <h1>PROJECT WINGNUT — js/input.js live test</h1>
   <div class="note">Keys: W/S or Up/Down = pitch (S/Down = nose up) · A/D or Left/Right = roll · Q/E = yaw · Shift,+ = boost / H,- = airbrake (no Ctrl)
 Space = gun · F / Enter = missile · X = flares · Tab = target (hold = padlock) · V = look back · C = free look · Esc / P = pause · I = invert-pitch edge · R = restart · U = fullscreen callback
-Gamepad (standard mapping): L-stick X yaw, L-stick Y throttle, R-stick roll/pitch, LT missile, RT gun, RB target, LB look back, L3 flares, Start pause, Back invert edge, Y restart</div>
+Gamepad (standard mapping, Mode 2 layout; Ace Combat / Custom: Settings › Controls): L-stick X yaw, L-stick Y throttle, R-stick roll/pitch, LT missile, RT gun, RB target, LB look back, L3 flares, Start pause, Back invert edge, Y restart</div>
   <pre id="log"></pre>
   <pre id="out">loading…</pre>
 </div>
 <script type="module">
 import { Input, shapeAxis, expoCurve, STICK_EXPO, EXPO_MAX } from './js/input.js';
+import { PAD_PRESETS, PAD_IDS, DEFAULT_KEYS, PadWizard, padValue, bindingKey, sanitizePadMap, sanitizeKeys, rebindKey, keyOwner, validKey,
+  loadBindings, saveBindings, BINDINGS_KEY, BINDINGS_VERSION } from './js/bindings.js';
+// Stored bindings would change what the keys do: run on defaults, restore afterwards
+const BIND_BACKUP = (() => { try { return localStorage.getItem(BINDINGS_KEY); } catch { return null; } })();
+try { localStorage.removeItem(BINDINGS_KEY); } catch { /* blocked */ }
 
 const outEl = document.getElementById('out');
 const logEl = document.getElementById('log');
@@ -257,6 +262,189 @@ function selfTest() {
   key('keydown', 'KeyS'); t.update(DT);
   check('dispose: inert', t.pitch === 0 && t.anyPressed === false);
   key('keyup', 'KeyS');
+
+  // =============================================================================================================
+  // Bindings (js/bindings.js): gamepad presets with simulated pads, custom maps, the wizard, key rebinding, storage
+  // =============================================================================================================
+  {
+    const pads = [];
+    const mkPad = (axes, pressed = {}) => ({
+      id: 'Sim Pad (STANDARD GAMEPAD)', index: 0, connected: true, mapping: 'standard', timestamp: 1, axes: axes.slice(),
+      buttons: Array.from({ length: 17 }, (_, i) => { const v = pressed[i] || 0; return { pressed: v > 0.5, touched: v > 0, value: v }; }),
+    });
+    navigator.getGamepads = () => pads;
+    const b = new Input(window);
+    const pad = (axes, pressed) => { pads[0] = mkPad(axes, pressed); b.update(DT); };
+    const Z = [0, 0, 0, 0, 0, 0];
+    let custom = null;
+    try {
+      check('bindings: Input starts on Mode 2 (no stored bindings)', b.padLayout === 'mode2' && b.padMap === PAD_PRESETS.mode2);
+      pad([0.9, 0, 0, 0]); check('mode2: left X -> rudder', near(b.yaw, shapeAxis(0.9)) && b.roll === 0, b.yaw);
+      pad([0, -1, 0, 0]); check('mode2: left up -> boost', b.throttleDelta === 1);
+      pad([0, 0, 0.5, 1]); check('mode2: right stick roll + pull = nose up', near(b.roll, shapeAxis(0.5)) && b.pitch === (b.invertPitch ? -1 : 1));
+      pad(Z, { 7: 0.8, 6: 0.6, 5: 1, 4: 1 }); check('mode2: RT gun, LT missile, RB target, LB look back', b.gun && b.missile && b.targetButton && b.lookBack);
+      pad(Z); pad(Z, { 10: 1 }); check('mode2: L3 flares', b.flaresPressed === true);
+      pad(Z); pad(Z, { 3: 1 }); check('mode2: Y still raises the restart edge (unbound)', b.restartPressed === true);
+      pad(Z);
+
+      b.setPadLayout('ace');
+      check('ace: layout set', b.padLayout === 'ace' && b.padMap === PAD_PRESETS.ace);
+      pad([0, 1, 0, 0]); check('ace: left stick pull = nose up', b.pitch === (b.invertPitch ? -1 : 1) && b.throttleDelta === 0 && b.yaw === 0, [b.pitch, b.throttleDelta]);
+      pad([0.5, 0, 0, 0]); check('ace: left X rolls (expo applies)', near(b.roll, shapeAxis(0.5, b.expo.roll)) && b.yaw === 0, b.roll);
+      b.setExpo('roll', 0); pad([0.5, 0, 0, 0]); check('ace: roll expo slider still applies (linear)', near(b.roll, shapeAxis(0.5, 0)), b.roll); b.setExpo('roll', STICK_EXPO);
+      pad(Z, { 5: 1 }); check('ace: RB rudder right', b.yaw === 1, b.yaw);
+      pad(Z, { 4: 1 }); check('ace: LB rudder left', b.yaw === -1, b.yaw);
+      pad(Z, { 7: 1 }); check('ace: RT accelerates', b.throttleDelta === 1 && !b.gun, b.throttleDelta);
+      pad(Z, { 6: 1 }); check('ace: LT decelerates', b.throttleDelta === -1 && !b.missile, b.throttleDelta);
+      pad(Z, { 0: 1 }); check('ace: A cannon', b.gun && b.gunPressed);
+      pad(Z, { 1: 1 }); check('ace: B missile', b.missile && b.missilePressed && !b.gun);
+      pad(Z); pad(Z, { 3: 1 }); check('ace: Y target (no restart edge: Y is bound)', b.targetButton && b.targetPressed && !b.restartPressed);
+      pad([0, 0, 0, 0.9]); check('ace: right stick down = look back', b.lookBack === true && b.pitch === 0);
+      pad([0, 0, 0, -0.9]); check('ace: right stick up is not look back', b.lookBack === false);
+      pad(Z, { 10: 1 }); check('ace: L3 flares', b.flaresPressed === true);
+      pad(Z, { 9: 1 }); check('ace: Start pauses', b.pausePressed === true);
+      pad(Z);
+
+      // custom: inverted pitch, a trigger that reports as an axis resting at -1, buttons for throttle
+      custom = { ...PAD_PRESETS.mode2, pitchUp: { t: 'a', i: 3, d: -1, r: 0 }, pitchDown: { t: 'a', i: 3, d: 1, r: 0 },
+        gun: { t: 'a', i: 5, d: 1, r: -1 }, missile: { t: 'b', i: 2 }, throttleUp: { t: 'b', i: 0 }, throttleDown: { t: 'b', i: 1 } };
+      b.setBindings({ pad: custom, keys: DEFAULT_KEYS }); b.setPadLayout('custom');
+      pad([0, 0, 0, 0, -1, -1]); check('custom: trigger axis at rest -1 is not firing', !b.gun && b.gunAnalog === 0, b.gunAnalog);
+      pad([0, 0, 0, 0, -1, 1]); check('custom: trigger axis pulled fires the cannon', b.gun && near(b.gunAnalog, 1));
+      pad([0, 0, 0, 0, -1, 0]); check('custom: half trigger = 0.5', near(b.gunAnalog, 0.5));
+      pad([0, 0, 0, 1, -1, -1]); check('custom: inverted pitch (stick down = nose down)', b.pitch === (b.invertPitch ? 1 : -1), b.pitch);
+      pad([0, 0, 0, 0, -1, -1], { 0: 1 }); check('custom: button boost', b.throttleDelta === 1);
+      pad([0, 0, 0, 0, -1, -1], { 2: 1 }); check('custom: X missile', b.missile === true);
+      b.setBindings({ pad: null, keys: DEFAULT_KEYS });
+      check('custom with nothing saved falls back to Mode 2', b.padMap === PAD_PRESETS.mode2);
+      b.setPadLayout('bogus'); check('unknown layout -> Mode 2', b.padLayout === 'mode2');
+      pad(Z);
+    } finally { pads.length = 0; }
+
+    // ---- wizard (pure state machine) with simulated axis and button snapshots --------------------------------------
+    const REST = [0.05, -0.04, 0.02, 0.03, -1, -1];          // drifting sticks + two triggers reporting as axes at -1
+    const snap = (over = {}, btn = {}) => { const ax = REST.slice(); for (const k in over) ax[k] = over[k]; return { axes: ax, buttons: Array.from({ length: 17 }, (_, i) => btn[i] || 0) }; };
+    const w = new PadWizard(PAD_PRESETS.mode2);
+    const feed = (raw, n = 2) => { for (let i = 0; i < n; i++) w.update(DT, raw); };
+    const rest = (n = 2) => feed(snap(), n);
+    check('wiz: starts calibrating', w.phase === 'calib');
+    rest(40); check('wiz: calibrated -> first step PITCH UP', w.phase === 'step' && w.action.id === 'pitchUp' && Math.abs(w.rest[0] - 0.05) < 1e-9);
+    feed(snap({ 0: 0.6 })); check('wiz: drift below 0.6 past rest is ignored', w.phase === 'step', w.live);
+    check('wiz: live readout follows the input', w.live && /L stick/.test(w.live.label) && w.live.value > 0.5, w.live);
+    rest(); feed(snap({ 3: -0.9 }));
+    check('wiz: right stick UP for pitch up -> axis 3 negative (inversion detected)', w.phase === 'release' && w.map.pitchUp.i === 3 && w.map.pitchUp.d === -1 && w.inverted('pitchUp', w.map.pitchUp), w.map.pitchUp);
+    check('wiz: the opposite half fills in (pitch down = axis 3 +)', w.map.pitchDown && w.map.pitchDown.i === 3 && w.map.pitchDown.d === 1);
+    feed(snap({ 3: -0.9 }), 5); check('wiz: waits for release', w.phase === 'release');
+    rest(); check('wiz: pitch down skipped (auto), now ROLL RIGHT', w.phase === 'step' && w.action.id === 'rollRight', w.action && w.action.id);
+    feed(snap({ 2: 0.95 })); rest();
+    check('wiz: roll right = axis 2 +, roll left auto', w.map.rollRight.d === 1 && w.map.rollLeft.d === -1 && w.action.id === 'yawRight');
+    feed(snap({}, { 5: 1 })); rest();
+    check('wiz: button for rudder right -> rudder left asked separately', w.map.yawRight.t === 'b' && w.map.yawRight.i === 5 && w.action.id === 'yawLeft');
+    feed(snap({}, { 4: 1 })); rest();
+    check('wiz: rudder left = LB', w.map.yawLeft.t === 'b' && w.map.yawLeft.i === 4 && w.action.id === 'throttleUp');
+    feed(snap({ 5: 0.1 })); check('wiz: trigger axis halfway is not yet a press (0.6 of its travel)', w.phase === 'step');
+    feed(snap({ 5: 1 })); rest();
+    check('wiz: trigger axis (rest -1) -> axis 5 + with rest -1', w.map.throttleUp.t === 'a' && w.map.throttleUp.i === 5 && w.map.throttleUp.d === 1 && w.map.throttleUp.r === -1 && w.action.id === 'throttleDown');
+    check('wiz: trigger axis value reads 0 at rest, 1 pulled', padValue(w.map.throttleUp, snap()) === 0 && padValue(w.map.throttleUp, snap({ 5: 1 })) === 1);
+    feed(snap({ 4: 1 })); rest(); check('wiz: airbrake = axis 4', w.map.throttleDown.i === 4 && w.action.id === 'gun');
+    // trigger reported as both a button and an axis: the button wins
+    feed(snap({}, { 7: 1 })); rest(); check('wiz: cannon = RT button', w.map.gun.t === 'b' && w.map.gun.i === 7 && w.action.id === 'missile');
+    // conflict: RB is already rudder right this run
+    feed(snap({}, { 5: 1 }));
+    check('wiz: conflict detected (RB is rudder right)', w.phase === 'conflict' && w.conflict.with === 'yawRight' && w.conflict.action === 'missile');
+    w.resolveConflict(false); check('wiz: "pick another" keeps the step', w.phase === 'step' && w.action.id === 'missile' && w.map.yawRight.i === 5);
+    feed(snap({}, { 5: 1 }));   // still held: must be released first
+    check('wiz: held control not re-read after declining', w.phase === 'step');
+    rest(); feed(snap({}, { 5: 1 }));
+    check('wiz: conflict again', w.phase === 'conflict');
+    const prevMissile = w.map.missile;
+    w.resolveConflict(true);
+    check('wiz: swap -> missile RB, rudder right gets the old missile binding', w.map.missile.i === 5 && w.map.yawRight && w.map.yawRight.i === prevMissile.i && w.phase === 'release', [w.map.missile, w.map.yawRight]);
+    rest(); check('wiz: next TARGET', w.action.id === 'target');
+    w.skip(); check('wiz: skip -> LOOK BACK', w.action.id === 'lookBack');
+    check('wiz: a skipped step that collided was cleared, not duplicated', !w.map.target || bindingKey(w.map.target) !== bindingKey(w.map.missile));
+    w.back(); check('wiz: back -> TARGET', w.action.id === 'target' && w.phase === 'step');
+    rest(); feed(snap({}, { 3: 1 })); rest(); check('wiz: target = Y', w.map.target.i === 3 && w.action.id === 'lookBack');
+    feed(snap({}, { 14: 1 })); feed(snap()); check('wiz: D-pad left steps back', w.action.id === 'target');
+    feed(snap({}, { 15: 1 })); feed(snap()); check('wiz: D-pad right skips', w.action.id === 'lookBack');
+    check('wiz: D-pad and Start never bind', w.map.target.i === 3);
+    rest(); feed(snap({}, { 4: 1 }));
+    check('wiz: LB for look back conflicts with rudder left', w.phase === 'conflict' && w.conflict.with === 'yawLeft');
+    w.resolveConflict(false); rest(); feed(snap({}, { 11: 1 })); rest();
+    feed(snap({}, { 10: 1 })); rest();
+    check('wiz: last step done -> test screen', w.phase === 'test' && w.map.lookBack.i === 11 && w.map.flares.i === 10);
+    const vals = w.values(snap({ 3: -1 }, { 7: 0.7 }));
+    check('wiz: test values per action', near(vals.pitchUp, 1, 0.05) && vals.pitchDown === 0 && near(vals.gun, 0.7));
+    const saved = sanitizePadMap(w.map);
+    check('wiz: result is conflict-free', new Set(PAD_IDS.map((id) => bindingKey(saved[id])).filter(Boolean)).size === PAD_IDS.filter((id) => saved[id]).length);
+    w.back(); check('wiz: back from the test screen -> last step', w.phase === 'step' && w.action.id === 'flares');
+    // Start held 1 s cancels
+    const w2 = new PadWizard(PAD_PRESETS.ace);
+    check('wiz: starts from the given preset (custom = copy of the active one)', w2.map.gun.i === 0 && w2.map.yawRight.i === 5);
+    for (let i = 0; i < 40; i++) w2.update(DT, snap());
+    for (let i = 0; i < 30; i++) w2.update(DT, snap({}, { 9: 1 }));
+    check('wiz: Start held 0.5 s does not cancel', w2.phase === 'step');
+    for (let i = 0; i < 32; i++) w2.update(DT, snap({}, { 9: 1 }));
+    check('wiz: Start held 1 s cancels', w2.phase === 'cancelled');
+    const w3 = new PadWizard(); w3.reset(); w3.cancel(); check('wiz: cancel()', w3.phase === 'cancelled');
+
+    // ---- keyboard rebinding -------------------------------------------------------------------------------------
+    let keys = rebindKey(DEFAULT_KEYS, 'gun', 0, 'KeyJ');
+    check('keys: rebind cannon primary to J (Space dropped, mouse kept)', keys.gun[0] === 'KeyJ' && !keys.gun.includes('Space') && keys.gun.includes('Mouse0'), keys.gun);
+    b.setBindings({ pad: null, keys });
+    key('keydown', 'KeyJ'); b.update(DT); check('keys: J fires the cannon', b.gun && b.gunPressed); key('keyup', 'KeyJ'); b.update(DT); b.update(DT);
+    key('keydown', 'Space'); b.update(DT); check('keys: Space no longer fires', !b.gun); key('keyup', 'Space'); b.update(DT);
+    check('keys: J owner lookup', keyOwner(keys, 'KeyJ', 'missile').action === 'gun');
+    keys = rebindKey(keys, 'missile', 0, 'KeyJ', true);
+    check('keys: conflict swap -> missile J, cannon gets F', keys.missile[0] === 'KeyJ' && keys.gun[0] === 'KeyF', [keys.missile, keys.gun]);
+    keys = rebindKey(keys, 'missile', 1, 'Mouse0', true);
+    check('keys: mouse buttons rebind (cannon gets RMB in a swap)', keys.missile[1] === 'Mouse0' && keys.gun.includes('Mouse2') && !keys.gun.includes('Mouse0'), [keys.missile, keys.gun]);
+    b.setBindings({ pad: null, keys });
+    window.dispatchEvent(new MouseEvent('mousedown', { button: 0 })); b.update(DT);
+    check('keys: left mouse now fires a missile', b.missile && b.missilePressed && !b.gun);
+    window.dispatchEvent(new MouseEvent('mouseup', { button: 0 })); b.update(DT); b.update(DT);
+    window.dispatchEvent(new MouseEvent('mousedown', { button: 2 })); b.update(DT);
+    check('keys: right mouse now fires the cannon', b.gun && !b.missile);
+    window.dispatchEvent(new MouseEvent('mouseup', { button: 2 })); b.update(DT); b.update(DT);
+    check('keys: Escape is never bindable', !validKey('gun', 'Escape') && sanitizeKeys({ ...DEFAULT_KEYS, gun: ['Escape'] }).gun.length === 0);
+    check('keys: mouse buttons only for cannon / missile', !validKey('flares', 'Mouse0') && validKey('missile', 'Mouse3'));
+    b.setBindings({ pad: null, keys: { ...DEFAULT_KEYS, pause: [], restart: ['KeyR'] } });
+    key('keydown', 'Escape'); b.update(DT); check('keys: Escape still pauses with no pause key', b.pausePressed); key('keyup', 'Escape'); b.update(DT);
+    b.setBindings({ pad: null, keys: rebindKey(DEFAULT_KEYS, 'flares', 0, 'KeyR') });
+    key('keydown', 'KeyR'); b.update(DT); check('keys: a binding wins over a fixed key (R: flares, not restart)', b.flaresPressed && !b.restartPressed); key('keyup', 'KeyR'); b.update(DT);
+    b.setBindings({ pad: null, keys: rebindKey(DEFAULT_KEYS, 'fullscreen', 0, 'KeyK') });
+    let fsK = 0; b.onFullscreenKey = () => fsK++;
+    key('keydown', 'KeyK'); key('keyup', 'KeyK'); key('keydown', 'KeyU'); key('keyup', 'KeyU');
+    check('keys: fullscreen rebinds (K toggles, U no longer)', fsK === 1, fsK);
+    check('keys: clear a slot', rebindKey(DEFAULT_KEYS, 'flares', 0, null).flares.length === 0);
+    check('keys: alternate slot replaces the alternates', JSON.stringify(rebindKey(DEFAULT_KEYS, 'throttle+', 1, 'KeyB')['throttle+']) === '["ShiftLeft","KeyB"]');
+
+    // ---- persistence ----------------------------------------------------------------------------------------------
+    const mem = {}; const st = { getItem: (k) => (k in mem ? mem[k] : null), setItem: (k, v) => { mem[k] = String(v); } };
+    const fresh = loadBindings(st);
+    check('store: empty -> defaults', fresh.pad === null && JSON.stringify(fresh.keys) === JSON.stringify(sanitizeKeys(DEFAULT_KEYS)));
+    saveBindings({ pad: custom, keys }, st);
+    const back = JSON.parse(mem[BINDINGS_KEY]);
+    check('store: versioned record', back.v === BINDINGS_VERSION && back.pad && back.keys);
+    const re = loadBindings(st);
+    check('store: round trip', re.pad.gun.i === 5 && re.pad.gun.r === -1 && re.keys.missile[0] === 'KeyJ', re.pad.gun);
+    mem[BINDINGS_KEY] = '{not json'; check('store: corrupt -> defaults', loadBindings(st).pad === null && loadBindings(st).keys.gun[0] === 'Space');
+    mem[BINDINGS_KEY] = JSON.stringify({ v: 999, pad: custom, keys }); check('store: other version -> defaults', loadBindings(st).pad === null && loadBindings(st).keys.gun[0] === 'Space');
+    mem[BINDINGS_KEY] = JSON.stringify({ v: BINDINGS_VERSION, pad: { gun: { t: 'b', i: 9 }, missile: { t: 'x' } }, keys: { gun: [42, 'Escape'], flares: 'nope' } });
+    const bad = loadBindings(st);
+    check('store: invalid entries fall back per action', bad.pad.gun.i === 7 && bad.pad.missile.i === PAD_PRESETS.mode2.missile.i && bad.keys.gun.length === 0 && bad.keys.flares[0] === 'KeyX', bad);
+    const throwing = { getItem: () => { throw new Error('blocked'); }, setItem: () => { throw new Error('blocked'); } };
+    check('store: blocked storage never throws', loadBindings(throwing).pad === null && saveBindings({ pad: null, keys }, throwing) === false);
+    // localStorage: a new Input picks the saved keys up
+    try {
+      saveBindings({ pad: null, keys: rebindKey(DEFAULT_KEYS, 'gun', 0, 'KeyJ') });
+      const c = new Input(window);
+      key('keydown', 'KeyJ'); c.update(DT); check('store: a new Input loads the saved key bindings', c.gun === true); key('keyup', 'KeyJ'); c.update(DT);
+      c.dispose();
+    } finally { try { if (BIND_BACKUP === null) localStorage.removeItem(BINDINGS_KEY); else localStorage.setItem(BINDINGS_KEY, BIND_BACKUP); } catch { /* blocked */ } }
+    b.dispose();
+    delete navigator.getGamepads;
+  }
 
   const fails = results.filter((r) => !r.ok);
   const line = `INPUT_SELFTEST ok=${results.length - fails.length} fail=${fails.length}` + (fails.length ? ' :: ' + fails.map((f) => f.name).join(' | ') : '');

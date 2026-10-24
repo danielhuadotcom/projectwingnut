@@ -28,6 +28,11 @@ const WANT = [
   ['VSCO 1 Percussion/drums/other/ethnic/giant/mallet'], ['VSCO 1 Percussion/drums/other/ethnic/giant/sticks'],
   ['VSCO 1 Percussion/drums/tenor/tenor_lower'],
   ['Woodwinds/Flute/susvib'], ['Woodwinds/Flute/stac'], ['Woodwinds/Piccolo/Sus'], ['Woodwinds/Oboe/Vib'],
+  // audition pieces (score_mainspring.mjs): clockwork percussion, muted horn, bassoon, contrabass tremolo
+  ['Strings/Solo Contrabass/Trem'], ['Brass/F Horn/mute'], ['Woodwinds/Bassoon/sus'],
+  ['Percussion/Glock'],
+  ['Percussion', /^(TB_hit_|Claves1_Hit_|Ratchet1-Crank_|Anvil_Hit1_|BrakeDrum1_Hammer_|gongscrape_)/],
+  ['VSCO 1 Percussion/varWood', /^wood_click/],
 ];
 
 const tree = JSON.parse(readFileSync(TREE, 'utf8')).tree.filter((x) => x.type === 'blob' && /\.wav$/i.test(x.path));

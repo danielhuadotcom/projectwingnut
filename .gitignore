@@ -39,3 +39,8 @@ assets/awacs/raw/
 # local-only notes and agent prompts
 SPEC.md
 SPEC_PHASE2.md
+
+# voice audition candidates (local listening only; not shipped)
+assets/voice_audition/
+DIALOGUE_NOTES.md
+DIALOGUE_DRAFT.md

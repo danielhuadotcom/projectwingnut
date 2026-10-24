@@ -41,9 +41,25 @@
 // short note on the line. The line hides after appinstalled, after the prompt is answered (a later event brings it
 // back), and when the event never fires. installKind() holds the rule; opts.installEnv overrides the detected
 // environment (test_menu.html).
+// CONTROL BINDINGS (js/bindings.js): Settings › Controls starts with "Controller layout" (the 'padLayout' setting: Mode 2,
+// Ace Combat, Custom; choosing Custom with nothing saved copies the layout that was active) and two link rows, hidden on
+// touch-only devices (opts.touchOnly overrides the detection):
+//   Custom controller layout (screen 'padwiz'): the binding wizard. It reads input.padRaw every frame and steps through
+//     PAD_ACTIONS ("Move the stick or press the button for PITCH UP"); while it listens, menu edges are not used (A / B
+//     may be what is being bound): D-pad ← / → or Backspace / Space step back / skip, Esc or Start held 1 s cancels, and
+//     the on-screen Back / Skip / Cancel buttons work by pointer. A control that already belongs to another action opens
+//     the Confirm modal (kind 'pswap': Swap / Cancel). The last step is a live test of every action with Save, Redo and
+//     Cancel, navigated normally (focus starts on the test panel, so pressing A to test the cannon saves nothing).
+//   Keyboard bindings (screen 'keys'): every KEY_ACTIONS action with its primary key and alternates. Confirm on a slot
+//     captures the next key (a capturing keydown listener, so the game never sees it); Esc (or B / a click elsewhere)
+//     cancels, Del clears the slot; mouse buttons bind to Cannon and Missile only. A key used elsewhere opens the Confirm
+//     modal (kind 'kswap'). Reset to defaults restores every key.
+// Bindings save to 'wingnut.bindings' (versioned) and reach the game as onSetting('bindings', { pad, keys }).
 
 import { countUnits } from './missions.js';
 import { shapeAxis, STICK_EXPO, EXPO_MAX } from './input.js';
+import { PAD_ACTIONS, PAD_PRESETS, KEY_ACTIONS, PadWizard, loadBindings, saveBindings, padMapFor, copyPadMap, describeBinding, describePair,
+  keyName, keyOwner, rebindKey, validKey, sanitizeKeys, DEFAULT_KEYS, isMouseCode } from './bindings.js';
 import { loadBest } from './infinity.js';
 import { fullscreenSupported, isFullscreen, setFullscreen, onFullscreenChange } from './fullscreen.js';
 
@@ -53,7 +69,7 @@ import { fullscreenSupported, isFullscreen, setFullscreen, onFullscreenChange } 
 export const DEFAULT_SETTINGS = Object.freeze({
   quality: 'auto', perfOverlay: false, invertPitch: false, mouseSens: 1, mouseKeys: 'simple', touch: 'auto', cameraShake: true, screenFlash: false,
   master: 0.8, music: 0.7, sfx: 0.9, voice: 1.0, subtitles: true, difficulty: 'normal',
-  expoPitch: STICK_EXPO, expoRoll: STICK_EXPO, expoYaw: STICK_EXPO,
+  expoPitch: STICK_EXPO, expoRoll: STICK_EXPO, expoYaw: STICK_EXPO, padLayout: 'mode2',
 });
 const STORE_KEY = 'wingnut.settings';
 const pct = (v) => `${Math.round(v * 100)}%`;
@@ -69,12 +85,12 @@ export const SETTING_TABS = [['graphics', 'Graphics'], ['controls', 'Controls'],
 export const SETTING_DEFS = [
   { key: 'quality', tab: 'graphics', type: 'choice', label: 'Quality',
     options: [['auto', 'Auto'], ['verylow', 'Very low'], ['low', 'Low'], ['medium', 'Medium'], ['high', 'High'], ['ultra', 'Ultra']],
-    desc: 'Auto starts from your GPU and steps the level down if the frame rate cannot hold. Very low is for budget tablets.' },
+    desc: 'Auto picks a level for your GPU and drops it when the frame rate sags. Very low is for budget tablets.' },
   { key: 'perfOverlay', tab: 'graphics', type: 'toggle', label: 'Performance overlay',
     desc: 'Frame rate, GPU time and render resolution in the top corner.' },
   // Not saved: the row shows and changes the browser's fullscreen state (FULLSCREEN in the header)
   { key: 'fullscreen', tab: 'graphics', type: 'toggle', label: 'Fullscreen',
-    desc: 'Fill the whole screen, without the browser bars. Key\u00a0U switches it; Esc also exits.' },
+    desc: 'Hides the browser bars. Key\u00a0U toggles it; Esc also exits.' },
   { key: 'invertPitch', tab: 'controls', type: 'toggle', label: 'Invert pitch',
     desc: 'Push forward to climb, on the stick and the pitch keys.' },
   { key: 'mouseSens', tab: 'controls', type: 'slider', label: 'Mouse sensitivity', min: 0.25, max: 3, step: 0.05, dragStep: 0.05, format: times,
@@ -86,14 +102,20 @@ export const SETTING_DEFS = [
     options: [['auto', 'Auto'], ['on', 'On'], ['off', 'Off']],
     desc: 'On-screen sticks and buttons. Auto shows them on touch screens.' },
   { key: 'cameraShake', tab: 'controls', type: 'toggle', label: 'Camera shake',
-    desc: 'Shake from hits, flak and nearby explosions.' },
+    desc: 'Triggered by hits, flak and nearby explosions.' },
   { key: 'screenFlash', tab: 'controls', type: 'toggle', label: 'Screen flash',
-    desc: 'White flash from missile hits, flak and nearby explosions.' },
+    desc: 'White flash on missile hits, flak and nearby explosions.' },
   // Gamepad stick expo per axis (js/input.js shapeAxis): 0 = linear, max = cubic; full deflection is always full rate
   { key: 'expoPitch', tab: 'controls', type: 'slider', label: 'Stick expo · pitch', min: 0, max: EXPO_MAX, step: 0.02, dragStep: 0.01, format: expoFmt, expo: 'pitch',
-    desc: 'Controller: higher softens small stick movements for finer aim. Full stick is always full rate.' },
+    desc: 'Controller only. Higher values soften small stick movements for finer aim. Full stick is always full rate.' },
   { key: 'expoRoll', tab: 'controls', type: 'slider', label: 'Stick expo · roll', min: 0, max: EXPO_MAX, step: 0.02, dragStep: 0.01, format: expoFmt, expo: 'roll' },
   { key: 'expoYaw', tab: 'controls', type: 'slider', label: 'Stick expo · rudder', min: 0, max: EXPO_MAX, step: 0.02, dragStep: 0.01, format: expoFmt, expo: 'yaw' },
+  // Gamepad layout (js/bindings.js); the Custom / Keyboard binding link rows follow it (LINK_ROWS)
+  { key: 'padLayout', tab: 'controls', type: 'choice', label: 'Controller layout',
+    options: [['mode2', 'Mode 2'], ['ace', 'Ace Combat'], ['custom', 'Custom']],
+    descs: { mode2: 'Mode 2: left stick boost and rudder, right stick pitch and roll, RT cannon, LT missile.',
+      ace: 'Ace Combat: left stick pitch and roll, bumpers rudder, triggers throttle, A cannon, B missile, Y target.',
+      custom: 'Custom: your own layout. Set it up below.' } },
   { key: 'master', tab: 'audio', type: 'slider', label: 'Master volume', min: 0, max: 1, step: 0.05, dragStep: 0.01, format: pct },
   { key: 'music', tab: 'audio', type: 'slider', label: 'Music', min: 0, max: 1, step: 0.05, dragStep: 0.01, format: pct },
   { key: 'sfx', tab: 'audio', type: 'slider', label: 'Effects', min: 0, max: 1, step: 0.05, dragStep: 0.01, format: pct,
@@ -105,17 +127,17 @@ export const SETTING_DEFS = [
   { key: 'difficulty', tab: 'gameplay', type: 'choice', label: 'Difficulty',
     options: [['easy', 'Easy'], ['normal', 'Normal'], ['hard', 'Hard'], ['mercenary', 'Merc']],
     descs: {
-      easy: 'Easy: tougher airframe, softer and slower bandits, one attacks at a time, their missiles turn wide.',
-      normal: 'Normal: the intended balance. Two bandits press the attack at once.',
-      hard: 'Hard: you take more damage, bandits are tougher and sharper, four attack at once, extra units on some missions.',
-      mercenary: 'Mercenary: no armor bonus, the toughest and sharpest bandits, no limit on attackers, every extra unit. Death awaits.',
+      easy: 'Easy: tougher airframe. Softer, slower bandits attack one at a time; enemy missiles turn wide.',
+      normal: 'Normal: the intended balance. Two bandits attack at once.',
+      hard: 'Hard: you take more damage. Bandits are tougher and sharper; four attack at once. Extra groups on some missions.',
+      mercenary: 'Mercenary: no armor bonus. Toughest, sharpest bandits; no limit on attackers. Every extra group.',
     } },
 ];
 const DEF = Object.fromEntries(SETTING_DEFS.map((d) => [d.key, d]));
 
 /** First-run difficulty picker (FIRST-RUN DIFFICULTY in the header): [value, label, blurb]. Blurbs follow main.js
  *  DIFFICULTY: attackers at once (aggressors 1/2/4/no cap), enemy missiles after you at once (playerMissiles 1/2/3/4),
- *  flak guns firing at once (aaGuns 2/4/6/14), extra groups (Hard, Mercenary), enemy HP (x0.8/1/1.15/1.3) and the
+ *  flak guns firing at once (aaGuns 2/5/7/10, shipGuns 2/6/8/10), extra groups (Hard, Mercenary), enemy HP (x0.8/1/1.15/1.3) and the
  *  damage you take (armor x0.35/0.5/0.7/1.0). */
 export const DIFFICULTY_PICKS = [
   ['easy', 'Easy', 'One attacker, one missile, light flak. Softer bandits.'],
@@ -247,7 +269,8 @@ export const CREDITS = [
 // =================================================================================================================
 // Markup helpers
 // =================================================================================================================
-const SCREENS = ['title', 'missions', 'pause', 'debrief', 'settings', 'controls', 'credits', 'confirm', 'difficulty', 'install'];
+const SCREENS = ['title', 'missions', 'pause', 'debrief', 'settings', 'controls', 'credits', 'confirm', 'difficulty', 'install', 'padwiz', 'keys'];
+const NO_RESUME = new Set(['padwiz', 'keys']);   // Start / P does not resume the game from these (Start held cancels the wizard)
 const MODALS = new Set(['confirm', 'difficulty', 'install']);   // drawn over the dimmed screen beneath
 const ROOTS = new Set(['title', 'pause', 'debrief']);
 const ESC = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
@@ -257,6 +280,11 @@ const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
 /** Response graph under the stick expo rows (drawn by Menu._drawExpo only while Settings › Controls is showing). */
 const EXPO_GRAPH = '<div class="m-expo" aria-hidden="true"><p class="m-expo-t"><b class="m-expo-h">Pitch response</b>' +
   'Stick deflection (across) against rate (up). The faint line is linear; the dot is your stick.</p><canvas class="m-expo-c"></canvas></div>';
+const linkRow = (act, label, desc, val) => `<button type="button" class="m-row m-row--link" data-nav data-act="${act}" data-link>` +
+  `<span class="m-rowt"><span class="m-label">${esc(label)}</span></span><span class="m-desc">${esc(desc)}</span>` +
+  `<span class="m-ctl"><span class="m-linkv">${esc(val)}</span><span class="m-chev" aria-hidden="true">›</span></span></button>`;
+const LINK_ROWS = linkRow('padwiz', 'Custom controller layout', 'Bind each action by moving a stick or pressing a button.', 'Set up') +
+  linkRow('keys', 'Keyboard bindings', 'Rebind every key, plus mouse buttons for cannon and missile.', 'Edit');
 const gap = (a0, a1, b0, b1) => Math.max(0, b0 - a1, a0 - b1);   // distance between two intervals (0 = overlapping)
 function media(q) { try { return typeof matchMedia === 'function' && matchMedia(q).matches; } catch { return false; } }
 const missionNo = (m, i) => pad2(m && m.id != null ? m.id : i + 1);
@@ -276,44 +304,53 @@ const head = (eyebrow, title, id, nav) => `<header class="m-head"><div class="m-
 const k = (t, pad) => `<kbd class="m-k${pad ? ' m-k--pad' : ''}">${t}</kbd>`;
 const binds = (rows) => `<dl class="m-binds">${rows.map(([keys, what]) => `<div><dt>${keys.join('')}</dt><dd>${what}</dd></div>`).join('')}</dl>`;
 
-const PAD_CARD = '<h3>Gamepad <small>Mode 2</small></h3><p class="m-cnote">Xbox or PlayStation layout.</p>' + binds([
-  [[k('L stick ↑↓', 1)], 'Boost · airbrake'],
-  [[k('L stick ←→', 1)], 'Rudder'],
-  [[k('R stick', 1)], 'Pitch · roll <em>(pull back to climb)</em>'],
-  [[k('LT', 1)], 'Missile'],
-  [[k('RT', 1)], 'Cannon'],
-  [[k('RB', 1)], 'Tap: next target · hold: padlock view'],
-  [[k('LB', 1)], 'Look back'],
-  [[k('L3', 1)], 'Flares <em>(click the left stick)</em>'],
-  [[k('Start', 1)], 'Pause'],
-]);
+/** Gamepad card for the layout in force (map: js/bindings.js pad map). */
+function padCard(map, layout) {
+  const m = map || PAD_PRESETS.mode2, d = describeBinding;
+  const name = layout === 'ace' ? 'Ace Combat' : layout === 'custom' ? 'Custom' : 'Mode 2';
+  return `<h3>Gamepad <small>${name}</small></h3><p class="m-cnote">Xbox or PlayStation layout. Change it in Settings › Controls.</p>` + binds([
+    [[k(esc(describePair(m.throttleUp, m.throttleDown)), 1)], 'Boost · airbrake'],
+    [[k(esc(describePair(m.yawLeft, m.yawRight)), 1)], 'Rudder'],
+    [[k(esc(describePair(m.pitchUp, m.pitchDown)), 1)], 'Pitch <em>(pull back to climb)</em>'],
+    [[k(esc(describePair(m.rollLeft, m.rollRight)), 1)], 'Roll'],
+    [[k(esc(d(m.missile)), 1)], 'Missile'],
+    [[k(esc(d(m.gun)), 1)], 'Cannon'],
+    [[k(esc(d(m.target)), 1)], 'Tap: next target · hold: padlock view'],
+    [[k(esc(d(m.lookBack)), 1)], 'Look back'],
+    [[k(esc(d(m.flares)), 1)], 'Flares'],
+    [[k('Start', 1)], 'Pause'],
+  ]);
+}
 const TOUCH_CARD = '<h3>Touch <small>On screen</small></h3><p class="m-cnote">The on-screen sticks and buttons mirror the gamepad.</p>' + binds([
   [[k('Left stick', 1)], '↑ boost · ↓ airbrake · ←→ rudder'],
   [[k('Right stick', 1)], 'Pitch · roll'],
   [[k('Fire buttons', 1)], 'Missile · cannon'],
   [[k('Target', 1)], 'Tap: next target · hold: padlock view'],
-  [[k('Flares', 1)], 'Break incoming missiles'],
+  [[k('Flares', 1)], 'Decoy incoming missiles'],
   [[k('Look back', 1)], 'Rear view while held'],
   [[k('Pause', 1)], 'This menu'],
 ]) + '<p class="m-cfoot">Show or hide them in Settings › Controls › Touch controls.</p>';
-function kbCard(simple) {
+function kbCard(simple, keys) {
+  const K = keys || DEFAULT_KEYS;
+  const ks = (id, n = 2) => (K[id] || []).slice(0, n).map((c) => k(esc(keyName(c))));
+  const first = (id) => ks(id, 1);
   return `<h3>Mouse &amp; keyboard <small>${simple ? 'Simple keys' : 'Advanced keys'}</small></h3>` +
     '<p class="m-cnote">Mouse aim: the jet flies toward the circle.</p>' + binds([
       [[k('Mouse')], 'Aim'],
-      [[k('LMB'), k('Space')], 'Cannon'],
-      [[k('RMB'), k('F')], 'Missile'],
-      [[k('W'), k('S')], simple ? 'Boost · airbrake' : 'Pitch <em>(S pulls up)</em>'],
-      [[k('A'), k('D')], 'Roll'],
-      [[k('Q'), k('E')], 'Rudder'],
-      [[k('Shift')], simple ? 'Hard pull' : 'Boost'],
-      ...(simple ? [] : [[[k('H')], 'Airbrake']]),
-      [[k('X')], 'Flares'],
-      [[k('Tab')], 'Tap: next target · hold: padlock view'],
-      [[k('C')], 'Free look <em>(hold)</em>'],
-      [[k('V')], 'Look back'],
-      [[k('P'), k('Esc')], 'Pause'],
-      ...(fullscreenSupported() ? [[[k('U')], 'Fullscreen']] : []),
-    ]) + '<p class="m-cfoot">Key preset: Settings › Controls › Mouse keys.</p>';
+      [ks('gun'), 'Cannon'],
+      [ks('missile'), 'Missile'],
+      [[...first('pitch-'), ...first('pitch+')], simple ? 'Boost · airbrake' : 'Pitch <em>(second key pulls up)</em>'],
+      [[...first('roll-'), ...first('roll+')], 'Roll'],
+      [[...first('yaw-'), ...first('yaw+')], 'Rudder'],
+      [first('throttle+'), simple ? 'Hard pull' : 'Boost'],
+      ...(simple ? [] : [[first('throttle-'), 'Airbrake']]),
+      [first('flares'), 'Flares'],
+      [first('target'), 'Tap: next target · hold: padlock view'],
+      [first('freeLook'), 'Free look <em>(hold)</em>'],
+      [first('lookBack'), 'Look back'],
+      [[...first('pause'), k('Esc')], 'Pause'],
+      ...(fullscreenSupported() ? [[first('fullscreen'), 'Fullscreen']] : []),
+    ].filter(([keysHtml]) => keysHtml.length)) + '<p class="m-cfoot">Key preset: Settings › Controls › Mouse keys. Rebind: Keyboard bindings.</p>';
 }
 
 /** Debrief stats: [[label, value], ...], or a string like 'SCORE 12,400 · KILLS 14' split into chips. */
@@ -359,6 +396,12 @@ export class Menu {
     this._device = '';
     this._reduced = media('(prefers-reduced-motion: reduce)');
     this._instEnv = { ...installEnv(), ...(this.opts.installEnv || {}) };   // home-screen install (see the header)
+    // control bindings (CONTROL BINDINGS in the header)
+    this.bindings = this.opts.bindings && typeof this.opts.bindings === 'object'
+      ? { pad: this.opts.bindings.pad || null, keys: sanitizeKeys(this.opts.bindings.keys) } : loadBindings();
+    this._touchOnly = typeof this.opts.touchOnly === 'boolean' ? this.opts.touchOnly
+      : media('(hover: none) and (pointer: coarse)') && typeof navigator !== 'undefined' && (navigator.maxTouchPoints | 0) > 0;
+    this._wiz = null; this._cap = null; this._kpend = null; this._swallowClick = 0;
     this._build();
     this._setDevice(media('(hover: none) and (pointer: coarse)') ? 'touch' : 'kb');
     this._bind();
@@ -412,6 +455,8 @@ export class Menu {
   update(dt, input) {
     this._fsSkip = this._fsKeyDone; this._fsKeyDone = false;   // _fsKey already acted on this frame's key edge
     if (!this.open || !input) return;
+    // the wizard reads the raw pad while it listens; menu edges then do nothing (A / B may be what is being bound)
+    if (this.screen === 'padwiz' && this._wiz && this._wizUpdate(dt, input)) return;
     if (performance.now() < (this._lockUntil || 0)) return;
     const edge = input.menuBack ? 'back' : input.menuConfirm ? 'ok' : input.menuUp ? 'up' : input.menuDown ? 'down'
       : input.menuLeft ? 'left' : input.menuRight ? 'right' : null;
@@ -419,8 +464,9 @@ export class Menu {
     // so without an edge only an actually connected pad may flip the hints away from keyboard glyphs.
     if (edge) this._setDevice(input.usingGamepad ? 'pad' : 'kb');
     else if (input.usingGamepad && input.gamepadConnected && this._device === 'kb') this._setDevice('pad');
+    if (this._cap) { if (edge === 'back') { this._capCancel(); this._sound('back'); } return; }   // key capture: B cancels
     if (edge) this._nav(edge);
-    else if (input.pausePressed && this._stack.length && this._stack[0].screen === 'pause') this._run('onResume');  // Start / P
+    else if (input.pausePressed && this._stack.length && this._stack[0].screen === 'pause' && !NO_RESUME.has(this.screen)) this._run('onResume');  // Start / P
     if (this.open && this.screen === 'settings' && this._tab === 'controls') this._drawExpo(input);
   }
 
@@ -513,6 +559,7 @@ export class Menu {
       el.removeEventListener('dblclick', h.dbl);
       for (const t of ['mousedown', 'touchstart', 'wheel']) el.removeEventListener(t, h.stop);
       window.removeEventListener('keydown', h.key);
+      window.removeEventListener('keydown', h.cap, true);
       window.removeEventListener('keyup', h.key);
       window.removeEventListener('pagehide', h.flush);
       h.fsOff();
@@ -533,7 +580,7 @@ export class Menu {
     el.setAttribute('data-touch-ignore', '');
     el.innerHTML = '<div class="m-scrim" aria-hidden="true"></div>' + this._htmlTitle() + this._htmlMissions() + this._htmlPause() +
       this._htmlDebrief() + this._htmlSettings() + this._htmlControls() + this._htmlCredits() + this._htmlConfirm() + this._htmlDifficulty() +
-      this._htmlInstall();
+      this._htmlInstall() + this._htmlPadWiz() + this._htmlKeys();
     this.root.insertBefore(el, this.root.firstChild);
     const q = (sel, r = el) => r.querySelector(sel);
     this._screens = {};
@@ -552,7 +599,13 @@ export class Menu {
     this._pauseSub = q('.m-pause-sub', this._screens.pause);
     this._pauseRestart = q('[data-act="restart"] .m-lbl', this._screens.pause);
     this._infSub = q('[data-act="infinity"] .m-lbl small', this._screens.title);
-    this._kbCard = q('.m-card--kb'); this._creditsEl = q('.m-credits');
+    this._kbCard = q('.m-card--kb'); this._padCard = q('.m-card--pad'); this._creditsEl = q('.m-credits');
+    for (const r of el.querySelectorAll('[data-link]')) r.hidden = this._touchOnly;   // wizards need a keyboard or a pad
+    const W = this._screens.padwiz;
+    this._wz = { eye: q('.m-wiz-eye', W), prompt: q('.m-wiz-prompt', W), hint: q('.m-wiz-hint', W), now: q('.m-wiz-now', W),
+      live: q('.m-wiz-live', W), liveT: q('.m-wiz-livet', W), liveBar: q('.m-wiz-bar b', W), test: q('.m-wiz-test', W),
+      stepAct: q('.m-wiz-stepact', W), testAct: q('.m-wiz-testact', W), sig: '' };
+    this._keysList = q('.m-keys', this._screens.keys);
     const C = this._screens.confirm;
     this._cf = { title: q('.m-h2', C), text: q('.m-lede', C), yes: q('[data-act="confirm-yes"]', C) };
     this._diffItems = [...this._screens.difficulty.querySelectorAll('[data-diff]')];
@@ -576,7 +629,7 @@ export class Menu {
       <div class="m-panel m-panel--title">
         <p class="m-eyebrow">Arcade jet combat</p>
         <h1 class="m-logo" id="m-title-h"><span class="m-logo-1">Project</span><span class="m-logo-2">Wingnut</span></h1>
-        <p class="m-tagline">The Galebreak Isles. Twenty-one sorties. Own the sky.</p>
+        <p class="m-tagline">Twenty-one sorties over the Galebreak Isles.</p>
         <div class="m-rule" aria-hidden="true"></div>
         <nav class="m-list" aria-label="Main menu">
           ${entries.map(([act, label, sub], i) => item(act, pad2(i + 1), label, sub)).join('')}
@@ -668,7 +721,7 @@ export class Menu {
     const tabs = SETTING_TABS.map(([id, label]) => `<button type="button" class="m-tab" role="tab" id="m-tab-${id}" aria-controls="m-tp-${id}" ` +
       `aria-selected="false" data-nav data-group="tabs" data-nohover data-tab="${id}">${esc(label)}</button>`).join('');
     const panels = SETTING_TABS.map(([id]) => `<div class="m-tabpanel" role="tabpanel" id="m-tp-${id}" aria-labelledby="m-tab-${id}" data-tabpanel="${id}" hidden>` +
-      SETTING_DEFS.filter((d) => d.tab === id).map((d) => this._htmlRow(d) + (d.key === 'expoYaw' ? EXPO_GRAPH : '')).join('') +
+      SETTING_DEFS.filter((d) => d.tab === id).map((d) => this._htmlRow(d) + (d.key === 'expoYaw' ? EXPO_GRAPH : '') + (d.key === 'padLayout' ? LINK_ROWS : '')).join('') +
       '<div class="m-rowfoot"><button type="button" class="m-btn m-btn--sm" data-nav data-act="reset-tab">Restore defaults</button></div></div>').join('');
     return `<section class="m-screen" data-screen="settings" aria-labelledby="m-set-h" hidden>
       <div class="m-panel m-panel--settings">
@@ -684,7 +737,7 @@ export class Menu {
       <div class="m-panel m-panel--wide m-panel--controls">
         ${head('Flight manual', 'Controls', 'm-ctl-h', true)}
         <div class="m-body m-scroll"><div class="m-cards">
-          <article class="m-card">${PAD_CARD}</article>
+          <article class="m-card m-card--pad"></article>
           <article class="m-card m-card--kb"></article>
           <article class="m-card">${TOUCH_CARD}</article>
         </div></div>
@@ -740,15 +793,54 @@ export class Menu {
       <div class="m-panel m-panel--install">
         <p class="m-eyebrow">Install</p>
         <h2 class="m-h2" id="m-inst-h">Add to Home Screen</h2>
-        <p class="m-lede" id="m-inst-d">Tap Share, then Add to Home Screen. Wingnut then opens full screen from its icon.</p>
+        <p class="m-lede" id="m-inst-d">Tap Share, then Add to Home Screen. The icon opens Wingnut full screen.</p>
         <div class="m-inst-steps" aria-hidden="true">
           <span class="m-inst-step"><span class="m-inst-g">${SHARE_SVG}</span>Share</span>
           <span class="m-inst-arrow">›</span>
           <span class="m-inst-step"><span class="m-inst-g">${ADD_SVG}</span>Add to Home Screen</span>
         </div>
-        <p class="m-inst-note">No Share button in view? It may sit under the ••• menu.</p>
+        <p class="m-inst-note">No Share button? Try the ••• menu.</p>
         <div class="m-actions"><button type="button" class="m-btn primary" data-nav data-act="back">Got it</button></div>
         ${hintFoot([['ok', 'Close'], ['back', 'Close']])}
+      </div></section>`;
+  }
+
+  /** Gamepad binding wizard (CONTROL BINDINGS in the header). Text and lists are filled by _wizRender. */
+  _htmlPadWiz() {
+    return `<section class="m-screen" data-screen="padwiz" aria-labelledby="m-wiz-h" hidden>
+      <div class="m-panel m-panel--wiz">
+        ${head('Custom layout', 'Controller setup', 'm-wiz-h', false)}
+        <div class="m-wiz" aria-live="polite">
+          <p class="m-eyebrow m-wiz-eye"></p>
+          <h3 class="m-wiz-prompt"></h3>
+          <p class="m-wiz-hint"></p>
+          <p class="m-wiz-now"></p>
+          <div class="m-wiz-live"><span class="m-wiz-livet"></span><span class="m-wiz-bar" aria-hidden="true"><b></b></span></div>
+          <div class="m-wiz-test m-scroll" data-nav tabindex="-1" hidden></div>
+        </div>
+        <div class="m-actions m-actions--row m-wiz-act m-wiz-stepact">
+          <button type="button" class="m-btn" data-nav data-act="wiz-back">‹ Back</button>
+          <button type="button" class="m-btn" data-nav data-act="wiz-skip">Skip ›</button>
+          <button type="button" class="m-btn danger" data-nav data-act="back">Cancel</button>
+        </div>
+        <div class="m-actions m-actions--row m-wiz-act m-wiz-testact" hidden>
+          <button type="button" class="m-btn primary" data-nav data-act="wiz-save">Save</button>
+          <button type="button" class="m-btn" data-nav data-act="wiz-redo">Redo</button>
+          <button type="button" class="m-btn danger" data-nav data-act="back">Cancel</button>
+        </div>
+        <footer class="m-foot"><p class="m-wiz-keys">Controller: D-pad ← back · D-pad → skip · hold Start 1&nbsp;s to cancel.<br>Keyboard: Backspace back · Space skip · Esc cancel.</p></footer>
+      </div></section>`;
+  }
+
+  /** Keyboard and mouse bindings (rows built by _renderKeys). */
+  _htmlKeys() {
+    return `<section class="m-screen" data-screen="keys" aria-labelledby="m-keys-h" hidden>
+      <div class="m-panel m-panel--keys">
+        ${head('Keyboard &amp; mouse', 'Key bindings', 'm-keys-h', true)}
+        <p class="m-keys-note">Select a slot, then press the new key. Esc cancels, Del clears. Mouse buttons bind to cannon and missile only. Esc can't be rebound.</p>
+        <div class="m-body m-scroll"><div class="m-keys" role="list"></div>
+          <div class="m-rowfoot"><button type="button" class="m-btn m-btn--sm" data-nav data-act="keys-reset">Restore defaults</button></div></div>
+        ${hintFoot([['ud', 'Select'], ['ok', 'Rebind'], ['back', 'Back']])}
       </div></section>`;
   }
 
@@ -817,6 +909,8 @@ export class Menu {
       else if (screen === 'debrief') this._setDebrief(data);
       else if (screen === 'settings') { if (data && data.tab) this._setTab(data.tab); this._syncAllRows(); }
       else if (screen === 'controls') this._renderKb();
+      else if (screen === 'padwiz') this._wizStart();
+      else if (screen === 'keys') { this._capCancel(); this._renderKeys(); }
       else if (screen === 'credits') this._renderCredits();
       else if (screen === 'confirm') this._setConfirm(data);
       else if (screen === 'difficulty') this._selectDiff('easy');
@@ -856,6 +950,8 @@ export class Menu {
       case 'debrief': return q(this._deb.infinity ? '[data-act="infinity"]' : this._deb.canNext ? '[data-act="next"]' : '[data-act="retry"]');
       case 'settings': return q(`[data-tab="${this._tab}"]`);
       case 'difficulty': return q(`[data-diff="${this._diffSel}"]`);
+      case 'padwiz': return this._wiz && this._wiz.phase === 'test' ? q('.m-wiz-test') : q('[data-act="wiz-skip"]');
+      case 'keys': return q('[data-kslot]');
       default: return q('[data-act="back"]');      // controls, credits, confirm (Cancel)
     }
   }
@@ -895,7 +991,7 @@ export class Menu {
       items = d.stats ? statItems(d.stats) : [['Rounds cleared', fmtNum(d.roundsCleared ?? 0)], ['Kills', fmtNum(d.kills ?? 0)],
         ['Score', fmtNum(d.score ?? 0)], ['Best', Number(best) > 0 ? fmtNum(best) : '–']];
     } else {
-      E.eye.textContent = d.eyebrow || (win ? 'Mission complete' : 'Mission failed');
+      E.eye.textContent = d.eyebrow || (win ? 'Debrief' : 'Mission failed');
       const i = Number.isInteger(d.missionIndex) ? d.missionIndex : this._missionIndex, m = this.missions[i];
       sub = d.subtitle || (m ? `Mission ${missionNo(m, i)} · ${m.name || ''}` : '');
       items = statItems(d.stats);
@@ -912,9 +1008,14 @@ export class Menu {
 
   _setConfirm(d) {
     const kind = (d && d.kind) || this._pending || 'quit', inf = this._pauseInf;
+    if (kind === 'kswap' || kind === 'pswap') {
+      const T = kind === 'kswap' ? this._kswapText() : this._pswapText();
+      this._cf.title.textContent = T[0]; this._cf.text.textContent = T[1]; this._cf.yes.textContent = 'Swap';
+      return;
+    }
     const T = kind === 'restart'
       ? (inf ? ['Start a new run?', 'This run ends here and a new one starts at round 1.', 'New Run']
-        : ['Restart mission?', 'The mission starts over from the beginning.', 'Restart'])
+        : ['Restart mission?', 'Progress in this mission will be lost.', 'Restart'])
       : (inf ? ['Quit to title?', 'This run ends here.', 'Quit'] : ['Quit to title?', 'Progress in this mission will be lost.', 'Quit']);
     this._cf.title.textContent = T[0]; this._cf.text.textContent = T[1]; this._cf.yes.textContent = T[2];
   }
@@ -982,7 +1083,193 @@ export class Menu {
     this._run('onStart', i);
   }
 
-  _renderKb() { if (this._kbCard) this._kbCard.innerHTML = kbCard(this.settings.mouseKeys !== 'advanced'); }
+  _renderKb() {
+    if (this._kbCard) this._kbCard.innerHTML = kbCard(this.settings.mouseKeys !== 'advanced', this.bindings.keys);
+    if (this._padCard) this._padCard.innerHTML = padCard(padMapFor(this.settings.padLayout, this.bindings), this.settings.padLayout);
+  }
+
+  // ---- Control bindings (CONTROL BINDINGS in the header) ------------------------------------------------------------
+  /** Store + persist the bindings and hand them to the game. */
+  _commitBindings() {
+    saveBindings(this.bindings);
+    this._cb('onSetting', 'bindings', { pad: this.bindings.pad ? copyPadMap(this.bindings.pad) : null, keys: sanitizeKeys(this.bindings.keys) }, this.settings);
+    this._renderKb();
+  }
+  /** Choosing Custom with nothing saved: start it as a copy of the layout that was active. */
+  _ensureCustom(prev) {
+    if (this.bindings.pad) return;
+    this.bindings.pad = copyPadMap(padMapFor(prev === 'custom' ? 'mode2' : prev, this.bindings));
+    this._commitBindings();
+  }
+
+  _wizStart() {
+    this._wiz = new PadWizard(padMapFor(this.settings.padLayout, this.bindings));
+    this._wz.sig = ''; this._wz.testBuilt = false;
+    this._wizRender(null);
+  }
+  /** One frame of the wizard. Returns true while it is listening (menu edges must not act). */
+  _wizUpdate(dt, input) {
+    const w = this._wiz;
+    w.update(dt, input.padRaw || null);
+    if (w.phase === 'cancelled') { this._back(); return true; }
+    if (w.phase === 'conflict') {
+      this._pending = 'pswap';
+      this._saveFocus(); this._stack.push({ screen: 'confirm', focus: null });
+      this._enter('confirm', { kind: 'pswap' }, false);
+      this._lockUntil = performance.now() + 350;
+      this._sound('select');
+      return true;
+    }
+    this._wizRender(input.padRaw || null);
+    return w.phase !== 'test';
+  }
+  _wizRender(raw) {
+    const w = this._wiz, Z = this._wz;
+    if (!w || !Z.prompt) return;
+    const N = PAD_ACTIONS.length, a = w.action, test = w.phase === 'test';
+    let eye, prompt, hint, now = '';
+    if (test) { eye = 'Final check'; prompt = 'Test your layout'; hint = 'Each control shows its live value. Save, or Redo the steps.'; }
+    else if (w.phase === 'calib') {
+      eye = 'Getting ready';
+      prompt = raw ? 'Hands off the controls' : 'Connect a controller';
+      hint = raw ? 'Let go of the sticks and triggers. Measuring their rest positions.' : 'Press any button on it. Esc or Cancel goes back.';
+    } else {
+      eye = `Step ${w.step + 1} of ${N}`;
+      prompt = `Move the stick or press the button for <b>${esc(a.prompt)}</b>`;
+      hint = a.hint + (a.pair ? ' A stick sets both directions at once.' : '');
+      const cur = w.map[a.id];
+      now = w.phase === 'release' && w.detected
+        ? `Got it: <kbd class="m-k m-k--pad">${esc(w.detected.label)}</kbd>${w.inverted(a.id, w.detected.binding) ? ' <em>(inverted)</em>' : ''} · let go`
+        : `Current: <kbd class="m-k m-k--pad">${esc(describeBinding(cur))}</kbd> · Skip keeps it`;
+    }
+    const sig = `${w.phase}|${w.step}|${!!raw}|${now}`;
+    if (sig !== Z.sig) {
+      Z.sig = sig;
+      Z.eye.textContent = eye; Z.prompt.innerHTML = prompt; Z.hint.textContent = hint;
+      Z.now.innerHTML = now; Z.now.hidden = !now;
+      Z.stepAct.hidden = test; Z.testAct.hidden = !test; Z.test.hidden = !test; Z.live.hidden = test;
+      if (test && !Z.testBuilt) {
+        Z.testBuilt = true;
+        Z.test.innerHTML = PAD_ACTIONS.map((x) => `<div class="m-wt" data-wt="${x.id}"><span class="m-wt-l">${esc(x.label)}</span>` +
+          `<kbd class="m-k m-k--pad">${esc(describeBinding(w.map[x.id]))}</kbd><span class="m-wiz-bar"><b></b></span></div>`).join('');
+        Z.bars = [...Z.test.querySelectorAll('.m-wt')].map((r) => [r.dataset.wt, r.querySelector('b')]);
+        this._focus(Z.test, { silent: true });
+      } else if (!test) Z.testBuilt = false;
+    }
+    if (test) {
+      const v = w.values(raw);
+      for (const [id, b] of Z.bars || []) { const p = `${Math.round((v[id] || 0) * 100)}%`; if (b.style.width !== p) b.style.width = p; }
+    } else {
+      const L = w.live, txt = L ? `Detected: ${L.label} · ${Math.round(L.value * 100)}%` : (raw ? 'Detected: nothing' : 'No controller');
+      if (Z.liveT.textContent !== txt) Z.liveT.textContent = txt;
+      const p = `${Math.round(Math.min(1, (L ? L.value : 0) / 0.6) * 100)}%`;
+      if (Z.liveBar.style.width !== p) Z.liveBar.style.width = p;
+      Z.live.classList.toggle('is-hit', !!L && L.value >= 0.6);
+    }
+  }
+  _wizSave() {
+    const w = this._wiz;
+    if (!w) return;
+    this.bindings.pad = copyPadMap(w.map);
+    w.finish();
+    this._commitBindings();
+    this._set('padLayout', 'custom');
+    this._back();
+  }
+  _pswapText() {
+    const w = this._wiz, c = w && w.conflict;
+    if (!c) return ['Already in use', '', 'Swap'];
+    const lab = (id) => (PAD_ACTIONS.find((x) => x.id === id) || {}).label || id;
+    const old = w.map[c.action];
+    return [`${describeBinding(c.binding)} is in use`, `Bound to ${lab(c.with)}. Swap them? ${lab(c.with)} gets ${old ? describeBinding(old) : 'nothing'}.`];
+  }
+
+  _renderKeys() {
+    const K = this.bindings.keys, simple = this.settings.mouseKeys !== 'advanced';
+    this._keysList.innerHTML = KEY_ACTIONS.map((a) => {
+      const list = K[a.id] || [], alt = list.slice(1).map(keyName).join(' · ');
+      const sub = a.simple && simple ? `<small>Simple mouse keys: ${esc(a.simple.toLowerCase())}</small>` : '';
+      return `<div class="m-krow" role="listitem"><span class="m-klabel">${esc(a.label)}${sub}</span>` +
+        `<button type="button" class="m-kslot" data-nav data-kslot="${a.id}:0" aria-label="${esc(a.label)} key">${esc(list[0] ? keyName(list[0]) : '—')}</button>` +
+        `<button type="button" class="m-kslot m-kslot--alt" data-nav data-kslot="${a.id}:1" aria-label="${esc(a.label)} alternate keys">${esc(alt || '—')}</button></div>`;
+    }).join('');
+  }
+  _capStart(el) {
+    const [action, slot] = String(el.dataset.kslot).split(':');
+    this._capCancel();
+    this._cap = { action, slot: Number(slot) || 0, el };
+    el.classList.add('is-cap');
+    el.textContent = 'Press a key…';
+    this._sound('select');
+  }
+  _capCancel() {
+    const c = this._cap;
+    if (!c) return;
+    this._cap = null;
+    c.el.classList.remove('is-cap');
+    const list = this.bindings.keys[c.action] || [];
+    c.el.textContent = c.slot === 0 ? (list[0] ? keyName(list[0]) : '—') : (list.slice(1).map(keyName).join(' · ') || '—');
+  }
+  /** A captured key or mouse code (null: clear the slot). Conflicts ask first (Confirm, kind 'kswap'). */
+  _capKey(code) {
+    const c = this._cap;
+    if (!c) return;
+    if (code && !validKey(c.action, code)) { this._capCancel(); return; }
+    this._cap = null; c.el.classList.remove('is-cap');
+    const own = code ? keyOwner(this.bindings.keys, code, c.action) : null;
+    if (own) {
+      this._kpend = { action: c.action, slot: c.slot, code, other: own.action };
+      this._pending = 'kswap';
+      this._push('confirm', { kind: 'kswap' });
+      return;
+    }
+    this.bindings.keys = rebindKey(this.bindings.keys, c.action, c.slot, code);
+    this._commitBindings(); this._renderKeys(); this._focusSlot(c.action, c.slot);
+    this._sound('adjust');
+  }
+  _focusSlot(action, slot) {
+    const el = this._keysList.querySelector(`[data-kslot="${action}:${slot}"]`);
+    if (el) this._focus(el, { silent: true });
+  }
+  _kswapText() {
+    const p = this._kpend;
+    if (!p) return ['Key in use', ''];
+    const lab = (id) => (KEY_ACTIONS.find((x) => x.id === id) || {}).label || id;
+    const list = this.bindings.keys[p.action] || [], old = p.slot === 0 ? list[0] : list[1];
+    const gets = old && validKey(p.other, old) ? keyName(old) : 'nothing';
+    return [`${keyName(p.code)} is in use`, `Bound to ${lab(p.other)}. Swap them? ${lab(p.other)} gets ${gets}.`];
+  }
+  _keysReset() {
+    this._capCancel();
+    this.bindings.keys = sanitizeKeys(DEFAULT_KEYS);
+    this._commitBindings(); this._renderKeys();
+    const f = this._keysList.querySelector('[data-kslot]');
+    if (f) this._focus(f, { silent: true });
+    this._sound('adjust');
+  }
+  /** Capturing keydown (window, capture phase, so js/input.js never sees these keys): key binding capture and the
+   *  wizard's keyboard controls. */
+  _onCapKey(e) {
+    if (!this.open || e.type !== 'keydown') return;
+    const scr = this.screen;
+    if (scr === 'keys' && this._cap) {
+      e.preventDefault(); e.stopImmediatePropagation();
+      if (e.repeat) return;
+      if (e.code === 'Escape' || e.key === 'Escape') { this._capCancel(); this._sound('back'); }
+      else if (e.code === 'Delete') this._capKey(null);
+      else if (e.code) this._capKey(e.code);
+      return;
+    }
+    if (scr === 'padwiz' && this._wiz && this._wiz.phase !== 'test') {
+      const c = e.code || e.key;
+      if (c === 'Escape' || c === 'Backspace' || c === 'Space' || c === ' ') {
+        e.preventDefault(); e.stopImmediatePropagation();
+        if (e.repeat) return;
+        if (c === 'Escape') { this._wiz.cancel(); this._back(); } else if (c === 'Backspace') this._wiz.back(); else this._wiz.skip();
+        this._wizRender(null);
+      }
+    }
+  }
 
   _renderCredits() {
     this._creditsEl.innerHTML = CREDITS.map((c) => `<section class="m-credit"><h3>${esc(c && c.section)}</h3><div>` +
@@ -1025,9 +1312,11 @@ export class Menu {
     if (key === FULLSCREEN) return false;               // follows the browser (_fullscreen), never stored
     const v = sanitize(key, value);
     if (v === undefined || this.settings[key] === v) return false;
+    const prev = this.settings[key];
+    if (key === 'padLayout' && v === 'custom') this._ensureCustom(prev);
     this.settings[key] = v;
     this._syncRow(key);
-    if (key === 'mouseKeys') this._renderKb();
+    if (key === 'mouseKeys' || key === 'padLayout') this._renderKb();
     if (key === 'difficulty' && this._detailFor >= 0) this._renderDetail(this._detailFor);   // unit counts depend on it
     this._dirty = true;
     clearTimeout(this._saveT);
@@ -1209,6 +1498,7 @@ export class Menu {
     if (d.tab) { const first = this._firstInTab(); if (first) this._focus(first); return; }
     if (d.mission !== undefined) { if (!pointer) this._start(+d.mission); return; }
     if (d.diff) { if (!pointer) this._confirmPick(); return; }   // a click only selects (Start launches)
+    if (d.kslot) { this._capStart(el); return; }
     switch (d.act) {
       case 'start': this._start(0); break;
       case 'infinity': this._run('onInfinity'); break;
@@ -1224,22 +1514,50 @@ export class Menu {
         if (this.screen === 'pause') { this._pending = 'quit'; this._push('confirm', { kind: 'quit' }); } else this._quit();
         break;
       case 'confirm-yes':
+        if (this._pending === 'kswap') { this._kswapDo(); break; }
+        if (this._pending === 'pswap') { const w = this._wiz; this._pending = null; this._popTo('padwiz'); if (w) { w.resolveConflict(true); this._wizRender(null); } break; }
         if (this._pending === 'restart') this._run(this._pauseInf ? 'onInfinity' : 'onRestart'); else this._quit();
         break;
       case 'back': this._back(); break;
       case 'reset-tab': this._resetTab(); break;
+      case 'padwiz': case 'keys': this._push(d.act); break;
+      case 'wiz-back': if (this._wiz) { this._wiz.back(); this._wizRender(null); this._sound('back'); } break;
+      case 'wiz-skip': if (this._wiz) { this._wiz.skip(); this._wizRender(null); this._sound('move'); } break;
+      case 'wiz-redo': if (this._wiz) { this._wiz.reset(); this._wz.sig = ''; this._wizRender(null); this._focus(this._defaultFocus('padwiz'), { silent: true }); this._sound('select'); } break;
+      case 'wiz-save': this._wizSave(); break;
+      case 'keys-reset': this._keysReset(); break;
       case 'install': this._install(); break;
       default: break;
     }
+  }
+
+  /** Pop a modal back to `screen` without sounds or side effects. */
+  _popTo(screen) {
+    while (this._stack.length > 1 && this.screen !== screen) this._stack.pop();
+    this._enter(this.screen, null, true);
+  }
+  _kswapDo() {
+    const p = this._kpend;
+    this._kpend = null; this._pending = null;
+    this._popTo('keys');
+    if (!p) return;
+    this.bindings.keys = rebindKey(this.bindings.keys, p.action, p.slot, p.code, true);
+    this._commitBindings(); this._renderKeys(); this._focusSlot(p.action, p.slot);
+    this._sound('adjust');
   }
 
   _back() {
     const top = this.screen;
     if (!top) return;
     if (top === 'settings') this._flushSave();
+    if (top === 'keys') this._capCancel();
+    if (top === 'padwiz') this._wiz = null;
+    if (top === 'confirm' && this._pending === 'pswap' && this._wiz) this._wiz.resolveConflict(false);
+    if (top === 'confirm' && this._pending === 'kswap') this._kpend = null;
     if (this._stack.length > 1) {
       this._stack.pop();
       if (top === 'confirm') this._pending = null;
+      if (top === 'padwiz' || top === 'keys') this._syncRow('padLayout');
       if (top === 'difficulty') this._pickFor = null;
       this._enter(this.screen, null, true);
       this._sound('back');
@@ -1286,8 +1604,9 @@ export class Menu {
     this._h = {
       down: (e) => this._onPointerDown(e), move: (e) => this._onPointerMove(e), up: (e) => this._onPointerUp(e),
       click: (e) => this._onClick(e), dbl: (e) => this._onDbl(e), stop: (e) => e.stopPropagation(),
-      key: (e) => this._onKey(e), flush: () => this._flushSave(),
+      key: (e) => this._onKey(e), flush: () => this._flushSave(), cap: (e) => this._onCapKey(e),
     };
+    window.addEventListener('keydown', this._h.cap, true);
     el.addEventListener('pointerdown', this._h.down);
     el.addEventListener('pointermove', this._h.move);
     el.addEventListener('pointerup', this._h.up);
@@ -1312,6 +1631,13 @@ export class Menu {
   _onPointerDown(e) {
     e.stopPropagation();
     if (!this.open) return;
+    if (this._cap) {                                       // key capture: a mouse button binds (cannon / missile), else cancels
+      const c = this._cap, ok = e.pointerType === 'mouse' && validKey(c.action, 'Mouse' + e.button);
+      this._swallowClick = e.button === 0 ? performance.now() + 1000 : 0;   // (other buttons fire no click)
+      e.preventDefault();
+      if (ok) this._capKey('Mouse' + e.button); else { this._capCancel(); this._sound('back'); }
+      return;
+    }
     this._setDevice(e.pointerType === 'touch' ? 'touch' : 'kb');
     this._setKbNav(false);
     const sl = e.target instanceof Element ? e.target.closest('.m-slider') : null;
@@ -1353,6 +1679,7 @@ export class Menu {
 
   _onClick(e) {
     e.stopPropagation();
+    if (this._swallowClick) { const sw = performance.now() < this._swallowClick; this._swallowClick = 0; if (sw) return; }   // the click that ended a key capture
     if (!this.open || !this._cur) return;
     if (this.screen === 'install') { this._back(); return; }   // the hint closes on any tap
     const t = e.target instanceof Element ? e.target : null;

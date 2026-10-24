@@ -68,14 +68,16 @@ const MAX_ENEMIES = 6;
 // flights the commit timer lets be committed at once, stagger = s between its releases (a phase's own stagger, in
 // Normal seconds, scales by the same ratio), playerMissiles = most enemy missiles after the player at once (a bandit
 // holds its shot beyond that, or within 1.5 s of the last launch at the same target: EnemyBrain.canLaunchAt). Flak
-// (js/targets.js, header: Flak): aaGuns = most AA guns firing at the player at once (the nearest in sight; the others
-// throw an occasional harmless barrage), aaError = their aim error (x the bursts' spread; 1 = the old aim). Missiles fly
+// (js/targets.js, header: Flak): aaGuns = most land AA guns firing at the player at once (the nearest in sight; the
+// others throw an occasional harmless barrage), shipGuns = the same for ships' AA mounts, aaError = their aim error (x the
+// shells' spread; guns never lead). samCap = most SAM / ship missiles after the player at once (within playerMissiles,
+// which counts them too). Missiles fly
 // the same on every difficulty (ENEMY_MISSILE_TURN, PLAYER_MISSILE): harder ones only put more of them in the air.
 const DIFFICULTY = {
-  easy:      { armor: 0.35, enemyHp: 0.8,  skill: -0.15, aggressors: 1,        groups: [],                      playerShare: 0.3, flightCap: 1, stagger: 30, playerMissiles: 1, aaGuns: 2,  aaError: 1.6 },
-  normal:    { armor: 0.5,  enemyHp: 1.0,  skill: 0,     aggressors: 2,        groups: [],                      playerShare: 0.4, flightCap: 2, stagger: 20, playerMissiles: 2, aaGuns: 4,  aaError: 1.3 },
-  hard:      { armor: 0.7,  enemyHp: 1.15, skill: 0.1,   aggressors: 4,        groups: ['hard'],                playerShare: 0.5, flightCap: 2, stagger: 15, playerMissiles: 3, aaGuns: 6,  aaError: 1.1 },
-  mercenary: { armor: 1.0,  enemyHp: 1.3,  skill: 0.2,   aggressors: Infinity, groups: ['hard', 'mercenary'], playerShare: 0.6, flightCap: 3, stagger: 10, playerMissiles: 4, aaGuns: 14, aaError: 1.0 },
+  easy:      { armor: 0.35, enemyHp: 0.8,  skill: -0.15, aggressors: 1,        groups: [],                      playerShare: 0.3, flightCap: 1, stagger: 30, playerMissiles: 1, aaGuns: 2,  aaError: 1.6, shipGuns: 2,  samCap: 1 },
+  normal:    { armor: 0.5,  enemyHp: 1.0,  skill: 0,     aggressors: 2,        groups: [],                      playerShare: 0.4, flightCap: 2, stagger: 20, playerMissiles: 2, aaGuns: 5,  aaError: 1.3, shipGuns: 6,  samCap: 2 },
+  hard:      { armor: 0.7,  enemyHp: 1.15, skill: 0.1,   aggressors: 4,        groups: ['hard'],                playerShare: 0.5, flightCap: 2, stagger: 15, playerMissiles: 3, aaGuns: 7,  aaError: 1.1, shipGuns: 8,  samCap: 2 },
+  mercenary: { armor: 1.0,  enemyHp: 1.3,  skill: 0.2,   aggressors: Infinity, groups: ['hard', 'mercenary'], playerShare: 0.6, flightCap: 3, stagger: 10, playerMissiles: 4, aaGuns: 10, aaError: 1.0, shipGuns: 10, samCap: 2 },
 };
 const ENEMY_MISSILE_TURN = 0.6;  // enemy shots: turn-limit scale, the same on every difficulty (harder ones only fire more)
 // Player-team missiles (the player's and the squadmates'): a lock means the target is reachable. Faster and longer-legged
@@ -247,12 +249,12 @@ class Game {
     this.enemyTargets = [this.player];     // the player and the flying squadmates: all that enemy fire is tested against
     this.teamTargets = { player: this.hostiles, enemy: this.enemyTargets };   // per-team target lists (no friendly fire)
     this.killTimes = [];
-    this._onFlak = (pos, hit) => {
+    this._onFlak = (pos, hit) => {      // hit: the raw damage of a hit shell (js/targets.js FLAK_DAMAGE...), 0 / false = a miss
       this.weapons.flakPuff(pos);
       const p = this.player;
       if (hit && p.alive && !p.immortal) {   // (immortal once the mission is complete)
         this.damageFlash = Math.max(this.damageFlash, 0.5); this.post.damage(0.3); this.chase.addShake(0.2);
-        if (p.applyDamage(6)) { this.weapons.aircraftDeath(p); this.die('SHOT DOWN BY FLAK', true); }
+        if (p.applyDamage(hit === true ? 6 : hit)) { this.weapons.aircraftDeath(p); this.die('SHOT DOWN BY FLAK', true); }
       }
     };
     // Profiler (GPU timer queries + CPU sections); idle unless bench mode or the perf overlay turns it on
@@ -1922,9 +1924,9 @@ class Game {
     if (!this.menu || !this.menu.open) return;
     const i = this.input; let s, ok = false;
     if (this.touch && this.touch.active) { s = 'Touch controls: sticks and buttons appear in flight.'; ok = true; }
-    else if (i.gamepadBlocked) s = 'Gamepad blocked by this frame. Open the artifact in its own tab, or use mouse aim.';
+    else if (i.gamepadBlocked) s = 'Gamepad unavailable in this browser. Try another browser, or use mouse aim.';
     else if (i.gamepadConnected) { s = `Controller ready: ${i.gamepadName || 'gamepad'}`; ok = true; }
-    else s = 'No controller detected: press a button on it, or fly with mouse aim.';
+    else s = 'No controller. Press any pad button, or use mouse aim.';
     if (s !== this._lastStatus) { this._lastStatus = s; this.menu.setControllerStatus(s, ok); }
   }
 
@@ -1934,7 +1936,7 @@ class Game {
     this.touch = new TouchControls(this.root, { onAnyTouch: unlock });
     this.input.touch = this.touch;
     this.menu = new Menu(this.root.querySelector('#ui'), {
-      settings: this.settings, missions: this.missions,
+      settings: this.settings, missions: this.missions, bindings: this.input.bindings,
       onStart: (i) => { unlock(); this.score = 0; this.kills = 0; this.audio.ui('start'); this.loadMission(i); this.fireGrace = 0.5; },
       onResume: () => this.resumeGame(),
       onRestart: () => { this.startMission(true); this.fireGrace = 0.5; },
@@ -1964,6 +1966,8 @@ class Game {
       case 'invertPitch': this.input.setInvertPitch(!!v); if (this.touch && this.touch.setPitchInverted) this.touch.setPitchInverted(!!v); break;
       case 'touch': if (this.touch) this.touch.setMode(v || 'auto'); break;
       case 'expoPitch': case 'expoRoll': case 'expoYaw': if (this.input.setExpo) this.input.setExpo(key.slice(4).toLowerCase(), v); break;
+      case 'padLayout': if (this.input.setPadLayout) this.input.setPadLayout(v); break;               // js/bindings.js layouts
+      case 'bindings': if (this.input.setBindings) this.input.setBindings(v); break;                  // { pad, keys } from the binding screens
       case 'cameraShake': this.chase.shakeScale = v === false ? 0 : 1; break;
       case 'screenFlash': this.post.flashEnabled = v === true; break;   // white PostFX flash (explosions, flak, shot down)
       case 'master': this.audio.setMaster(Number(v)); break;

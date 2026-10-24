@@ -6,6 +6,13 @@
 // INSIDE update() from state accumulated by the event handlers, never set directly by the handlers. The one exception
 // is the fullscreen key (U): browsers only grant fullscreen inside the key handler itself, so it calls
 // onFullscreenKey(event) synchronously instead of raising an edge.
+//
+// BINDINGS (js/bindings.js): the gamepad reads through the active layout's map (setPadLayout: 'mode2' default, 'ace',
+// 'custom'), the keyboard and mouse buttons through the key map (setBindings). Both load from localStorage at
+// construction. Mouse buttons arrive as codes 'Mouse0'..'Mouse4' in the same held-key set as keys, so a rebind moves
+// them like any key; mouse-aim movement is untouched. padRaw is a per-frame snapshot of the active pad
+// ({ axes, buttons: values 0..1 }) for the binding wizard. The D-pad, A / B (menu confirm / back), Start (pause) and the
+// legacy Back (invert edge) / Y (restart edge) are read directly; Back and Y only when the layout leaves them unbound.
 
 const DEADZONE = 0.12;          // per-axis deadzone before rescaling
 const ATTACK_TIME = 0.15;       // s for a keyboard axis to reach full deflection
@@ -15,33 +22,14 @@ const GUN_THRESHOLD = 0.25;     // right trigger analog threshold
 const MISSILE_THRESHOLD = 0.35; // left trigger analog threshold
 const MAX_DT = 0.25;            // clamp for update(dt) so a long tab-switch doesn't produce a huge ramp step
 const STORAGE_KEY = 'wingnut.invertPitch';
+import { PAD_PRESETS, PAD_LAYOUTS, loadBindings, padMapFor, padValue, codeMap, sanitizeKeys, sanitizePadMap, isMouseCode } from './bindings.js';
 
 // Standard-mapping indices (https://w3c.github.io/gamepad/#remapping). Non-standard pads fall back to the same indices.
 const BTN = { A: 0, B: 1, X: 2, Y: 3, LB: 4, RB: 5, LT: 6, RT: 7, BACK: 8, START: 9 };
 const AXIS = { LX: 0, LY: 1, RX: 2, RY: 3 };
 
-// Keyboard map: KeyboardEvent.code -> action. Actions ending in +/- are axis directions.
-const KEYMAP = {
-  KeyW: 'pitch-', ArrowUp: 'pitch-',          // push: nose down
-  KeyS: 'pitch+', ArrowDown: 'pitch+',        // pull: nose up
-  KeyA: 'roll-', ArrowLeft: 'roll-',
-  KeyD: 'roll+', ArrowRight: 'roll+',
-  KeyQ: 'yaw-', KeyE: 'yaw+',
-  ShiftLeft: 'throttle+', ShiftRight: 'throttle+', Equal: 'throttle+', NumpadAdd: 'throttle+',
-  KeyH: 'throttle-', Minus: 'throttle-', NumpadSubtract: 'throttle-',   // no Ctrl: Ctrl+W would close the browser tab
-  Space: 'gun',
-  KeyF: 'missile', Enter: 'missile', NumpadEnter: 'missile',
-  Tab: 'target',
-  KeyV: 'lookBack',
-  Escape: 'pause', KeyP: 'pause',
-  KeyI: 'invertPitch',
-  KeyR: 'restart',
-  KeyG: 'graphics',
-  KeyX: 'flares',
-  KeyC: 'freeLook',
-  Backquote: 'overlay', F9: 'overlay',
-  KeyU: 'fullscreen',                          // onFullscreenKey, called inside the keydown handler (see the header)
-};
+// Keyboard map: KeyboardEvent.code -> action (js/bindings.js DEFAULT_KEYS + FIXED_KEYS; rebuilt by setBindings).
+// Actions ending in +/- are axis directions; 'fullscreen' calls onFullscreenKey inside the keydown handler.
 // Fallback for browsers / layouts where `code` is missing: KeyboardEvent.key -> code.
 const KEY_TO_CODE = {
   w: 'KeyW', s: 'KeyS', a: 'KeyA', d: 'KeyD', q: 'KeyQ', e: 'KeyE', f: 'KeyF', v: 'KeyV', p: 'KeyP', i: 'KeyI', r: 'KeyR', g: 'KeyG', '`': 'Backquote', x: 'KeyX', c: 'KeyC', u: 'KeyU',
@@ -49,6 +37,7 @@ const KEY_TO_CODE = {
   Enter: 'Enter', Tab: 'Tab', Escape: 'Escape', ArrowUp: 'ArrowUp', ArrowDown: 'ArrowDown', ArrowLeft: 'ArrowLeft', ArrowRight: 'ArrowRight',
 };
 const AXES = ['pitch', 'roll', 'yaw', 'throttle'];
+const PAD_AXES = [['pitch', 'pitchUp', 'pitchDown'], ['roll', 'rollRight', 'rollLeft'], ['yaw', 'yawRight', 'yawLeft'], ['throttle', 'throttleUp', 'throttleDown']];
 const BUTTON_ACTIONS = ['gun', 'missile', 'target', 'lookBack', 'pause', 'invertPitch', 'restart', 'graphics', 'overlay', 'flares'];
 
 /** Default gamepad stick expo for pitch, roll and yaw (Settings > Controls sliders override it per axis). The curve is
@@ -123,12 +112,22 @@ export class Input {
       this.invertPitch = v === '1' || v === 'true';
     } catch (e) { /* storage blocked: default false */ }
 
+    // ---- bindings (js/bindings.js) ----------------------------------------------------------------------------------
+    const bnd = loadBindings((() => { try { return this._win && this._win.localStorage; } catch { return null; } })());
+    this.bindings = bnd;
+    this.padLayout = 'mode2';
+    this.padMap = PAD_PRESETS.mode2;
+    this.keyMap = bnd.keys;
+    this._codeMap = codeMap(bnd.keys);
+    this.padRaw = null;                 // { axes, buttons } of the active pad this frame (binding wizard), or null
+
     // ---- private state ----------------------------------------------------------------------------------------
     this._keys = new Set();             // currently held KeyboardEvent codes (mapped ones only)
     this._kbAxis = { pitch: 0, roll: 0, yaw: 0, throttle: 0 };      // ramped keyboard axis values
     this._press = { gun: 0, missile: 0, target: 0, lookBack: 0, pause: 0, invertPitch: 0, restart: 0, graphics: 0, overlay: 0, flares: 0 }; // keydowns since last update
     this._anyKeyDowns = 0;
     this._kbActivity = false;           // any keydown since last update (flips usingGamepad off)
+    this._padUsed = null; this._syncPadUsed();
     this._prev = { gun: false, missile: false, target: false, pause: false, invertPitch: false, restart: false }; // reported held state last frame
     this._gpPrevPressed = new Array(32).fill(false);
     this._gpPressEdge = false;          // any gamepad button went down since the last update
@@ -161,11 +160,15 @@ export class Input {
       const dx = e.movementX || 0, dy = e.movementY || 0;
       if (Math.abs(dx) + Math.abs(dy) > 0) { this._mdx += dx; this._mdy += dy; this._mouseUsed = true; }
     };
-    this._onMouseDown = (e) => { if (e.button === 0) this._mLeft = true; else if (e.button === 2) { this._mRight = true; this._mRightTap++; } this._mouseUsed = true; };
-    this._onMouseUp = (e) => { if (e.button === 0) this._mLeft = false; else if (e.button === 2) this._mRight = false; };
+    this._onMouseDown = (e) => {
+      if (e.button === 0) this._mLeft = true; else if (e.button === 2) { this._mRight = true; this._mRightTap++; }
+      this._mouseUsed = true;
+      this._mouseCode(e.button, true);
+    };
+    this._onMouseUp = (e) => { if (e.button === 0) this._mLeft = false; else if (e.button === 2) this._mRight = false; this._mouseCode(e.button, false); };
     this._onContext = (e) => { e.preventDefault(); };
     this._onWheel = (e) => { this._wheel += e.deltaY || 0; };
-    this._onLockChange = () => { this.pointerLocked = !!(this._doc && this._doc.pointerLockElement); if (!this.pointerLocked) { this._mLeft = this._mRight = false; } };
+    this._onLockChange = () => { this.pointerLocked = !!(this._doc && this._doc.pointerLockElement); if (!this.pointerLocked) { this._mLeft = this._mRight = false; this._clearMouseCodes(); } };
 
     // ---- listeners --------------------------------------------------------------------------------------------
     this._onKeyDown = (e) => this._keyDown(e);
@@ -216,9 +219,10 @@ export class Input {
   // =============================================================================================================
   _codeOf(e) {
     let code = e.code;
-    if (!code || !KEYMAP[code]) {
+    const K = this._codeMap;
+    if (!code || !K[code]) {
       const alt = KEY_TO_CODE[e.key] || (typeof e.key === 'string' ? KEY_TO_CODE[e.key.toLowerCase()] : undefined);
-      if (alt && KEYMAP[alt]) code = alt;
+      if (alt && K[alt]) code = alt;
     }
     return code;
   }
@@ -227,7 +231,7 @@ export class Input {
     if (this._disposed || !e) return;
     if (isEditable(e.target)) return;
     const code = this._codeOf(e);
-    const action = KEYMAP[code];
+    const action = this._codeMap[code];
     if (!e.repeat) {
       this._anyKeyDowns++; this._kbActivity = true;
       const M = this._kbMenu;
@@ -252,7 +256,7 @@ export class Input {
   _keyUp(e) {
     if (this._disposed || !e) return;
     const code = this._codeOf(e);
-    const action = KEYMAP[code];
+    const action = this._codeMap[code];
     if (!action) return;
     if (e.preventDefault) e.preventDefault();
     this._keys.delete(code);
@@ -261,12 +265,22 @@ export class Input {
     if (code === 'ControlLeft' || code === 'ControlRight') { if (!e.ctrlKey) { this._keys.delete('ControlLeft'); this._keys.delete('ControlRight'); } }
   }
 
+  /** Mouse button `b` as the bindable code 'Mouse<b>': held in the key set (press counter included) when bound. */
+  _mouseCode(b, down) {
+    if (this._disposed || !Number.isInteger(b) || b < 0 || b > 4) return;
+    const code = 'Mouse' + b, action = this._codeMap[code];
+    if (!action) return;
+    if (!down) { this._keys.delete(code); return; }
+    if (!this._keys.has(code)) { this._keys.add(code); if (this._press[action] !== undefined) this._press[action]++; }
+  }
+  _clearMouseCodes() { for (const c of [...this._keys]) if (isMouseCode(c)) this._keys.delete(c); }
+
   // held keys and mouse buttons: after a blur / hidden tab their keyup / mouseup may never arrive (stuck gun)
   _clearKeys() { this._keys.clear(); this._mLeft = this._mRight = false; }
 
   /** True if any held key maps to `action` (e.g. 'gun', 'pitch+'). */
   _kbHeld(action) {
-    for (const code of this._keys) if (KEYMAP[code] === action) return true;
+    for (const code of this._keys) if (this._codeMap[code] === action) return true;
     return false;
   }
 
@@ -354,15 +368,22 @@ export class Input {
     if (gp) {
       const ax = gp.axes || [];
       const rawLX = ax[AXIS.LX] || 0, rawLY = ax[AXIS.LY] || 0, rawRX = ax[AXIS.RX] || 0, rawRY = ax[AXIS.RY] || 0;
-      const X = this.expo || {};
-      gpYaw = shapeAxis(rawLX, X.yaw);
-      gpThr = -shapeAxis(rawLY, THROTTLE_EXPO);  // gamepad up is -Y; push up = +throttle
-      gpRoll = shapeAxis(rawRX, X.roll);
-      gpPitch = shapeAxis(rawRY, X.pitch);       // pull back (+Y) = nose up (+1)
-      this.stickRaw.pitch = rawRY; this.stickRaw.roll = rawRX; this.stickRaw.yaw = rawLX;
-      if (Math.abs(rawLX) > STICK_ACTIVE || Math.abs(rawLY) > STICK_ACTIVE || Math.abs(rawRX) > STICK_ACTIVE || Math.abs(rawRY) > STICK_ACTIVE) gpActive = true;
       const b = gp.buttons;
       const nb = Math.min(b.length, 32);
+      // raw snapshot (button values 0..1) for the bindings and the wizard
+      const R = this.padRaw || (this.padRaw = { axes: [], buttons: [] });
+      R.axes.length = 0; for (let i = 0; i < ax.length && i < 16; i++) R.axes.push(Number.isFinite(ax[i]) ? ax[i] : 0);
+      R.buttons.length = 0; for (let i = 0; i < nb; i++) R.buttons.push(triggerValue(b[i]));
+      // flight axes through the layout: each +/- pair as one signed axis, then deadzone + per-axis expo
+      const X = this.expo || {}, map = this.padMap;
+      const sv = {};
+      for (const [name, plus, minus] of PAD_AXES) sv[name] = clamp1(padValue(map[plus], R) - padValue(map[minus], R));
+      gpPitch = shapeAxis(sv.pitch, X.pitch);       // pull back (+Y in Mode 2) = nose up (+1)
+      gpRoll = shapeAxis(sv.roll, X.roll);
+      gpYaw = shapeAxis(sv.yaw, X.yaw);
+      gpThr = shapeAxis(sv.throttle, THROTTLE_EXPO);  // Mode 2: stick up (-Y) = +throttle
+      this.stickRaw.pitch = sv.pitch; this.stickRaw.roll = sv.roll; this.stickRaw.yaw = sv.yaw;
+      if (Math.abs(rawLX) > STICK_ACTIVE || Math.abs(rawLY) > STICK_ACTIVE || Math.abs(rawRX) > STICK_ACTIVE || Math.abs(rawRY) > STICK_ACTIVE) gpActive = true;
       for (let i = 0; i < nb; i++) {
         const btn = b[i];
         const pressed = !!(btn && (btn.pressed === true || (typeof btn === 'number' ? btn > 0.5 : false)));
@@ -371,19 +392,20 @@ export class Input {
         this._gpPrevPressed[i] = pressed;
       }
       for (let i = nb; i < 32; i++) this._gpPrevPressed[i] = false;
-      gpMisV = triggerValue(b[BTN.LT]);
-      gpGunV = triggerValue(b[BTN.RT]);
+      gpMisV = padValue(map.missile, R);
+      gpGunV = padValue(map.gun, R);
       if (gpMisV > MISSILE_THRESHOLD || gpGunV > GUN_THRESHOLD) gpActive = true;
-      gpTarget = isPressed(b[BTN.RB]);
-      gpLook = isPressed(b[BTN.LB]);
+      gpTarget = padValue(map.target, R) > 0.5;
+      gpLook = padValue(map.lookBack, R) > 0.5;
+      gpL3 = padValue(map.flares, R) > 0.5;
       gpPause = isPressed(b[BTN.START]);
-      gpInvert = isPressed(b[BTN.BACK]);
-      gpRestart = isPressed(b[BTN.Y]);
+      const used = this._padUsed;
+      gpInvert = !used.has(BTN.BACK) && isPressed(b[BTN.BACK]);
+      gpRestart = !used.has(BTN.Y) && isPressed(b[BTN.Y]);
       gpDU = isPressed(b[12]); gpDL = isPressed(b[14]); gpDR = isPressed(b[15]);
-      gpL3 = isPressed(b[10]);
       gpDD = isPressed(b[13]); gpA = isPressed(b[BTN.A]); gpB = isPressed(b[BTN.B]);
       lsU = rawLY < -0.6; lsD = rawLY > 0.6; lsL = rawLX < -0.6; lsR = rawLX > 0.6;
-    } else { const S = this.stickRaw; S.pitch = S.roll = S.yaw = 0; }
+    } else { const S = this.stickRaw; S.pitch = S.roll = S.yaw = 0; this.padRaw = null; }
 
     // ---- on-screen touch controls (phones): a second "gamepad" with the same mode-2 layout ---------------------------
     const T = this.touch;
@@ -440,8 +462,8 @@ export class Input {
     // ---- held booleans + one-frame edges -------------------------------------------------------------------------
     // A key tapped entirely between two frames still registers as held for one frame (press counter), so the
     // Pressed edge fires now and the Released edge fires on the next update.
-    const gunHeld = kbGun || gpGunV > GUN_THRESHOLD || P.gun > 0 || this.mouseLeft;
-    const misHeld = kbMissile || gpMisV > MISSILE_THRESHOLD || P.missile > 0 || this.mouseRight || this.mouseRightPressed;
+    const gunHeld = kbGun || gpGunV > GUN_THRESHOLD || P.gun > 0;          // mouse buttons arrive as bound codes (Mouse0)
+    const misHeld = kbMissile || gpMisV > MISSILE_THRESHOLD || P.missile > 0;
     const tgtHeld = kbTarget || gpTarget || P.target > 0;
     this.gun = gunHeld; this.missile = misHeld; this.targetButton = tgtHeld;
     this.lookBack = kbLook || gpLook || P.lookBack > 0;
@@ -480,6 +502,26 @@ export class Input {
     const n = Number(v);
     if (!this.expo || !(axis in this.expo) || !Number.isFinite(n)) return;
     this.expo[axis] = Math.min(EXPO_MAX, Math.max(0, n));
+  }
+  /** Gamepad layout: 'mode2' (default) | 'ace' | 'custom' (the saved custom map; Mode 2 until one exists). */
+  setPadLayout(name) {
+    this.padLayout = PAD_LAYOUTS.includes(name) ? name : 'mode2';
+    this.padMap = padMapFor(this.padLayout, this.bindings);
+    this._syncPadUsed();
+  }
+  /** New bindings { pad: custom map | null, keys } (js/bindings.js); invalid parts fall back to the defaults. */
+  setBindings(b) {
+    if (!b || typeof b !== 'object') return;
+    this.bindings = { pad: b.pad ? sanitizePadMap(b.pad) : null, keys: sanitizeKeys(b.keys) };
+    this.keyMap = this.bindings.keys;
+    this._codeMap = codeMap(this.keyMap);
+    for (const c of [...this._keys]) if (!this._codeMap[c]) this._keys.delete(c);   // unbound mid-hold: release
+    this.setPadLayout(this.padLayout);
+  }
+  _syncPadUsed() {
+    const u = this._padUsed || (this._padUsed = new Set());
+    u.clear();
+    for (const k of Object.keys(this.padMap)) { const x = this.padMap[k]; if (x && x.t === 'b') u.add(x.i); }
   }
   setInvertPitch(v) {
     this.invertPitch = !!v;

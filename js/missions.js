@@ -44,6 +44,9 @@
 //   GROUND_TYPES.hp is raw game damage (a player missile does 65): 1 missile for AA, SAMs, C-RAM, radars, small buildings
 //     and boats, 2 for armor, bunkers and hangars, 3 for railgun turrets. Ships pool hull and weapon mounts into one hitbox
 //     so capital ships stay playable. refHp = the reference durability figure, kept for information only.
+//     Gun ships (shoots 'gun', naval): aa = AA mounts (flak; the difficulty's shipGuns caps the mounts firing at once,
+//     default 1), main = heavy mounts (main guns, railguns: slow, wide shells, never capped, mostly harmless); js/targets.js
+//     header: Flak. As in PW, cruisers carry only a couple of AA mounts and battleships are mostly AA.
 //   MISSIONS: main.js shows the name, up to three briefing sentences and each phase label (upper-cased). location, setting
 //     and clock (local, 24 h; the source mission's listed time) are flavor.
 //     red (optional) = true: the preset's red Glassfall variant (js/timeofday.js glassfallPreset; M21, after the M20 ending).
@@ -148,7 +151,7 @@ export const GROUND_TYPES = {
   aa:                { shape: 'box',   size: [4, 3, 4],      hp: 50,  refHp: 30,  shoots: 'gun',     range: 1500, naval: false, note: 'AA gun: fragile, dangerous in clusters.' },
   'c-ram':           { shape: 'box',   size: [3, 5, 3],      hp: 50,  refHp: 30,  shoots: 'gun',     range: 2000, naval: false, note: 'Point-defense gun turret (Phalanx-type CIWS): very high rate of fire.' },
   sam:               { shape: 'prism', size: [6, 5, 10],     hp: 50,  refHp: 30,  shoots: 'missile', range: 4000, naval: false, note: 'SAM launcher (S-75-sized); short-range micro-missile launchers are folded in.' },
-  'l-sam':           { shape: 'prism', size: [7, 6, 12],     hp: 50,  refHp: 30,  shoots: 'missile', range: 8000, naval: false, note: 'Long-range SAM: longer range, better tracking. Put a mountain between you and it.' },
+  'l-sam':           { shape: 'prism', size: [7, 6, 12],     hp: 50,  refHp: 30,  shoots: 'missile', range: 8000, naval: false, note: 'Long-range SAM: twice the reach (its missile still flies the common profile). Put a mountain between you and it.' },
   railgun:           { shape: 'box',   size: [10, 8, 16],    hp: 180, refHp: 100, shoots: 'gun',     range: 4000, naval: false, note: 'Armored thunderglass railgun turret (heavy variants folded in): slow, heavy shot that leaves a damaging trail.' },
   // ---- land vehicles and structures (they do not shoot at aircraft) ----
   tank:              { shape: 'box',   size: [3.6, 2.6, 8],  hp: 100, refHp: 20,  shoots: false, naval: false, note: 'Eight-wheeled armored vehicle; takes 2 missiles.' },
@@ -169,12 +172,12 @@ export const GROUND_TYPES = {
   'siege crawler':   { shape: 'box',   size: [30, 22, 70],   hp: 650, refHp: 50,  shoots: 'missile', range: 5000, naval: false, note: 'Concord superheavy tracked fortress: 4 railguns, 10 SAMs, 12 AA guns (mounts pooled into one HP bar). Size estimated.' },
   // ---- naval ----
   buoy:              { shape: 'prism', size: [3, 4, 3],      hp: 25,              shoots: false,                  naval: true, note: 'Channel marker buoy on the approaches (M1 opening): a static warm-up target, one missile or a short burst. HP estimated.' },
-  boat:              { shape: 'prism', size: [5, 3, 22],     hp: 40,  refHp: 20,  shoots: 'gun',     range: 800,  naval: true, note: 'Fast patrol boat, one machine gun; hard to hit, low threat.' },
+  boat:              { shape: 'prism', size: [5, 3, 22],     hp: 40,  refHp: 20,  shoots: 'gun',     range: 800,  naval: true, aa: 1, note: 'Fast patrol boat, one machine gun; hard to hit, low threat.' },
   frigate:           { shape: 'prism', size: [32, 16, 127],  hp: 160, refHp: 50,  shoots: 'missile', range: 4000, naval: true, note: 'Littoral frigate (127 m trimaran): 1 SAM + 1 AA gun.' },
   'railgun frigate': { shape: 'prism', size: [32, 18, 127],  hp: 220, refHp: 50,  shoots: 'missile', range: 5000, naval: true, note: 'Frigate refitted with a cannon, a railgun and a SAM. Deadly in numbers.' },
-  cruiser:           { shape: 'prism', size: [21, 28, 186],  hp: 260, refHp: 25,  shoots: 'missile', range: 5000, naval: true, note: 'Missile cruiser (Slava-class size): bow cannon, 2 SAMs, 2 AA guns.' },
-  battleship:        { shape: 'prism', size: [40, 36, 279],  hp: 650, refHp: 150, shoots: 'missile', range: 6000, naval: true, note: 'Railgun-era battleship, 279 m: turret batteries, 4 cannons, 4 SAMs, 6 AA guns.' },
-  carrier:           { shape: 'box',   size: [77, 24, 333],  hp: 450, refHp: 150, shoots: 'gun',     range: 2000, naval: true, note: 'Fleet carrier (Nimitz-class size): 4 CIWS + 1 SAM. Launches NV-14 pairs (a 4-ship NV-14 group in the same phase stands in).' },
+  cruiser:           { shape: 'prism', size: [21, 28, 186],  hp: 260, refHp: 25,  shoots: 'gun',     range: 2500, naval: true, aa: 2, main: 2, note: 'Cruiser (Slava-class size): 2 AA mounts; the bow cannon and railgun are slow, wide and mostly harmless.' },
+  battleship:        { shape: 'prism', size: [40, 36, 279],  hp: 650, refHp: 150, shoots: 'gun',     range: 3000, naval: true, aa: 6, main: 2, note: 'Railgun-era battleship, 279 m: mostly AA (6 mounts); turret batteries and cannons are slow and wide.' },
+  carrier:           { shape: 'box',   size: [77, 24, 333],  hp: 450, refHp: 150, shoots: 'gun',     range: 2000, naval: true, aa: 4, note: 'Fleet carrier (Nimitz-class size): 4 CIWS + 1 SAM. Launches NV-14 pairs (a 4-ship NV-14 group in the same phase stands in).' },
   'cargo ship':      { shape: 'box',   size: [32, 22, 190],  hp: 120, refHp: 50,  shoots: false,                  naval: true, note: 'Unarmed bulk carrier.' },
   'armed cargo':     { shape: 'box',   size: [32, 22, 190],  hp: 200, refHp: 50,  shoots: 'missile', range: 3500, naval: true, note: 'Militarized cargo ship: 4 micro-SAM launchers in the holds.' },
   'spy ship':        { shape: 'prism', size: [16, 18, 102],  hp: 120, refHp: 50,  shoots: false,                  naval: true, note: 'Unarmed intelligence ship with twin radomes.' },

@@ -905,15 +905,14 @@ export class Weapons {
     // only a fraction of the way along the target's flight path (lagged lead pursuit), so missiles arc in behind the
     // target and a hard turn across their path makes them overshoot; over the last missileTermTime s before the blind
     // range the lead ramps to full and PN fades in, so good shots (tail chases, gentle turns, head-on) still connect.
-    // Ground launches (SAMs) keep classic proportional navigation + a small pursuit bias.
+    // Ground launches (SAM sites, ships) fly the same law: under true PN they were near-perfect interceptors that a late
+    // break could not beat (2% defeated vs ~50% for an air launch, in the same late-break window).
     //   a = N Vc (Omega x lambda) + kp v (pursuit dir - nose dir)     (tuned with the headless missile harness)
     this.missileNavGain = 0;                 // PN constant N for air launches midcourse (0: pure lead pursuit)
     this.missilePursuitGain = 3.2;           // 1/s, pursuit gain: nose turn rate per radian of aim error
     this.missileLeadFrac = 0.2;              // midcourse: fraction of the full time-to-go lead the pursuit point uses
     this.missileTermTime = 1.0;              // s to the blind range: over this the lead ramps up to full (terminal homing)
     this.missileTermNavGain = 4;             //   and N ramps up to this (set course by the blind range; the turn cap rules it)
-    this.samNavGain = 4;                     // ground launches: true PN
-    this.samPursuitGain = 1.2;               //   plus a small pursuit bias toward the full lead point
     this.missileTurnRateBoost = 7;           // rad/s max while the motor burns
     this.missileTurnRateCoast = 2.5;         // rad/s asymptotic max while coasting
     this.missileSeekerCos = 0;               // cos(max off-boresight angle) = cos(90°)
@@ -921,6 +920,11 @@ export class Weapons {
     this.missileFuse = 14;                   // m proximity fuse
     this.missileLag = 0.18;                  // s, airframe response lag on the guidance command (late breaks overshoot)
     this.missileBlindRange = 90;             // m, the seeker stops steering this close (last-instant jinks cause misses)
+    // ground launches (SAM sites, ships) closing head-on at ~1000 m/s: a tighter fuse and a longer blind range than the
+    // air launches' so a late break beats them about as often (~55-60% vs ~45-50% in the same window; break + flares
+    // always); a target flying on is still hit every time
+    this.samFuse = 9;                        // m
+    this.samBlindRange = 120;                // m
     this.missileBlindTime = 0;               // s: when > 0, the blind range is at most this many s of closure (0 = metres only)
     this.missileBlindTailCos = 0.3;          //   (tail-aspect launches only: target velocity within ~70 deg of the line of sight,
     this.missileBlindTailRange = 1800;       //   launched within this many m)
@@ -1585,6 +1589,7 @@ export class Weapons {
     m.maxSpeed = this.missileMaxSpeed; m.boostTime = this.missileBoostTime; m.drag = this.missileDrag; m.life = this.missileLife;   // per-shot kinematics
     m.fuse = this.missileFuse;             //   and fuse (likewise)
     m.blind = this.missileBlindRange; m.blindTime = this.missileBlindTime;   //   and seeker blind range (likewise)
+    if (m.groundLaunch) { m.fuse = this.samFuse; m.blind = this.samBlindRange; }   //   (ground launches: their own)
     m.dud = false; m.missBy = 0; m.missSide = 1; m.lethal = false;   // pooled: the launch callback may set these
     m.ax = 0; m.ay = 0; m.az = 0;          // pooled: guidance lag state (_guide's own reset never fires: it starts after the rail drop)
     m.mesh.updateMatrix(); m.mesh.matrixWorld.copy(m.mesh.matrix);
@@ -1777,8 +1782,8 @@ export class Weapons {
     }
   }
 
-  /** Lagged lead pursuit (air launches) or proportional navigation (ground launches) with airframe lag and a turn-rate
-   *  cap; the seeker drops the track beyond missileSeekerCos off boresight. */
+  /** Lagged lead pursuit blending into terminal PN (every launch, air or ground) with airframe lag and a turn-rate cap;
+   *  the seeker drops the track beyond missileSeekerCos off boresight. */
   _guide(m) {
     const T = m.target, dt = this._dt, boostEnd = this.missileDropTime + m.boostTime;
     if (Weapons._isDead(T)) { m.target = null; return; }
@@ -1804,18 +1809,18 @@ export class Weapons {
     if (dist < blind) return;                                     // terminal: no more corrections
     // LOS rotation rate  Ω = (r × v_rel) / |r|²
     const ox = (ry * vrz - rz * vry) / r2, oy = (rz * vrx - rx * vrz) / r2, oz = (rx * vry - ry * vrx) / r2;
-    // air launches: lagged lead pursuit (N, lead fraction) blending into terminal PN over the missileTermTime s before
-    // the blind range (so the endgame course is set by the time the seeker stops steering)
-    const sam = m.groundLaunch === true, tg = dist / vc, tb = (dist - blind) / vc;
-    const w = sam ? 1 : tb >= this.missileTermTime ? 0 : 1 - tb / this.missileTermTime;   // 0 midcourse .. 1 at blind range
-    const k = (sam ? this.samNavGain : this.missileNavGain + (this.missileTermNavGain - this.missileNavGain) * w) * vc;
-    // pursuit point: the target's position plus a fraction of its travel over the estimated time-to-go (SAMs: all of it)
-    const tgo = Math.min(tg, 2.5) * (sam ? 1 : this.missileLeadFrac + (1 - this.missileLeadFrac) * w);
+    // lagged lead pursuit (N, lead fraction) blending into terminal PN over the missileTermTime s before the blind range
+    // (so the endgame course is set by the time the seeker stops steering)
+    const tg = dist / vc, tb = (dist - blind) / vc;
+    const w = tb >= this.missileTermTime ? 0 : 1 - tb / this.missileTermTime;   // 0 midcourse .. 1 at blind range
+    const k = (this.missileNavGain + (this.missileTermNavGain - this.missileNavGain) * w) * vc;
+    // pursuit point: the target's position plus a fraction of its travel over the estimated time-to-go
+    const tgo = Math.min(tg, 2.5) * (this.missileLeadFrac + (1 - this.missileLeadFrac) * w);
     let qx = rx + tv.x * tgo, qy = ry + tv.y * tgo, qz = rz + tv.z * tgo;
     const ql = 1 / (Math.sqrt(qx * qx + qy * qy + qz * qz) || 1);
     qx *= ql; qy *= ql; qz *= ql;
     // commanded acceleration a = N Vc (Ω × λ)  + a pursuit term toward that point
-    const kp = (sam ? this.samPursuitGain : this.missilePursuitGain) * m.speed;
+    const kp = this.missilePursuitGain * m.speed;
     let ax = k * (oy * lz - oz * ly) + (qx - dir.x) * kp;
     let ay = k * (oz * lx - ox * lz) + (qy - dir.y) * kp;
     let az = k * (ox * ly - oy * lx) + (qz - dir.z) * kp;

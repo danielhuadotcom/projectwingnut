@@ -1233,7 +1233,7 @@ export class HUD {
     const ctx = this.ctx, L = this.L, lines = this._inLines;
     let text, color, glyph = false;
     if (input.gamepadBlocked) {
-      text = 'GAMEPAD BLOCKED BY THIS FRAME — open the artifact in its own tab or play locally'; color = COL.amber;
+      text = 'GAMEPAD UNAVAILABLE IN THIS BROWSER — try another browser or use mouse aim'; color = COL.amber;
     } else if (input.gamepadConnected && input.usingGamepad) {
       text = String(input.gamepadName || 'GAMEPAD').replace(/\s*\(.*$/, '').trim() || 'GAMEPAD';
       glyph = true; color = COL.green;

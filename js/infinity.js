@@ -12,8 +12,9 @@
 //           retry. The end screen shows rounds cleared, kills, score and the local best. No map, economy or upgrades.
 //   Ramp    A smooth function of the round number: smoothstep from round 1 (Easy) to MERC_ROUND (Mercenary) across the
 //           rows of the game's DIFFICULTY table. Every numeric field follows it (enemy HP and skill, attacker caps,
-//           committed-flight caps, the enemy missile backstop, playerShare, the flak guns firing at once and their aim
-//           error: aaGuns 2 > 4 > 6 > 14, aaError 1.6 > 1.0), then holds; player armor (damage taken) follows the same
+//           committed-flight caps, the enemy missile backstop and the surface missiles' share of it, playerShare, the flak
+//           guns firing at once and their aim error: aaGuns 2 > 5 > 7 > 10, shipGuns 2 > 6 > 8 > 10, aaError 1.6 > 1.0),
+//           then holds; player armor (damage taken) follows the same
 //           curve but tops out at the Hard row (TOPS). Missiles fly the same in every round (no difficulty field): later
 //           rounds only throw more of them. Past MERC_ROUND only the target count and the mix keep growing.
 //   Bounty  Every 5th round adds one named ace with a boss bar (the types with bars, except Q12 MAINSPRING, which stays

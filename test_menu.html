@@ -24,6 +24,7 @@
 import { Menu, installKind, loadSettings, saveSettings, DEFAULT_SETTINGS, CREDITS, SETTING_DEFS, DIFFICULTY_PICKS, DIFFICULTY_PICKED_KEY, loadDifficultyPicked, saveDifficultyPicked } from './js/menu.js';
 import { MISSIONS, countUnits } from './js/missions.js';
 import { Input, shapeAxis, STICK_EXPO } from './js/input.js';
+import { BINDINGS_KEY, BINDINGS_VERSION, KEY_ACTIONS, DEFAULT_KEYS, loadBindings, sanitizeKeys } from './js/bindings.js';
 import { loadBest, saveBest, BEST_KEY } from './js/infinity.js';
 
 window.addEventListener('error', (e) => console.log('MENU_ERR ' + (e.message || e)));
@@ -75,7 +76,7 @@ const press = (...names) => { step(1 / 60, names.map((n) => NAMES[n])); step(1 /
 // The menu ignores input for a moment after it opens (0.25 s; 0.8 s for the debrief), timed on the wall clock (Menu.show sets
 // _lockUntil from performance.now()), so a fake dt can't skip it: wait out the remaining lock for real, then step.
 const settle = async () => { await new Promise((r) => setTimeout(r, Math.max(0, (menu._lockUntil || 0) - performance.now()) + 20)); step(1.0); };
-const focused = () => { const f = menu.el.querySelector('.is-focus'); if (!f) return null; const d = f.dataset; return d.act || d.key || d.tab || d.diff || (d.mission !== undefined ? 'm' + d.mission : '?'); };
+const focused = () => { const f = menu.el.querySelector('.is-focus'); if (!f) return null; const d = f.dataset; return d.act || d.key || d.tab || d.diff || d.kslot || (d.mission !== undefined ? 'm' + d.mission : '?'); };
 const last = () => calls[calls.length - 1] || [];
 // layout-agnostic: press each direction (up to 4 times) until `target` has focus
 const reach = (target, ...dirs) => { for (const d of dirs) for (let i = 0; i < 4 && focused() !== target; i++) press(d); return focused() === target; };
@@ -684,6 +685,154 @@ async function runSelfTest() {
     }
   }
 
+  // ---- Control bindings: Controller layout row, the controller wizard, keyboard bindings (CONTROL BINDINGS) ----------
+  {
+    const bindBackup = (() => { try { return localStorage.getItem(BINDINGS_KEY); } catch { return null; } })();
+    try { localStorage.removeItem(BINDINGS_KEY); } catch { /* blocked */ }
+    const layout0 = settings.padLayout;
+    menu.bindings = loadBindings();
+    menu.setSetting('padLayout', 'mode2');
+    try {
+      menu.show('title'); await settle();
+      menu.show('settings', { tab: 'controls' }); await settle();
+      const row = scr('settings').querySelector('.m-row[data-key="padLayout"]');
+      check('Controller layout row: Mode 2, Ace Combat, Custom', row && [...row.querySelectorAll('.m-seg button')].map((b) => b.textContent).join() === 'Mode 2,Ace Combat,Custom' && settings.padLayout === 'mode2');
+      check('Controller layout reachable by pad / keys', reach('padLayout', 'down', 'down', 'down', 'down', 'down', 'down'), focused());
+      press('right');
+      check('right picks Ace Combat (applied through onSetting)', settings.padLayout === 'ace' && last()[1] === 'padLayout' && last()[2] === 'ace', last());
+      check('Ace Combat help line', /left stick pitch and roll/i.test(row.querySelector('.m-desc').textContent));
+      check('controls card follows the layout', /Ace Combat/.test(scr('controls').querySelector('.m-card--pad h3').textContent) &&
+        /A\s*Cannon/.test(scr('controls').querySelector('.m-card--pad').textContent) && /LB \/ RB\s*Rudder/.test(scr('controls').querySelector('.m-card--pad').textContent));
+      calls.length = 0;
+      press('right');
+      const bcall = calls.find((c) => c[1] === 'bindings');
+      check('Custom with nothing saved starts as a copy of Ace Combat', settings.padLayout === 'custom' && bcall && bcall[2].pad.gun.i === 0 && bcall[2].pad.yawRight.i === 5 &&
+        calls.findIndex((c) => c[1] === 'bindings') < calls.findIndex((c) => c[1] === 'padLayout'), calls);
+      check('the copy is stored (versioned)', (() => { try { const o = JSON.parse(localStorage.getItem(BINDINGS_KEY)); return o.v === BINDINGS_VERSION && o.pad.gun.i === 0; } catch { return false; } })());
+      press('left'); press('left'); check('back to Mode 2', settings.padLayout === 'mode2');
+      const links = [...scr('settings').querySelectorAll('[data-link]')];
+      check('two link rows (wizard, keyboard) shown with a keyboard / pad', links.length === 2 && links.every((l) => !l.hidden && l.getClientRects().length));
+      const touchMenu = new Menu(document.createElement('div'), { ...menuOpts, touchOnly: true });
+      check('touch-only: the wizard rows are hidden', [...touchMenu.el.querySelectorAll('[data-link]')].every((l) => l.hidden)); touchMenu.dispose();
+
+      // ---- controller wizard ----
+      const REST = [0.04, -0.03, 0.02, 0.05];
+      const raw = (ax = {}, bt = {}) => { const a = REST.slice(); for (const k in ax) a[k] = ax[k]; return { axes: a, buttons: Array.from({ length: 17 }, (_, i) => bt[i] || 0) }; };
+      const feed = (r, n = 2, keys = []) => { fake.padRaw = r; for (let i = 0; i < n; i++) step(1 / 60, keys); };
+      const W = scr('padwiz'), prompt = () => W.querySelector('.m-wiz-prompt').textContent, readout = () => W.querySelector('.m-wiz-livet').textContent;
+      check('wizard link reachable', reach('padwiz', 'down'), focused());
+      fake.padRaw = null; press('ok');
+      check('wizard opens', menu.screen === 'padwiz');
+      check('no pad yet: asks for a controller', /connect a controller/i.test(prompt()), prompt());
+      feed(raw(), 40);
+      check('calibrated: step 1 asks for PITCH UP', /PITCH UP/.test(prompt()) && /Step 1 of 13/.test(W.querySelector('.m-wiz-eye').textContent), prompt());
+      feed(raw({ 1: 0.55 }), 3);
+      check('live readout shows the input below the threshold', /L stick ↓/.test(readout()) && /PITCH UP/.test(prompt()), readout());
+      feed(raw(), 2); feed(raw({ 3: -0.92 }), 2);
+      check('pitch up from stick UP: inverted axis detected', /R stick ↑/.test(W.querySelector('.m-wiz-now').textContent) && /inverted/.test(W.querySelector('.m-wiz-now').textContent), W.querySelector('.m-wiz-now').textContent);
+      feed(raw(), 2);
+      check('pitch down filled by the stick: next ROLL RIGHT', /ROLL RIGHT/.test(prompt()), prompt());
+      calls.length = 0;
+      feed(raw({}, { 0: 1 }), 2, ['menuConfirm']);   // A doubles as menu confirm: the wizard binds it, the menu ignores it
+      check('A binds (roll right) and is not a menu confirm', menu.screen === 'padwiz' && calls.length === 0 && /\bA\b/.test(W.querySelector('.m-wiz-now').textContent));
+      feed(raw(), 2); check('button: roll left asked separately', /ROLL LEFT/.test(prompt()), prompt());
+      feed(raw({}, { 1: 1 }), 2, ['menuBack']); feed(raw(), 2);
+      check('B binds roll left, not menu back', menu.screen === 'padwiz' && /RUDDER RIGHT/.test(prompt()), prompt());
+      feed(raw({}, { 0: 1 }), 2);
+      check('A again: conflict -> swap prompt', menu.screen === 'confirm' && /A is in use/.test(scr('confirm').querySelector('.m-h2').textContent) &&
+        /Roll right/.test(scr('confirm').querySelector('.m-lede').textContent), scr('confirm').textContent);
+      await settle();
+      press('back');
+      check('Cancel returns to the same step', menu.screen === 'padwiz' && /RUDDER RIGHT/.test(prompt()));
+      feed(raw({}, { 0: 1 }), 2); feed(raw(), 2); feed(raw({}, { 0: 1 }), 2);
+      check('conflict again after a release', menu.screen === 'confirm');
+      await settle();
+      check('Swap reachable', reach('confirm-yes', 'left', 'up'), focused());
+      press('ok');
+      check('swap: back on the wizard, rudder right = A', menu.screen === 'padwiz' && menu._wiz.map.yawRight.i === 0 && menu._wiz.map.rollRight && menu._wiz.map.rollRight.t === 'a', menu._wiz && menu._wiz.map);
+      feed(raw(), 2); check('next RUDDER LEFT', /RUDDER LEFT/.test(prompt()), prompt());
+      window.dispatchEvent(new KeyboardEvent('keydown', { code: 'Space', key: ' ', bubbles: true, cancelable: true }));
+      window.dispatchEvent(new KeyboardEvent('keyup', { code: 'Space', key: ' ', bubbles: true, cancelable: true }));
+      check('Space skips', /BOOST/.test(prompt()), prompt());
+      window.dispatchEvent(new KeyboardEvent('keydown', { code: 'Backspace', key: 'Backspace', bubbles: true, cancelable: true }));
+      check('Backspace goes back', /RUDDER LEFT/.test(prompt()), prompt());
+      W.querySelector('[data-act="wiz-skip"]').click(); check('the Skip button skips', /BOOST/.test(prompt()), prompt());
+      for (let i = 0; i < 12 && !menu._wiz.done; i++) { feed(raw({}, { 15: 1 }), 1); feed(raw(), 1); }   // D-pad → skips the rest
+      check('final step: live test screen', menu._wiz.phase === 'test' && !W.querySelector('.m-wiz-test').hidden && W.querySelectorAll('.m-wt').length === 13);
+      check('test screen focus starts on the panel (A tests, saves nothing)', menu._focusEl === W.querySelector('.m-wiz-test'));
+      calls.length = 0;
+      feed(raw({ 3: -1 }, { 7: 0.5 }), 2, ['menuConfirm']); feed(raw({ 3: -1 }, { 7: 0.5 }), 1);
+      const bar = (id) => W.querySelector(`[data-wt="${id}"] b`).style.width;
+      check('live values per action', bar('pitchUp') === '100%' && bar('gun') === '50%' && bar('missile') === '0%' && calls.length === 0, [bar('pitchUp'), bar('gun')]);
+      check('Save reachable', reach('wiz-save', 'down'), focused());
+      calls.length = 0; press('ok');
+      const saved = (() => { try { return JSON.parse(localStorage.getItem(BINDINGS_KEY)); } catch { return null; } })();
+      check('Save: Custom layout in force, stored and sent', menu.screen === 'settings' && settings.padLayout === 'custom' && saved && saved.v === BINDINGS_VERSION &&
+        saved.pad.pitchUp.d === -1 && saved.pad.yawRight.i === 0 && calls.some((c) => c[1] === 'bindings' && c[2].pad.pitchUp.d === -1), saved);
+      // Redo, Esc, Start held
+      reach('padwiz', 'down'); press('ok'); feed(raw(), 40); feed(raw({}, { 2: 1 }), 2); feed(raw(), 2);
+      check('a new run starts from the saved custom layout', /ROLL RIGHT/.test(prompt()) || /PITCH DOWN/.test(prompt()), prompt());
+      for (let i = 0; i < 14 && !menu._wiz.done; i++) { feed(raw({}, { 15: 1 }), 1); feed(raw(), 1); }
+      W.querySelector('[data-act="wiz-redo"]').click();
+      check('Redo restarts at calibration', menu._wiz.phase === 'calib' && menu.screen === 'padwiz');
+      feed(raw(), 40);
+      const inp = new Input(window);
+      window.dispatchEvent(new KeyboardEvent('keydown', { code: 'Escape', key: 'Escape', bubbles: true, cancelable: true }));
+      window.dispatchEvent(new KeyboardEvent('keyup', { code: 'Escape', key: 'Escape', bubbles: true, cancelable: true }));
+      inp.update(1 / 60);
+      check('Esc cancels the wizard (and the game never sees it)', menu.screen === 'settings' && settings.padLayout === 'custom' && !inp.pausePressed && !inp.menuBack);
+      reach('padwiz', 'down'); press('ok'); feed(raw(), 40);
+      feed(raw({}, { 9: 1 }), 30); check('Start held 0.5 s: still in the wizard', menu.screen === 'padwiz');
+      feed(raw({}, { 9: 1 }), 32, ['pausePressed']); check('Start held 1 s cancels', menu.screen === 'settings');
+      feed(raw(), 2); fake.padRaw = null;
+
+      // ---- keyboard bindings ----
+      check('keyboard link reachable', reach('keys', 'down'), focused());
+      press('ok');
+      const K = scr('keys'), slot = (id, n) => K.querySelector(`[data-kslot="${id}:${n}"]`);
+      check('Key bindings lists every action', menu.screen === 'keys' && K.querySelectorAll('.m-krow').length === KEY_ACTIONS.length && slot('gun', 0).textContent === 'Space' && /LMB/.test(slot('gun', 1).textContent));
+      check('focus starts on the first key', focused() === 'pitch-:0', focused());
+      check('slots navigate by pad / keys', reach('gun:0', 'down', 'down', 'down', 'down', 'left') && (press('right'), focused() === 'gun:1') && (press('left'), focused() === 'gun:0'), focused());
+      const keyDown = (code, k) => { const e = new KeyboardEvent('keydown', { code, key: k || code, bubbles: true, cancelable: true }); window.dispatchEvent(e); window.dispatchEvent(new KeyboardEvent('keyup', { code, key: k || code, bubbles: true, cancelable: true })); return e; };
+      press('ok'); check('confirm on a slot captures', slot('gun', 0).classList.contains('is-cap') && /press a key/i.test(slot('gun', 0).textContent));
+      const inp2 = new Input(window); calls.length = 0;
+      keyDown('KeyJ', 'j'); inp2.update(1 / 60); step(1 / 60);
+      check('J bound to cannon (stored, sent, the game did not see the key)', slot('gun', 0).textContent === 'J' && menu.bindings.keys.gun[0] === 'KeyJ' &&
+        loadBindings().keys.gun[0] === 'KeyJ' && calls.some((c) => c[1] === 'bindings' && c[2].keys.gun[0] === 'KeyJ') && !inp2.anyPressed, menu.bindings.keys.gun);
+      inp2.setBindings(loadBindings()); keyDown('KeyJ', 'j'); inp2.update(1 / 60);
+      check('the game applies the new key', inp2.gunPressed === true);
+      inp2.dispose();
+      press('ok'); keyDown('Escape', 'Escape'); step(1 / 60);
+      check('Esc cancels a capture and stays on the screen', menu.screen === 'keys' && !slot('gun', 0).classList.contains('is-cap') && slot('gun', 0).textContent === 'J');
+      press('ok'); press('back'); check('B cancels a capture', menu.screen === 'keys' && !slot('gun', 0).classList.contains('is-cap'));
+      reach('missile:0', 'down'); press('ok'); keyDown('KeyJ', 'j'); step(1 / 60);
+      check('a key in use asks to swap', menu.screen === 'confirm' && /J is in use/.test(scr('confirm').querySelector('.m-h2').textContent) && /Cannon gets F/.test(scr('confirm').querySelector('.m-lede').textContent), scr('confirm').textContent);
+      await settle(); press('back');
+      check('Cancel keeps both', menu.screen === 'keys' && menu.bindings.keys.missile[0] === 'KeyF' && menu.bindings.keys.gun[0] === 'KeyJ' && focused() === 'missile:0', focused());
+      press('ok'); keyDown('KeyJ', 'j'); step(1 / 60); await settle();
+      reach('confirm-yes', 'left', 'up'); press('ok');
+      check('Swap: missile J, cannon F', menu.screen === 'keys' && menu.bindings.keys.missile[0] === 'KeyJ' && menu.bindings.keys.gun[0] === 'KeyF' && slot('gun', 0).textContent === 'F');
+      slot('gun', 1).click(); check('a click captures too', slot('gun', 1).classList.contains('is-cap'));
+      slot('gun', 1).dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, button: 3, pointerType: 'mouse' }));
+      check('a mouse button binds to the cannon', menu.bindings.keys.gun[1] === 'Mouse3' && /Mouse 4/.test(slot('gun', 1).textContent), menu.bindings.keys.gun);
+      slot('flares', 0).click(); slot('flares', 0).dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, button: 0, pointerType: 'mouse' })); slot('flares', 0).click();   // the browser's click after that press
+      check('mouse buttons do not bind to flares (the click cancels)', menu.bindings.keys.flares[0] === 'KeyX' && !slot('flares', 0).classList.contains('is-cap'));
+      slot('flares', 0).click(); check('the click ending a capture is swallowed; a new click captures', slot('flares', 0).classList.contains('is-cap'));
+      keyDown('Delete', 'Delete'); check('Del clears a slot', menu.bindings.keys.flares.length === 0 && slot('flares', 0).textContent === '—');
+      slot('flares', 0).click(); keyDown('Escape'); check('Escape cannot be bound', menu.bindings.keys.flares.length === 0);
+      check('Reset reachable', reach('keys-reset', 'down', 'down', 'down', 'down', 'down', 'down', 'down', 'down', 'down', 'down'), focused());
+      press('ok');
+      check('Reset to defaults', JSON.stringify(menu.bindings.keys) === JSON.stringify(sanitizeKeys(DEFAULT_KEYS)) && loadBindings().keys.flares[0] === 'KeyX');
+      check('keyboard card shows the bound keys', /F\s*Missile|Missile/.test(scr('controls').querySelector('.m-card--kb').textContent));
+      press('back'); check('Back returns to Settings', menu.screen === 'settings');
+    } finally {
+      fake.padRaw = null;
+      try { if (bindBackup === null) localStorage.removeItem(BINDINGS_KEY); else localStorage.setItem(BINDINGS_KEY, bindBackup); } catch { /* blocked */ }
+      menu.bindings = loadBindings();
+      menu.setSetting('padLayout', layout0);
+    }
+  }
+
   // Restore the stored settings (the game shares this origin)
   for (const key of Object.keys(DEFAULT_SETTINGS)) menu.setSetting(key, before[key]);
   menu.hide();
@@ -710,7 +859,7 @@ if (instParam) {
     : { ua: navigator.userAgent, platform: 'Linux x86_64', touchPoints: 0, standalone: false, manifest: true } });
   if (instParam === 'prompt') { const ev = new Event('beforeinstallprompt', { cancelable: true }); ev.prompt = () => { console.log('MENU_PROMPT'); return Promise.resolve({ outcome: 'dismissed' }); }; window.dispatchEvent(ev); }
 }
-menu.setControllerStatus(params.get('pad') === '0' ? 'No controller detected. Press a button on it, or fly with the keyboard.' : 'Controller ready: Xbox Wireless Controller', params.get('pad') !== '0');
+menu.setControllerStatus(params.get('pad') === '0' ? 'No controller. Press any pad button, or use mouse aim.' : 'Controller ready: Xbox Wireless Controller', params.get('pad') !== '0');
 menu.setQualityLabel('AUTO · MEDIUM');
 if (params.get('dev')) menu.setDevice(params.get('dev'));
 if (want === 'pause' || want === 'confirm') menu.show('pause', params.get('inf') === '1' ? { mode: 'infinity', round: 7 } : { missionIndex: 2 });
