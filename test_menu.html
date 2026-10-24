@@ -23,7 +23,7 @@
 <script type="module">
 import { Menu, loadSettings, saveSettings, DEFAULT_SETTINGS, CREDITS, SETTING_DEFS } from './js/menu.js';
 import { MISSIONS, countUnits } from './js/missions.js';
-import { Input } from './js/input.js';
+import { Input, shapeAxis, STICK_EXPO } from './js/input.js';
 import { loadBest, saveBest, BEST_KEY } from './js/infinity.js';
 
 window.addEventListener('error', (e) => console.log('MENU_ERR ' + (e.message || e)));
@@ -144,11 +144,54 @@ async function runSelfTest() {
   const sfSeg = (v) => sfRow.querySelector(`.m-seg [data-val="${v}"]`);
   sfSeg(!sf).click(); check('tapping a Screen flash segment sets it', settings.screenFlash === !sf && sfSeg(!sf).classList.contains('is-on'), settings.screenFlash);
   sfSeg(sf).click(); check('tapping the other segment sets it back', settings.screenFlash === sf && sfRow.getAttribute('aria-checked') === String(sf));
+  // Stick expo rows (pitch / roll / rudder) under Screen flash, with the response graph below them
+  press('down'); check('next row is Stick expo pitch', focused() === 'expoPitch', focused());
+  const exRow = (k) => menu.el.querySelector(`.m-row[data-key="${k}"]`), exVal = (k) => exRow(k).querySelector('.m-val').textContent;
+  check('expo rows are sliders defaulting to the raised expo', ['expoPitch', 'expoRoll', 'expoYaw'].every((k) => exRow(k).classList.contains('m-row--slider') &&
+    DEFAULT_SETTINGS[k] === STICK_EXPO) && STICK_EXPO === 0.9, STICK_EXPO);
+  const ep0 = settings.expoPitch;
+  press('right'); check('right steps expo finely (+0.02)', near(settings.expoPitch, Math.min(1, Math.round((ep0 + 0.02) * 100) / 100)) && last()[1] === 'expoPitch', [ep0, settings.expoPitch]);
+  press('left'); check('left steps it back', near(settings.expoPitch, ep0), settings.expoPitch);
+  for (let i = 0; i < 10; i++) step(1 / 60, ['menuLeft']);   // a held-repeat burst (input.js repeats held left/right)
+  step(1 / 60);
+  check('repeated left edges keep stepping', near(settings.expoPitch, Math.round((ep0 - 0.2) * 100) / 100), settings.expoPitch);
+  check('expo value label', exVal('expoPitch') === Math.round(settings.expoPitch * 100) + '%', exVal('expoPitch'));
+  const cv = menu.el.querySelector('.m-expo-c'), head = menu.el.querySelector('.m-expo-h');
+  const padIn = { ...fake, gamepadConnected: true, stickRaw: { pitch: 0.6, roll: -0.3, yaw: 0 } };
+  menu.update(1 / 60, padIn);
+  check('graph drawn for the focused axis with the live stick dot', cv && cv.width > 0 && head.textContent === 'Pitch response' && /^pitch\|.*\|0\.600$/.test(menu._expoSig), menu._expoSig);
+  press('down'); check('next row is Stick expo roll', focused() === 'expoRoll', focused());
+  menu.update(1 / 60, padIn);
+  check('graph follows the selected row (roll, |deflection| dot)', head.textContent === 'Roll response' && /^roll\|.*\|0\.300$/.test(menu._expoSig), menu._expoSig);
+  menu.update(1 / 60, { ...fake, gamepadConnected: false });
+  check('no stick dot without a gamepad', /\|-1\.000$/.test(menu._expoSig), menu._expoSig);
+  press('down'); check('next row is Stick expo rudder', focused() === 'expoYaw', focused());
+  for (let i = 0; i < 60; i++) step(1 / 60, ['menuLeft']);
+  step(1 / 60);
+  check('rudder expo bottoms out at 0 = Linear', settings.expoYaw === 0 && exVal('expoYaw') === 'Linear', [settings.expoYaw, exVal('expoYaw')]);
+  { // touch / mouse drag
+    const ysl = exRow('expoYaw').querySelector('.m-slider'), yr = ysl.getBoundingClientRect();
+    const ype = (type, fx) => ysl.dispatchEvent(new PointerEvent(type, { bubbles: true, pointerType: 'touch', button: 0, pointerId: 9, clientX: yr.left + yr.width * fx, clientY: yr.top + yr.height / 2 }));
+    ype('pointerdown', 0.2); ype('pointermove', 0.5); ype('pointerup', 0.5);
+    check('dragging the rudder expo slider sets it', near(settings.expoYaw, 0.5, 0.011) && last()[1] === 'expoYaw', settings.expoYaw);
+  }
+  { // the settings apply to the stick shaping (main.js applySetting -> Input.setExpo)
+    const inp = new Input(window);
+    for (const [k, a] of [['expoPitch', 'pitch'], ['expoRoll', 'roll'], ['expoYaw', 'yaw']]) inp.setExpo(a, settings[k]);
+    check('Input.setExpo takes the setting values', inp.expo.pitch === settings.expoPitch && inp.expo.yaw === settings.expoYaw && inp.expo.roll === settings.expoRoll, inp.expo);
+    check('shaping follows the expo (0.5 rudder: half stick ~ 0.27)', near(shapeAxis(0.5, settings.expoYaw), 0.5 * (0.38 / 0.88) ** 3 + 0.5 * (0.38 / 0.88), 1e-9));
+    inp.dispose();
+  }
+  const expoSet = { pitch: settings.expoPitch, roll: settings.expoRoll, yaw: settings.expoYaw };
+  check('graph only redraws on change', (() => { menu.update(1 / 60, { ...fake }); const sig = menu._expoSig, cvw = cv.width; let drew = false; const g = cv.getContext('2d'), o = g.clearRect; g.clearRect = function (...a) { drew = true; return o.apply(this, a); }; menu.update(1 / 60, { ...fake }); g.clearRect = o; return menu._expoSig === sig && !drew && cv.width === cvw; })());
+  check('back up to Screen flash', reach('screenFlash', 'up', 'up', 'up'), focused());
   press('up'); check('up returns to Camera shake', focused() === 'cameraShake', focused());
   press('back'); check('Back returns to the title', menu.screen === 'title' && focused() === 'settings', [menu.screen, focused()]);
   let saved = null; try { saved = JSON.parse(localStorage.getItem('wingnut.settings')); } catch { /* blocked */ }
   check('settings persisted on Back', saved && saved.mouseKeys === settings.mouseKeys && saved.mouseSens === settings.mouseSens, saved);
   check('loadSettings reads them back', loadSettings().mouseKeys === settings.mouseKeys);
+  check('stick expo persisted', saved && saved.expoPitch === expoSet.pitch && saved.expoRoll === expoSet.roll && saved.expoYaw === expoSet.yaw &&
+    loadSettings().expoYaw === expoSet.yaw, saved);
   // Screen flash is off by default, and a save made before the key existed loads with that default
   check('Screen flash defaults Off', DEFAULT_SETTINGS.screenFlash === false);
   try {
@@ -157,6 +200,7 @@ async function runSelfTest() {
     const old = loadSettings();
     if (keep === null) localStorage.removeItem('wingnut.settings'); else localStorage.setItem('wingnut.settings', keep);
     check('an older save loads Screen flash Off', old.screenFlash === false && old.cameraShake === false && old.quality === 'high', old);
+    check('an older save loads the default stick expo', old.expoPitch === STICK_EXPO && old.expoRoll === STICK_EXPO && old.expoYaw === STICK_EXPO, old);
   } catch { /* storage blocked */ }
 
   // Audio tab via show() (stacks on the title)

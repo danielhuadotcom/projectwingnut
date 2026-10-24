@@ -28,6 +28,7 @@
 // toggleFullscreen() from its keydown handler.
 
 import { countUnits } from './missions.js';
+import { shapeAxis, STICK_EXPO, EXPO_MAX } from './input.js';
 import { loadBest } from './infinity.js';
 import { fullscreenSupported, isFullscreen, setFullscreen, onFullscreenChange } from './fullscreen.js';
 
@@ -37,10 +38,12 @@ import { fullscreenSupported, isFullscreen, setFullscreen, onFullscreenChange } 
 export const DEFAULT_SETTINGS = Object.freeze({
   quality: 'auto', perfOverlay: false, invertPitch: false, mouseSens: 1, mouseKeys: 'simple', touch: 'auto', cameraShake: true, screenFlash: false,
   master: 0.8, music: 0.7, sfx: 0.9, voice: 1.0, subtitles: true, difficulty: 'normal',
+  expoPitch: STICK_EXPO, expoRoll: STICK_EXPO, expoYaw: STICK_EXPO,
 });
 const STORE_KEY = 'wingnut.settings';
 const pct = (v) => `${Math.round(v * 100)}%`;
 const times = (v) => `${v.toFixed(2)}×`;
+const expoFmt = (v) => (v > 0 ? pct(v) : 'Linear');
 
 /** Tabs of the Settings screen, in order. */
 export const SETTING_TABS = [['graphics', 'Graphics'], ['controls', 'Controls'], ['audio', 'Audio'], ['gameplay', 'Gameplay']];
@@ -71,6 +74,11 @@ export const SETTING_DEFS = [
     desc: 'Shake from hits, flak and nearby explosions.' },
   { key: 'screenFlash', tab: 'controls', type: 'toggle', label: 'Screen flash',
     desc: 'White flash from missile hits, flak and nearby explosions.' },
+  // Gamepad stick expo per axis (js/input.js shapeAxis): 0 = linear, max = cubic; full deflection is always full rate
+  { key: 'expoPitch', tab: 'controls', type: 'slider', label: 'Stick expo · pitch', min: 0, max: EXPO_MAX, step: 0.02, dragStep: 0.01, format: expoFmt, expo: 'pitch',
+    desc: 'Controller: higher softens small stick movements for finer aim. Full stick is always full rate.' },
+  { key: 'expoRoll', tab: 'controls', type: 'slider', label: 'Stick expo · roll', min: 0, max: EXPO_MAX, step: 0.02, dragStep: 0.01, format: expoFmt, expo: 'roll' },
+  { key: 'expoYaw', tab: 'controls', type: 'slider', label: 'Stick expo · rudder', min: 0, max: EXPO_MAX, step: 0.02, dragStep: 0.01, format: expoFmt, expo: 'yaw' },
   { key: 'master', tab: 'audio', type: 'slider', label: 'Master volume', min: 0, max: 1, step: 0.05, dragStep: 0.01, format: pct },
   { key: 'music', tab: 'audio', type: 'slider', label: 'Music', min: 0, max: 1, step: 0.05, dragStep: 0.01, format: pct },
   { key: 'sfx', tab: 'audio', type: 'slider', label: 'Effects', min: 0, max: 1, step: 0.05, dragStep: 0.01, format: pct,
@@ -176,6 +184,9 @@ const ESC = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ESC[c]);
 const pad2 = (n) => String(n).padStart(2, '0');
 const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
+/** Response graph under the stick expo rows (drawn by Menu._drawExpo only while Settings › Controls is showing). */
+const EXPO_GRAPH = '<div class="m-expo" aria-hidden="true"><p class="m-expo-t"><b class="m-expo-h">Pitch response</b>' +
+  'Stick deflection (across) against rate (up). The faint line is linear; the dot is your stick.</p><canvas class="m-expo-c"></canvas></div>';
 const gap = (a0, a1, b0, b1) => Math.max(0, b0 - a1, a0 - b1);   // distance between two intervals (0 = overlapping)
 function media(q) { try { return typeof matchMedia === 'function' && matchMedia(q).matches; } catch { return false; } }
 const missionNo = (m, i) => pad2(m && m.id != null ? m.id : i + 1);
@@ -338,6 +349,47 @@ export class Menu {
     else if (input.usingGamepad && input.gamepadConnected && this._device === 'kb') this._setDevice('pad');
     if (edge) this._nav(edge);
     else if (input.pausePressed && this._stack.length && this._stack[0].screen === 'pause') this._run('onResume');  // Start / P
+    if (this.open && this.screen === 'settings' && this._tab === 'controls') this._drawExpo(input);
+  }
+
+  /** Stick expo graph: the selected axis (the focused expo row, else the last one) with its live stick dot. Redraws only
+   *  when the axis, curve, size or dot changes. */
+  _drawExpo(input) {
+    const cv = this._expoCanvas;
+    if (!cv) return;
+    const f = this._focusEl, fd = f && f.dataset ? DEF[f.dataset.key] : null;
+    if (fd && fd.expo) this._expoAxis = fd.expo;
+    const axis = this._expoAxis || 'pitch', key = 'expo' + axis[0].toUpperCase() + axis.slice(1);
+    const expo = this.settings[key];
+    const raw = input && input.gamepadConnected && input.stickRaw ? Math.min(1, Math.abs(input.stickRaw[axis] || 0)) : -1;
+    const dpr = Math.min(2, window.devicePixelRatio || 1), w = Math.round(cv.clientWidth * dpr), h = Math.round(cv.clientHeight * dpr);
+    if (!w || !h) return;
+    const sig = `${axis}|${expo}|${w}x${h}|${raw.toFixed(3)}`;
+    if (sig === this._expoSig) return;
+    this._expoSig = sig;
+    if (cv.width !== w || cv.height !== h) { cv.width = w; cv.height = h; }
+    if (this._expoHead) this._expoHead.textContent = `${axis === 'yaw' ? 'Rudder' : axis[0].toUpperCase() + axis.slice(1)} response`;
+    const g = cv.getContext('2d');
+    if (!g) return;
+    const pad = 8 * dpr, X = (x) => pad + x * (w - 2 * pad), Y = (y) => h - pad - y * (h - 2 * pad);
+    g.clearRect(0, 0, w, h);
+    g.lineWidth = dpr;
+    g.strokeStyle = 'rgba(156, 235, 255, 0.10)';                 // quarter grid
+    g.beginPath();
+    for (let i = 1; i < 4; i++) { g.moveTo(X(i / 4), Y(0)); g.lineTo(X(i / 4), Y(1)); g.moveTo(X(0), Y(i / 4)); g.lineTo(X(1), Y(i / 4)); }
+    g.stroke();
+    g.strokeStyle = 'rgba(156, 235, 255, 0.28)';                 // linear reference
+    g.setLineDash([4 * dpr, 4 * dpr]);
+    g.beginPath(); g.moveTo(X(0), Y(0)); g.lineTo(X(1), Y(1)); g.stroke();
+    g.setLineDash([]);
+    g.strokeStyle = '#9cebff'; g.lineWidth = 2 * dpr;           // the curve (deadzone included: what the stick really does)
+    g.beginPath();
+    for (let i = 0; i <= 64; i++) { const x = i / 64, y = shapeAxis(x, expo); if (i) g.lineTo(X(x), Y(y)); else g.moveTo(X(x), Y(y)); }
+    g.stroke();
+    if (raw >= 0) {
+      const y = shapeAxis(raw, expo);
+      g.fillStyle = '#ff7a1f'; g.beginPath(); g.arc(X(raw), Y(y), 4 * dpr, 0, Math.PI * 2); g.fill();
+    }
   }
 
   /** Controller line on the title and pause screens. ok = connected (cyan) vs. warning (amber). Empty text hides it. */
@@ -413,6 +465,7 @@ export class Menu {
     for (const n of SCREENS) this._screens[n] = q(`[data-screen="${n}"]`);
     this._statusEls = [...el.querySelectorAll('.m-status')];
     this._tipEl = q('.m-tip'); this._qlabel = q('.m-qlabel');
+    this._expoCanvas = q('.m-expo-c'); this._expoHead = q('.m-expo-h'); this._expoAxis = 'pitch'; this._expoSig = '';
     const M = this._screens.missions;
     this._detail = {
       el: q('.m-detail', M), eye: q('.m-d-eye', M), name: q('.m-dname', M), loc: q('.m-d-loc', M), chip: q('.m-d-chip', M),
@@ -533,7 +586,7 @@ export class Menu {
     const tabs = SETTING_TABS.map(([id, label]) => `<button type="button" class="m-tab" role="tab" id="m-tab-${id}" aria-controls="m-tp-${id}" ` +
       `aria-selected="false" data-nav data-group="tabs" data-nohover data-tab="${id}">${esc(label)}</button>`).join('');
     const panels = SETTING_TABS.map(([id]) => `<div class="m-tabpanel" role="tabpanel" id="m-tp-${id}" aria-labelledby="m-tab-${id}" data-tabpanel="${id}" hidden>` +
-      SETTING_DEFS.filter((d) => d.tab === id).map((d) => this._htmlRow(d)).join('') +
+      SETTING_DEFS.filter((d) => d.tab === id).map((d) => this._htmlRow(d) + (d.key === 'expoYaw' ? EXPO_GRAPH : '')).join('') +
       '<div class="m-rowfoot"><button type="button" class="m-btn m-btn--sm" data-nav data-act="reset-tab">Restore defaults</button></div></div>').join('');
     return `<section class="m-screen" data-screen="settings" aria-labelledby="m-set-h" hidden>
       <div class="m-panel m-panel--settings">

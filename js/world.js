@@ -277,12 +277,25 @@ function generateAux(height, aux, sunDir) {
 // bilinearly expanded into the aux B channel.
 const SHADOW_STEPS = [1, 2, 3, 4, 6, 8, 11, 15, 20, 27, 36, 48, 64, 85, 112, 148, 196];
 function bakeSunShadow(height, aux, sunDir) {
-  const W = HM_N, S = W >> 1;
+  const job = shadowJob(sunDir);
+  while (!shadowJobStep(height, job, Infinity)) { /* all rows */ }
+  const ch = job.ch, n = HM_N * HM_N;
+  for (let i = 0; i < n; i++) aux[i * 4 + 2] = ch[i];
+}
+// The bake as resumable work (World bakes the time-of-day directions in idle time): half-resolution horizon rows
+// first, then the bilinear expansion to a full-resolution channel (job.ch, HM_N^2 bytes).
+function shadowJob(sunDir) {
+  const S = HM_N >> 1;
+  return { dir: sunDir.slice(), phase: 0, j: 0, sh: new Float32Array(S * S), ch: new Uint8Array(HM_N * HM_N) };
+}
+/** Bake rows of `job` until performance.now() passes `until`. True when the job is complete. */
+function shadowJobStep(height, job, until) {
+  const W = HM_N, S = W >> 1, sunDir = job.dir, sh = job.sh, ch = job.ch;
   const hl = Math.sqrt(sunDir[0] * sunDir[0] + sunDir[2] * sunDir[2]);
   const dx = sunDir[0] / hl, dz = sunDir[2] / hl;
   const tanE = sunDir[1] / hl;
-  const sh = new Float32Array(S * S);
-  for (let j = 0; j < S; j++) {
+  while (job.phase === 0) {
+    const j = job.j;
     const z = -HM_HALF + (2 * j) * HM_STEP;
     for (let i = 0; i < S; i++) {
       const x = -HM_HALF + (2 * i) * HM_STEP;
@@ -297,16 +310,22 @@ function bakeSunShadow(height, aux, sunDir) {
       // soft penumbra ±~2.5°
       sh[j * S + i] = 1 - sstep(-0.045, 0.045, maxE);
     }
+    if (++job.j >= S) { job.phase = 1; job.j = 0; }
+    if (performance.now() > until) return false;
   }
-  for (let j = 0; j < W; j++) {
+  while (job.phase === 1) {
+    const j = job.j;
     const v = Math.min(j * 0.5, S - 1.001), j0 = v | 0, fz = v - j0;
     for (let i = 0; i < W; i++) {
       const u = Math.min(i * 0.5, S - 1.001), i0 = u | 0, fx = u - i0;
       const k = j0 * S + i0;
       const a = sh[k] + (sh[k + 1] - sh[k]) * fx, b = sh[k + S] + (sh[k + S + 1] - sh[k + S]) * fx;
-      aux[(j * W + i) * 4 + 2] = Math.round((a + (b - a) * fz) * 255);
+      ch[j * W + i] = Math.round((a + (b - a) * fz) * 255);
     }
+    if (++job.j >= W) { job.phase = 2; job.sh = null; return true; }
+    if (performance.now() > until) return false;
   }
+  return true;
 }
 
 
@@ -433,9 +452,12 @@ function skyExtinction(cosZen, out) {
 // is exact up to interpolation: u = sqrt((1 - cosSun) / 2) = sin(angle/2) (dense near the sun's Mie aureole),
 // v = sqrt(cosZenith) (dense near the horizon). Below-horizon directions use the horizon row (same as the old hazeColor).
 const SKY_LUT_W = 256, SKY_LUT_H = 64;
-function buildSkyLut(out, sunE, sunFade, scale, grade = null) {
-  const g = SKY_MIE_G, g2 = g * g, fex = [0, 0, 0], lin = [0, 0, 0], add = [0, 0.0003, 0.00075];
-  for (let j = 0; j < SKY_LUT_H; j++) {
+// The table is built in two steps so a time-of-day grade change (the Glassfall's red sky steps) never re-runs the
+// scattering model: buildSkyLutRows writes the ungraded, unscaled radiance (it depends only on the sun height; World
+// caches it per height and can build it rows at a time in idle time), gradeSkyLut scales and grades it (cheap).
+function buildSkyLutRows(out, sunE, sunFade, j0 = 0, j1 = SKY_LUT_H) {
+  const g = SKY_MIE_G, g2 = g * g, fex = _lutFex, lin = _lutLin;
+  for (let j = j0; j < j1; j++) {
     const v = j / (SKY_LUT_H - 1);
     skyExtinction(v * v, fex);
     for (let i = 0; i < SKY_LUT_W; i++) {
@@ -451,9 +473,26 @@ function buildSkyLut(out, sunE, sunFade, scale, grade = null) {
       }
       const comp = SKY_K / (SKY_K + lm);
       const o = (j * SKY_LUT_W + i) * 4;
-      for (let k = 0; k < 3; k++) out[o + k] = ((lin[k] * comp + 0.1 * fex[k]) * 0.04 + add[k]) * scale;
-      if (grade) gradeSky(out, o, v, grade);
+      for (let k = 0; k < 3; k++) out[o + k] = (lin[k] * comp + 0.1 * fex[k]) * 0.04 + SKY_ADD[k];
       out[o + 3] = 1;
+    }
+  }
+}
+const _lutFex = [0, 0, 0], _lutLin = [0, 0, 0], SKY_ADD = [0, 0.0003, 0.00075];
+/** out = grade(base * scale) per texel (out may be base): gradeSky, with its per-row and per-grade terms hoisted. */
+function gradeSkyLut(out, base, scale, g = null) {
+  const rowN = SKY_LUT_W * 4;
+  if (!g) {
+    for (let o = 0, n = SKY_LUT_H * rowN; o < n; o += 4) { out[o] = base[o] * scale; out[o + 1] = base[o + 1] * scale; out[o + 2] = base[o + 2] * scale; out[o + 3] = 1; }
+    return;
+  }
+  const tr = g.tint[0] * scale, tg = g.tint[1] * scale, tb = g.tint[2] * scale, sat = g.sat, b0 = g.base[0], b1 = g.base[1], b2 = g.base[2];
+  for (let j = 0; j < SKY_LUT_H; j++) {
+    const v = j / (SKY_LUT_H - 1), u = 1 - v, w = 0.3 + 0.7 * u * u * u, a0 = b0 * w, a1 = b1 * w, a2 = b2 * w;
+    for (let o = j * rowN, e = o + rowN; o < e; o += 4) {
+      let r = base[o] * tr, gg = base[o + 1] * tg, b = base[o + 2] * tb;
+      if (sat !== 1) { const l = 0.2126 * r + 0.7152 * gg + 0.0722 * b; r = l + (r - l) * sat; gg = l + (gg - l) * sat; b = l + (b - l) * sat; }
+      out[o] = r + a0; out[o + 1] = gg + a1; out[o + 2] = b + a2; out[o + 3] = 1;
     }
   }
 }
@@ -1311,6 +1350,8 @@ const _projScreen = new THREE.Matrix4();
 const _frustum = new THREE.Frustum();
 const CULL_PLANES = [0, 1, 2, 3, 5];      // THREE.Frustum planes: right, left, bottom, top, (far skipped), near
 const _fex = [0, 0, 0];
+const _bakeV = new THREE.Vector3(), _prepV = new THREE.Vector3();
+const lutKey = (sy) => Math.round(sy * 1e6);   // sky table cache key: the sun height
 const _vpS = new THREE.Vector2();
 const SUN_DEFAULT_KEY = '22/35';           // setLighting key of SUN_DIR_DEFAULT (elevation / azimuth, degrees)
 
@@ -1419,8 +1460,15 @@ export class World {
     this._discK = 1; this._discTint = [1, 1, 1];
     this._envIntensity = 1;
     this._shadowCache = new Map();         // baked terrain shadow channel per light direction (setLighting)
+    this._lutBase = new Map();             // ungraded sky table per sun height (gradeSkyLut makes the graded one)
+    { const n = HM_N * HM_N, ch = new Uint8Array(n), aux = this._aux; for (let i = 0; i < n; i++) ch[i] = aux[i * 4 + 2]; this._shadowCache.set(SUN_DEFAULT_KEY, ch); }
+    this._bakeQueue = []; this._bakeJob = null; this._bakeTimer = 0;   // idle-time lighting bakes (queueLighting)
+    this._envInto = null; this._envVar = null; this._envDefer = 0;     // environment targets (_buildEnvironment)
+    this._shadowKey = null; this._shadowPrev = null; this._shadowWait = 0;   // a shadow change deferred to the next frame
     this._lightingKey = '';
     this._updateSky();
+    { const warm = new Float32Array(SKY_LUT_W * SKY_LUT_H * 4), G = { tint: [1, 0.9, 0.8], sat: 0.9, base: [0, 0, 0] };   // (JIT: the first
+      for (let i = 0; i < 3; i++) gradeSkyLut(warm, this._skyLutData, 1, G); }                                                // red sky step)
 
     // ---- sky dome: drawn LAST among opaque objects, at the far plane with depth test (only uncovered pixels shade)
     this._skyMat = new THREE.ShaderMaterial({
@@ -1503,7 +1551,7 @@ export class World {
     U.uSunE.value = sunIntensity(s.y);
     U.uSunFade.value = Math.min(1, Math.max(0, Math.pow(1 - s.y, 5)));
     const sk = this._skyGrade ? this._skyGrade.k : 1, t = this._discTint;
-    buildSkyLut(this._skyLutData, U.uSunE.value, U.uSunFade.value, U.uSkyScale.value * sk, this._skyGrade);
+    gradeSkyLut(this._skyLutData, this._skyBase(s.y), U.uSkyScale.value * sk, this._skyGrade);
     this._skyLutTex.needsUpdate = true;
     skyExtinction(s.y, _fex);
     const k = U.uSunDisc.value * U.uSkyScale.value * this._discK;
@@ -1522,12 +1570,17 @@ export class World {
 
   // One-time (per sun change) PMREM environment so the metallic aircraft get sky reflections.
   // The generator, sky material and scene are kept (built once): a time-of-day change re-renders the environment without
-  // compiling anything; the previous environment target is disposed.
-  _buildEnvironment() {
+  // compiling anything, into the same target: scene.environment keeps its texture, so three never re-keys the programs
+  // of every environment-lit material (a new texture there costs a program lookup per material on the next frame).
+  // `into` = 'variant' renders a spare target instead (prepareEnvVariant).
+  _buildEnvironment(into = null) {
     try {
       const U = this.uniforms;
       if (!this._pmrem) {
         this._pmrem = new THREE.PMREMGenerator(this.renderer);
+        // fromScene allocates a new target per call (r170): hand it the kept one instead (sizes never change here)
+        const gen = this._pmrem, alloc = gen._allocateTargets, world = this;
+        gen._allocateTargets = function () { return world._envInto || alloc.call(this); };
         this._envMat = new THREE.ShaderMaterial({
           uniforms: { uSkyLut: U.uSkyLut, uSunDir: U.uSunDir, uSunDiscCol: { value: this._envDiscCol }, uSkyClouds: { value: 0 } },
           vertexShader: SKY_VERT, fragmentShader: SKY_FRAG, side: THREE.BackSide, depthTest: false, depthWrite: false,
@@ -1536,12 +1589,152 @@ export class World {
         this._envGeo = new THREE.SphereGeometry(50, 24, 12);
         this._envScene.add(new THREE.Mesh(this._envGeo, this._envMat));
       }
+      if (into === 'variant') {
+        this._envInto = this._envVar ? this._envVar.rt : null;
+        const rt = this._pmrem.fromScene(this._envScene, 0, 1, 1000);
+        this._envInto = null;
+        return rt;
+      }
+      this._envInto = this._envRT;
       const rt = this._pmrem.fromScene(this._envScene, 0, 1, 1000);
-      if (this._envRT) { if (this.scene.environment === this._envRT.texture) this.scene.environment = null; this._envRT.dispose(); }
-      this._envRT = rt;
+      this._envInto = null;
+      if (rt !== this._envRT) {
+        if (this._envRT) { if (this.scene.environment === this._envRT.texture) this.scene.environment = null; this._envRT.dispose(); }
+        this._envRT = rt;
+      }
       this.scene.environment = rt.texture;
       if ('environmentIntensity' in this.scene) this.scene.environmentIntensity = this._envIntensity;
-    } catch (e) { /* continue without an environment map */ }
+    } catch (e) { this._envInto = null; /* continue without an environment map */ }
+    return null;
+  }
+  /** The environment for lighting key `key`: copied from the prepared variant when it matches (a framebuffer blit on the
+   *  GPU, no PMREM passes), else rendered. */
+  _refreshEnv(key) {
+    const V = this._envVar;
+    this._envDefer = 0; this._envStale = false;
+    if (V && V.valid && V.key === key && this._envRT) {
+      // a framebuffer blit (copyTextureToTexture's copyTexSubImage2D took ~0.5 s on its first float copy on ANGLE/Mesa)
+      try {
+        const r = this.renderer, gl = r.getContext(), P = r.properties, st = r.state, a = V.rt, b = this._envRT;
+        const fa = P.get(a).__webglFramebuffer, fb = P.get(b).__webglFramebuffer;
+        if (fa && fb && a.width === b.width && a.height === b.height) {
+          st.bindFramebuffer(gl.READ_FRAMEBUFFER, fa); st.bindFramebuffer(gl.DRAW_FRAMEBUFFER, fb);
+          gl.blitFramebuffer(0, 0, a.width, a.height, 0, 0, b.width, b.height, gl.COLOR_BUFFER_BIT, gl.NEAREST);
+          st.bindFramebuffer(gl.READ_FRAMEBUFFER, null); st.bindFramebuffer(gl.DRAW_FRAMEBUFFER, null);
+          return;
+        }
+      } catch (e) { /* render it instead */ }
+    }
+    this._buildEnvironment();
+  }
+  /**
+   * Render now, into a spare target, the environment of preset P, so that a later setLighting(P) copies it instead of
+   * running PMREM: the Glassfall's fully red end state (js/glassfall.js prepare, at mission load) and the next INFINITY
+   * round's preset (during the intermission). The light direction and sky table are swapped in for the render and
+   * restored before returning (nothing is drawn in between). One spare target: the latest call wins.
+   */
+  prepareEnvVariant(P) {
+    const key = this._lightingKeyFor(P);
+    if (this._envVar && this._envVar.key === key && this._envVar.valid) return true;
+    const dir = this.sunDirection, keep = _prepV.copy(dir), sameDir = key.split('|')[0] === this._lightingKey.split('|')[0];
+    const grade = this._skyGrade, dk = this._discK, dt = this._discTint;
+    if (!sameDir) this._sunVec(P.sun, dir);   // (uSunDir shares this vector)
+    this._skyGrade = this._isDaySky(P.sky) ? null : P.sky; this._discK = P.disc.k; this._discTint = P.disc.tint;
+    this._updateSky();
+    const rt = this._buildEnvironment('variant');
+    dir.copy(keep);
+    this._skyGrade = grade; this._discK = dk; this._discTint = dt;
+    this._updateSky();
+    if (!rt) return false;
+    this._envVar = { key, rt, valid: true };
+    return true;
+  }
+  /** Spend up to `ms` on the queued lighting bakes now (the INFINITY intermission, where idle callbacks may not come). */
+  bakeTick(ms) { if (this._bakeJob || this._bakeQueue.length) this._bakeStep(performance.now() + ms); }
+  /** Bring a stale environment (setLighting env = false) up to date now. */
+  refreshEnvironment() { if (this._envStale) this._refreshEnv(this._lightingKey); }
+  _isDaySky(g) { return g.k === 1 && g.sat === 1 && !g.base[0] && !g.base[1] && !g.base[2] && g.tint[0] === 1 && g.tint[1] === 1 && g.tint[2] === 1; }
+  _lightingKeyFor(P) { return P.sun.elev + '/' + P.sun.az + '|' + JSON.stringify(P.sky) + '|' + JSON.stringify(P.disc); }
+
+  // ---- idle-time lighting bakes: the terrain shadow and the ungraded sky table of each time-of-day light direction,
+  // a few rows at a time while the browser is idle (title screen, menus, spare frame time), so the first use of a preset
+  // (a mission load, an INFINITY round, M15's or M20's sky) copies cached data instead of baking for 80-250 ms. A use
+  // before its bake finished completes the remaining rows at once.
+  /** Queue the bakes for a light direction { elev, az } (degrees), as a preset names it. */
+  queueLighting(sun, first = false) {
+    const key = sun.elev + '/' + sun.az;
+    if (this._shadowCache.has(key) && this._lutBase.has(lutKey(this._sunY(sun)))) return;
+    if (this._bakeJob && this._bakeJob.key === key) return;
+    const i = this._bakeQueue.findIndex((q) => q.key === key);
+    if (i >= 0) { if (!first) return; this._bakeQueue.splice(i, 1); }
+    if (first) this._bakeQueue.unshift({ key, sun }); else this._bakeQueue.push({ key, sun });
+    this._scheduleBake();
+  }
+  _sunVec(sun, out) {
+    const el = sun.elev * Math.PI / 180, az = sun.az * Math.PI / 180;
+    return out.set(-Math.cos(el) * Math.sin(az), Math.sin(el), -Math.cos(el) * Math.cos(az)).normalize();
+  }
+  _sunY(sun) { return this._sunVec(sun, _bakeV).y; }
+  _scheduleBake() {
+    if (this._bakeTimer || (!this._bakeJob && !this._bakeQueue.length)) return;
+    const run = (deadline) => {
+      this._bakeTimer = 0;
+      // idle callback: its remaining idle time (less a margin); a timed-out one or the setTimeout fallback: 2 ms
+      const left = deadline && !deadline.didTimeout ? deadline.timeRemaining() - 1 : 2;
+      if (left > 0.5) this._bakeStep(performance.now() + Math.min(left, 8));
+      this._scheduleBake();
+    };
+    this._bakeTimer = typeof requestIdleCallback === 'function' ? requestIdleCallback(run, { timeout: 2000 }) : setTimeout(run, 50);
+  }
+  /** Bake until `until` (performance.now()); true when nothing is left. */
+  _bakeStep(until) {
+    for (;;) {
+      let J = this._bakeJob;
+      if (!J) {
+        const q = this._bakeQueue.shift();
+        if (!q) return true;
+        const d = this._sunVec(q.sun, _bakeV), sy = d.y;
+        J = this._bakeJob = { key: q.key, sy, shadow: this._shadowCache.has(q.key) ? null : shadowJob([d.x, d.y, d.z]),
+          lut: this._lutBase.has(lutKey(sy)) ? null : new Float32Array(SKY_LUT_W * SKY_LUT_H * 4), row: 0 };
+      }
+      if (J.shadow && shadowJobStep(this._height, J.shadow, until)) { this._shadowCache.set(J.key, J.shadow.ch); J.shadow = null; }
+      while (!J.shadow && J.lut && performance.now() <= until) {
+        const sunE = sunIntensity(J.sy), fade = Math.min(1, Math.max(0, Math.pow(1 - J.sy, 5)));
+        buildSkyLutRows(J.lut, sunE, fade, J.row, J.row + 1);
+        if (++J.row >= SKY_LUT_H) { this._setLutBase(J.sy, J.lut); J.lut = null; }
+      }
+      if (J.shadow || J.lut) return false;
+      this._bakeJob = null;
+      if (performance.now() > until) return !this._bakeQueue.length;
+    }
+  }
+  /** Finish the in-progress bake now if it is for light direction `key` (a use before its idle bake completed). */
+  _finishBake(key) {
+    const J = this._bakeJob;
+    if (!J || J.key !== key || !J.shadow) return;
+    shadowJobStep(this._height, J.shadow, Infinity);
+    this._shadowCache.set(J.key, J.shadow.ch); J.shadow = null;
+    if (!J.lut) this._bakeJob = null;
+  }
+  _setLutBase(sy, lut) {
+    if (this._lutBase.size >= 12) this._lutBase.delete(this._lutBase.keys().next().value);   // (setSunDirection: any height)
+    this._lutBase.set(lutKey(sy), lut);
+  }
+  /** Ungraded sky table for sun height sy: cached, else built now. */
+  _skyBase(sy) {
+    let b = this._lutBase.get(lutKey(sy));
+    if (b) return b;
+    const J = this._bakeJob;
+    if (J && lutKey(J.sy) === lutKey(sy) && J.lut) {   // the idle bake is on it: finish its rows
+      const sunE = sunIntensity(sy), fade = Math.min(1, Math.max(0, Math.pow(1 - sy, 5)));
+      buildSkyLutRows(J.lut, sunE, fade, J.row, SKY_LUT_H); b = J.lut; J.lut = null; J.row = SKY_LUT_H;
+      if (!J.shadow) this._bakeJob = null;
+    } else {
+      b = new Float32Array(SKY_LUT_W * SKY_LUT_H * 4);
+      buildSkyLutRows(b, this.uniforms.uSunE.value, this.uniforms.uSunFade.value);
+    }
+    this._setLutBase(sy, b);
+    return b;
   }
 
   // World-space frustum planes of the camera that is about to draw the terrain (vertex-shader culling).
@@ -1592,6 +1785,8 @@ export class World {
     const U = this.uniforms;
     U.uTime.value = this.time;
     if (camera) camera.getWorldPosition(_camPos); else _camPos.set(0, 800, 0);
+    if (this._shadowKey) { if (--this._shadowWait <= 0) this._flushShadow(); }   // (setLighting ran this frame: wait one)
+    else if (this._envDefer > 0 && --this._envDefer === 0) this._refreshEnv(this._lightingKey);
     this.sky.position.copy(_camPos);
     for (let L = 0; L < MAX_LEVELS; L++) {
       const q = 2 * this._cell0 * (1 << L);
@@ -1643,6 +1838,7 @@ export class World {
       bakeTexture(r, CLOUD_TEX_N, BAKE_CLOUD_FRAG, 4, THREE.RepeatWrapping, this._cloudRT);
       bakeTexture(r, BIOME_N, BAKE_BIOME_FRAG, 1, THREE.ClampToEdgeWrapping, this._biomeRT);
       bakeTexture(r, WAVE_N, BAKE_WAVE_FRAG, 1, THREE.RepeatWrapping, this._waveRT);
+      if (this._envVar) this._envVar.valid = false;   // (its contents went with the context)
       this._buildEnvironment();
     } catch (e) { console.warn('world GPU restore failed', e); }
   }
@@ -1661,11 +1857,17 @@ export class World {
   /**
    * Time-of-day lighting (js/timeofday.js preset): light direction and colours, ambient, sky grade, sun / moon disc,
    * stars, fog, cloud coverage and tint, sea tint and sun-path strength, aircraft lights and environment intensity,
-   * ground lights. Values only, nothing per frame. When the light direction changes the terrain shadow is re-baked
-   * (cached per direction, so each preset bakes once) and the environment map is rebuilt (the old one is disposed);
-   * when only the sky grade changes, just the sky LUT and the environment. The day preset reproduces the defaults.
+   * ground lights. Values only, nothing per frame. When the light direction changes the terrain shadow channel is
+   * swapped in (cached per direction; queueLighting bakes the presets' directions in idle time, else it bakes here) and
+   * the environment map is re-rendered into the same target; when only the sky grade changes, the sky table is re-graded
+   * from the cached ungraded one (no scattering model) and the environment follows. The day preset reproduces the
+   * defaults.
+   * env: true re-renders the environment (or copies a matching prepareEnvVariant) now; 'defer' moves the terrain shadow
+   * swap to the next frame and the environment two frames after that (an INFINITY round change: the round's spawns,
+   * the shadow upload and the environment land on different frames); false leaves it
+   * stale until a later call with env = true (the Glassfall's intermediate sky steps).
    */
-  setLighting(P) {
+  setLighting(P, env = true) {
     const U = this.uniforms, v3 = (u, a) => u.value.set(a[0], a[1], a[2]);
     v3(U.uSunColor, P.sunColor); v3(U.uSkyAmb, P.skyAmb); v3(U.uGroundAmb, P.groundAmb);
     U.uFogMie.value = 8.0e-5 * P.fog; U.uFogRay.value = 0.7e-5 * P.fog;
@@ -1682,9 +1884,9 @@ export class World {
 
     const el = P.sun.elev * Math.PI / 180, az = P.sun.az * Math.PI / 180;
     const dirKey = P.sun.elev + '/' + P.sun.az;
-    const g = P.sky, isDay = g.k === 1 && g.sat === 1 && !g.base[0] && !g.base[1] && !g.base[2] && g.tint.every((v) => v === 1);
-    const key = dirKey + '|' + JSON.stringify(g) + '|' + JSON.stringify(P.disc);
-    if (key === this._lightingKey) return;
+    const g = P.sky, isDay = this._isDaySky(g);
+    const key = this._lightingKeyFor(P);
+    if (key === this._lightingKey) { if (env === true && this._envStale) this._refreshEnv(key); else if (env === 'defer' && this._envStale) this._envDefer = 2; return; }
     const prevDir = this._lightingKey ? this._lightingKey.split('|')[0] : SUN_DEFAULT_KEY, dirChanged = prevDir !== dirKey;
     this._lightingKey = key;
     this._skyGrade = isDay ? null : g;
@@ -1693,28 +1895,34 @@ export class World {
     if (dirChanged) {
       this.sunDirection.set(-Math.cos(el) * Math.sin(az), Math.sin(el), -Math.cos(el) * Math.cos(az)).normalize();
       this.sunLight.position.copy(this.sunDirection).multiplyScalar(5000);
-      this._applyShadow(dirKey, prevDir);
+      this._flushShadow();                 // (a still-deferred change first: aux must hold prevDir's channel)
+      if (env === 'defer') { this._shadowKey = dirKey; this._shadowPrev = prevDir; this._shadowWait = 2; }   // next frame
+      else this._applyShadow(dirKey, prevDir);
     }
     const t1 = performance.now();
     this._updateSky();
     this._updateFogColor();
     const t2 = performance.now();
-    this._buildEnvironment();
+    // env: true renders (or copies) the environment now, 'defer' two frames later (World.update: the shadow and sky
+    // uploads and the environment passes land on different frames), false leaves it stale until a later call
+    this._envStale = true; this._envDefer = 0;
+    if (env === 'defer') this._envDefer = 2;
+    else if (env) this._refreshEnv(key);
     this.lightingMs = { shadow: +(t1 - t0).toFixed(1), sky: +(t2 - t1).toFixed(1), env: +(performance.now() - t2).toFixed(1) };
   }
+  _flushShadow() { if (this._shadowKey) { const k = this._shadowKey; this._shadowKey = null; this._applyShadow(k, this._shadowPrev); } }
   /** Terrain shadow channel for the current light direction: from the cache, else baked (~100 ms) and cached. */
   _applyShadow(dirKey, prevDir) {
     const aux = this._aux, n = HM_N * HM_N, C = this._shadowCache;
     if (!C.has(prevDir)) { const keep = new Uint8Array(n); for (let i = 0; i < n; i++) keep[i] = aux[i * 4 + 2]; C.set(prevDir, keep); }
+    this._finishBake(dirKey);
     let ch = C.get(dirKey);
     if (!ch) {
-      bakeSunShadow(this._height, aux, [this.sunDirection.x, this.sunDirection.y, this.sunDirection.z]);
-      ch = new Uint8Array(n);
-      for (let i = 0; i < n; i++) ch[i] = aux[i * 4 + 2];
-      C.set(dirKey, ch);
-    } else {
-      for (let i = 0; i < n; i++) aux[i * 4 + 2] = ch[i];
+      const job = shadowJob([this.sunDirection.x, this.sunDirection.y, this.sunDirection.z]);
+      shadowJobStep(this._height, job, Infinity);
+      C.set(dirKey, ch = job.ch);
     }
+    for (let i = 0; i < n; i++) aux[i * 4 + 2] = ch[i];
     this.auxTexture.needsUpdate = true;
   }
   /** Settlement / harbour lights (night presets): static sprites on low, gentle land, clustered by a noise field and
@@ -1764,6 +1972,9 @@ export class World {
     this._detailRT.dispose(); this._cloudRT.dispose(); this._biomeRT.dispose(); this._waveRT.dispose();
     if (this.puffs.dispose) this.puffs.dispose();
     if (this._envRT) { if (s.environment === this._envRT.texture) s.environment = null; this._envRT.dispose(); this._envRT = null; }
+    if (this._envVar) { this._envVar.rt.dispose(); this._envVar = null; }
+    if (this._bakeTimer) { (typeof requestIdleCallback === 'function' ? cancelIdleCallback : clearTimeout)(this._bakeTimer); this._bakeTimer = 0; }
+    this._bakeQueue.length = 0; this._bakeJob = null;
     if (this._pmrem) { this._pmrem.dispose(); this._envMat.dispose(); this._envGeo.dispose(); this._pmrem = null; }
     if (s.fog) s.fog = null;
   }

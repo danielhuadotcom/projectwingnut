@@ -38,12 +38,16 @@
 //     with 65-damage player missiles keeps those counts. Bosses (types with bars) skip the doubling: the player has
 //     two 5 s missile hardpoints, so their converted counts are halved. Every spawn also scales by the difficulty's
 //     enemyHp (Easy 0.8, Normal 1, Hard 1.15, Mercenary 1.3). armed: true (default) = gun + missiles, 'gun' = gun only,
-//     false = unarmed. bars = boss health bar segments (shown on the HUD boss bar).
+//     false = unarmed. bars = boss health bar segments (shown on the HUD boss bar). ace: true = a named ace (callsign
+//     entries): aces and types with bars fly js/ai.js EnemyBrain's break discipline against missiles.
 //   GROUND_TYPES.hp is raw game damage (a player missile does 65): 1 missile for AA, SAMs, C-RAM, radars, small buildings
 //     and boats, 2 for armor, bunkers and hangars, 3 for railgun turrets. Ships pool hull and weapon mounts into one hitbox
 //     so capital ships stay playable. refHp = the reference durability figure, kept for information only.
 //   MISSIONS: main.js shows the name, up to three briefing sentences and each phase label (upper-cased). location, setting
 //     and clock (local, 24 h; the source mission's listed time) are flavor.
+//     red (optional) = true: the preset's red Glassfall variant (js/timeofday.js glassfallPreset; M21, after the M20 ending).
+//     glassfall (optional) = a Glassfall story event (js/glassfall.js): on a phase, { impacts } runs the Thunderhead
+//     salvos for that phase (M15); on a mission, 'mainspring' replaces the completion after the last phase (M20).
 //     time (optional) = the lighting preset (js/timeofday.js): one of TIMES below, default 'day'. From the source
 //     campaign's splash screens (local time, weather) and the fan wiki: the night raids M9 (22:00, "under cover of
 //     night") and M12 (00:30, full moon) are 'night'; M7 (12:30, storm, enemies diving from above the cloud cover) is
@@ -125,15 +129,15 @@ export const AIRCRAFT_TYPES = {
   'BODKIN':      { role: 'cruise missile', armed: false, hp: 10, speedKmh: 1000, roll: 150, pitch: 100, yaw: 25, color: 0xd6d6d6, accent: 0xc0392b, ai: { kmh: [300, 1000, 1800], roll: 150, pitch: 100, yaw: 25 }, note: "Nordvane Arsenal's standard cruise missile: fragile, and it jinks away from incoming missiles. Speed = AI cruise." },
   'THUNDERHEAD': { role: 'cruise missile', armed: false, hp: 70, speedKmh: 1200, roll: 300, pitch: 200, yaw: 25, color: 0xd6d6d6, accent: 0xc0392b, ai: { kmh: [300, 1200, 1800], roll: 300, pitch: 200, yaw: 25 }, note: 'A Bodkin with a thunderglass warhead, the weapon of the Glassfall: much tougher and far more agile. Speed = AI cruise.' },
   // ---- Chime Squadron and company (base-type stats; durability converted at 32 HP per missile) ----
-  'NV-73 CUCKOO':   { role: 'multirole', hp: 35,  speedKmh: 3000, roll: 210, pitch: 95,  yaw: 15, color: 0x353a42, accent: 0xe0a020, ai: { kmh: [300, 1000, 1400], roll: 250, pitch: 50, yaw: 35 }, note: "Cuckoo Flight, Chime Squadron's cadets, in gilded NV-73s; they pop out to evict you from Tarnfell (Housewarming). Worth double points, no extra durability." },
-  'Q07 CHIME':      { role: 'prototype', hp: 200, speedKmh: 3200, roll: 180, pitch: 95,  yaw: 15, color: 0x7d1212, accent: 0x151515, ai: { kmh: [300, 1000, 1800], roll: 300, pitch: 85, yaw: 25 }, note: "Chime Squadron, the Concord's clockwork elite, in oxblood-and-black Q07s: about 6 missiles each (200 HP); post-stall flips to dodge missiles." },
-  'Q11 CHIME':      { role: 'prototype', hp: 200, speedKmh: 3200, roll: 180, pitch: 105, yaw: 20, color: 0x7d1212, accent: 0x151515, ai: { kmh: [300, 1000, 1800], roll: 300, pitch: 50, yaw: 25 }, note: 'Chime Squadron in oxblood-and-black Q11s: about 6 missiles each (200 HP); post-stall flips to dodge missiles.' },
-  'Q09 TICK':       { role: 'prototype', hp: 130, speedKmh: 3200, roll: 190, pitch: 110, yaw: 15, color: 0x353a42, accent: 0xe0a020, ai: { kmh: [300, 1000, 1800], roll: 200, pitch: 82.5, yaw: 25 }, note: 'Tick, of the interceptor twins Tick and Tock (Rush Hour), never more than a beat apart: about 4 missiles (130 HP).' },
-  'Q09 TOCK':       { role: 'prototype', hp: 130, speedKmh: 3200, roll: 190, pitch: 110, yaw: 15, color: 0x353a42, accent: 0xe0a020, ai: { kmh: [300, 1000, 1800], roll: 200, pitch: 82.5, yaw: 25 }, note: 'Tock, the other half of the interceptor twins (Rush Hour): about 4 missiles (130 HP).' },
-  'Q09 SHEARPIN':   { role: 'prototype', hp: 70,  speedKmh: 3200, roll: 190, pitch: 110, yaw: 15, color: 0x2a2a2f, accent: 0xd0473f, ai: { kmh: [300, 1000, 1800], roll: 200, pitch: 82.5, yaw: 25 }, note: "Shearpin Squadron (Backswing), the Loose Screws' old hangar-mates, now paid in Orrery jets to escort Pendulum. Built to snap under load: they withdraw once Pendulum falls; post-stall dodging." },
-  'Q04 PENDULUM':   { role: 'prototype', armed: 'gun', bars: 3, hp: 530, speedKmh: 2500, roll: 200, pitch: 100, yaw: 12, color: 0x2a2a2f, accent: 0xd0473f, ai: { kmh: [null, 1000, 1800], roll: 250, pitch: 65, yaw: 25 }, note: "Pendulum's first jet (Graveyard Shift boss), a gun-only Orrery duelist. Reference AI HP 150; fought as 3 bars of about 3 missiles on Normal (530 HP, not doubled: 9 missiles). Heavy gun barrages, plus a rapid railgun from bar 2. Only cruise and max AI speeds are set." },
-  'Q10 PENDULUM':   { role: 'prototype', bars: 3, hp: 710, speedKmh: 3600, roll: 250, pitch: 120, yaw: 20, color: 0x2a2a2f, accent: 0xd0473f, ai: { kmh: [400, 950, 1800], roll: 250, pitch: 60, yaw: 25 }, note: 'Pendulum swings back (Backswing boss) in the gunmetal-and-red Q10. Reference AI HP 100; 3 bars of about 3.6 missiles on Normal (710 HP, not doubled: 11 missiles). Guns, then micromissile swarms; post-stall tricks. Speed, pitch and yaw estimated.' },
-  'Q12 MAINSPRING': { role: 'prototype', bars: 4, missileReload: 5 / 3, hp: 1540, speedKmh: 4000, roll: 350, pitch: 150, yaw: 15, color: 0x7d1212, accent: 0x151515, ai: { kmh: [300, 1000, 1800], roll: 300, pitch: 70, yaw: 25 }, note: "Mainspring, Chime Squadron's commander, in the Q12 at the top of the Orrery's dial (Unwound final boss). Reference AI HP 400; 1540 HP, not doubled: on Normal 4 bars of about 6 missiles (24 total; Easy 19, Hard 28, Mercenary 31). Micromissiles, railgun bursts, then area and railgun cluster bombs." },
+  'NV-73 CUCKOO':   { role: 'multirole', ace: true, hp: 35,  speedKmh: 3000, roll: 210, pitch: 95,  yaw: 15, color: 0x353a42, accent: 0xe0a020, ai: { kmh: [300, 1000, 1400], roll: 250, pitch: 50, yaw: 35 }, note: "Cuckoo Flight, Chime Squadron's cadets, in gilded NV-73s; they pop out to evict you from Tarnfell (Housewarming). Worth double points, no extra durability." },
+  'Q07 CHIME':      { role: 'prototype', ace: true, hp: 200, speedKmh: 3200, roll: 180, pitch: 95,  yaw: 15, color: 0x7d1212, accent: 0x151515, ai: { kmh: [300, 1000, 1800], roll: 300, pitch: 85, yaw: 25 }, note: "Chime Squadron, the Concord's clockwork elite, in oxblood-and-black Q07s: about 6 missiles each (200 HP); post-stall flips to dodge missiles." },
+  'Q11 CHIME':      { role: 'prototype', ace: true, hp: 200, speedKmh: 3200, roll: 180, pitch: 105, yaw: 20, color: 0x7d1212, accent: 0x151515, ai: { kmh: [300, 1000, 1800], roll: 300, pitch: 50, yaw: 25 }, note: 'Chime Squadron in oxblood-and-black Q11s: about 6 missiles each (200 HP); post-stall flips to dodge missiles.' },
+  'Q09 TICK':       { role: 'prototype', ace: true, hp: 130, speedKmh: 3200, roll: 190, pitch: 110, yaw: 15, color: 0x353a42, accent: 0xe0a020, ai: { kmh: [300, 1000, 1800], roll: 200, pitch: 82.5, yaw: 25 }, note: 'Tick, of the interceptor twins Tick and Tock (Rush Hour), never more than a beat apart: about 4 missiles (130 HP).' },
+  'Q09 TOCK':       { role: 'prototype', ace: true, hp: 130, speedKmh: 3200, roll: 190, pitch: 110, yaw: 15, color: 0x353a42, accent: 0xe0a020, ai: { kmh: [300, 1000, 1800], roll: 200, pitch: 82.5, yaw: 25 }, note: 'Tock, the other half of the interceptor twins (Rush Hour): about 4 missiles (130 HP).' },
+  'Q09 SHEARPIN':   { role: 'prototype', ace: true, hp: 70,  speedKmh: 3200, roll: 190, pitch: 110, yaw: 15, color: 0x2a2a2f, accent: 0xd0473f, ai: { kmh: [300, 1000, 1800], roll: 200, pitch: 82.5, yaw: 25 }, note: "Shearpin Squadron (Backswing), the Loose Screws' old hangar-mates, now paid in Orrery jets to escort Pendulum. Built to snap under load: they withdraw once Pendulum falls; post-stall dodging." },
+  'Q04 PENDULUM':   { role: 'prototype', ace: true, armed: 'gun', bars: 3, hp: 530, speedKmh: 2500, roll: 200, pitch: 100, yaw: 12, color: 0x2a2a2f, accent: 0xd0473f, ai: { kmh: [null, 1000, 1800], roll: 250, pitch: 65, yaw: 25 }, note: "Pendulum's first jet (Graveyard Shift boss), a gun-only Orrery duelist. Reference AI HP 150; fought as 3 bars of about 3 missiles on Normal (530 HP, not doubled: 9 missiles). Heavy gun barrages, plus a rapid railgun from bar 2. Only cruise and max AI speeds are set." },
+  'Q10 PENDULUM':   { role: 'prototype', ace: true, bars: 3, hp: 710, speedKmh: 3600, roll: 250, pitch: 120, yaw: 20, color: 0x2a2a2f, accent: 0xd0473f, ai: { kmh: [400, 950, 1800], roll: 250, pitch: 60, yaw: 25 }, note: 'Pendulum swings back (Backswing boss) in the gunmetal-and-red Q10. Reference AI HP 100; 3 bars of about 3.6 missiles on Normal (710 HP, not doubled: 11 missiles). Guns, then micromissile swarms; post-stall tricks. Speed, pitch and yaw estimated.' },
+  'Q12 MAINSPRING': { role: 'prototype', ace: true, bars: 4, missileReload: 5 / 3, hp: 1540, speedKmh: 4000, roll: 350, pitch: 150, yaw: 15, color: 0x7d1212, accent: 0x151515, ai: { kmh: [300, 1000, 1800], roll: 300, pitch: 70, yaw: 25 }, note: "Mainspring, Chime Squadron's commander, in the Q12 at the top of the Orrery's dial (Unwound final boss). Reference AI HP 400; 1540 HP, not doubled: on Normal 4 bars of about 6 missiles (24 total; Easy 19, Hard 28, Mercenary 31). Micromissiles, railgun bursts, then area and railgun cluster bombs." },
 };
 
 // ------------------------------------------------------------------------------------------------------------------------
@@ -719,7 +723,8 @@ export const MISSIONS = [
     setting: 'city', location: 'Kelderwick', clock: '10:35',
     startBack: 0,   // m behind the sortie frame: a quiet lead-in before first contact
     // Layout (PW Consequence of Power): instant furball, jets scramble from the city, reinforcements from due north;
-    //   Thunderhead salvos 40 s apart.
+    //   then the Glassfall (phase 2, js/glassfall.js): Thunderhead salvos keep coming, evasive and optional (kills score
+    //   but never clear the phase), and 7 reach Kelderwick, 5-7 s apart; the mission completes after the last one.
     phases: [
       { label: 'Kelderwick air cover', groups: [
         { kind: 'air', type: 'NV-48', count: 6, formation: 'vee', position: 'ahead', distance: 5500, task: 'engage' },
@@ -728,9 +733,9 @@ export const MISSIONS = [
         { kind: 'air', type: 'FLURRY-4', count: 4, formation: 'vee', position: 'ahead', distance: 5000, after: 40, task: 'engage' },
         { kind: 'ground', type: 'l-sam', count: 6, area: 'scattered', distance: 4800 },
       ] },
-      { label: 'Thunderheads inbound', groups: [
-        { kind: 'air', type: 'THUNDERHEAD', count: 6, formation: 'line', position: 'ahead', distance: 4800 },
-        { kind: 'air', type: 'THUNDERHEAD', count: 6, formation: 'line', position: 'left', distance: 4600, after: 25 },
+      { label: 'Thunderheads inbound', glassfall: { impacts: 7 }, groups: [
+        { kind: 'air', type: 'THUNDERHEAD', count: 6, formation: 'line', position: 'ahead', distance: 4800, optional: true },
+        { kind: 'air', type: 'THUNDERHEAD', count: 6, formation: 'line', position: 'left', distance: 4600, after: 12, optional: true },
         { kind: 'air', type: 'NV-56N', count: 4, formation: 'pair', distance: 800, near: 'l-sam', after: 5, task: 'scramble' },      // scrambling from hardened city shelters
       ] },
     ],
@@ -829,6 +834,13 @@ export const MISSIONS = [
     id: 20, name: 'Lights On',
     briefing: "Today we take Lanternport back. Concord guns are dug into the hills above the city: smash them, and let's turn the lights back on.",
     setting: 'city', location: 'Lanternport', clock: '16:00',
+    glassfall: 'mainspring',   // clearing the last phase starts the Glassfall ending (js/glassfall.js), not the completion
+    allies: [   // the League retaking its capital: the Hand-Me-Down in the harbor, the Herring Guard on the lighthouse road
+      { name: 'Hand-Me-Down', kind: 'naval', phase: 3, position: 'right', distance: 3500,
+        units: [{ type: 'battleship', count: 1 }, { type: 'cruiser', count: 2, escort: true }] },
+      { name: 'Herring Guard', kind: 'ground', phase: 4, position: 'left', distance: 3000,
+        units: [{ type: 'tank', count: 6 }, { type: 'aa', count: 2 }] },
+    ],
     startBack: 5000,   // m behind the sortie frame: a quiet lead-in before first contact
     // Layout (PW Presidia): fighters hold over the batteries; the air war is on over the city with AWACS orbiting;
     //   carrier launches; helicopters guard the towers.
@@ -872,6 +884,7 @@ export const MISSIONS = [
     id: 21, name: 'Unwound',
     briefing: 'Mainspring is up in the Q12 over Lanternport, alone, waiting for you. One last duel, Wingnut: unwind the spring.',
     setting: 'city dusk', location: 'Lanternport at sundown', clock: '18:00', time: 'evening',
+    red: true,   // under the Glassfall's red sky (js/timeofday.js glassfallPreset)
     wingmen: [],   // the duel is flown alone
     startBack: 2000,   // m behind the sortie frame: a quiet lead-in before first contact
     // Layout (PW Kings): Mainspring meets you head-on (on Mercenary, with four wingmen).
@@ -933,6 +946,9 @@ export function validateMissions(missions = MISSIONS) {
   const out = [];
   for (const m of missions) {
     if ('time' in m && !TIMES.includes(m.time)) out.push(`M${m.id}: time must be one of ${TIMES.join(', ')}`);
+    if ('glassfall' in m && m.glassfall !== 'mainspring') out.push(`M${m.id}: glassfall must be 'mainspring'`);
+    if ('red' in m && typeof m.red !== 'boolean') out.push(`M${m.id}: red must be true or false`);
+    m.phases.forEach((p, i) => { if ('glassfall' in p && !(p.glassfall && Number.isInteger(p.glassfall.impacts) && p.glassfall.impacts >= 1 && p.glassfall.impacts <= 16)) out.push(`M${m.id} phase ${i + 1}: glassfall needs impacts 1-16`); });
     if ('wingmen' in m) {
       const w = m.wingmen;
       if (!Array.isArray(w) || w.some((n) => n !== '2' && n !== '3') || new Set(w).size !== w.length) out.push(`M${m.id}: wingmen must be a list of distinct '2' / '3'`);

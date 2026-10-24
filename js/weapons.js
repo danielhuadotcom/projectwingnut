@@ -30,8 +30,8 @@ import * as THREE from 'https://cdnjs.cloudflare.com/ajax/libs/three.js/0.170.0/
 // target). Aircraft with `holdFire === true` never fire (fireGun / fireMissile refuse: the game's attack slots). An
 // optional damageFilter(target, damage, shooter, kind, missile) lets the game adjust damage before it is applied.
 //
-// Missiles carry per-shot kinematics and fuse (maxSpeed, boostTime, drag, life, fuse; like turnScale), reset to the missile*
-// settings on every launch: the onMissileLaunch callback may give a shot its own profile (the game's player-team missiles).
+// Missiles carry per-shot kinematics, fuse and seeker blind range (maxSpeed, boostTime, drag, life, fuse, blind, blindTime;
+// like turnScale), reset to the missile* settings on every launch: the onMissileLaunch callback may give a shot its own profile (the game's player-team missiles).
 // At low frame rates (dt > 1/50 s) missiles fly in up to 3 substeps of <= 1/60 s (guidance, motion and the swept fuse per
 // substep, targets placed back along their velocity to where they were at each substep's end), so steering and hit rates
 // match 60 fps.
@@ -797,6 +797,8 @@ export class Missile {
     this.drag = 1.1e-4;                          // coast drag: dv/dt = -k v^2
     this.life = 6;                               // s before the self-destruct
     this.fuse = 14;                              // m proximity fuse radius
+    this.blind = 90;                             // m, seeker blind range (per shot, like fuse)...
+    this.blindTime = 0;                          //   or, when > 0, at most this many s of closure (min of the two)
     this.dud = false;                            // scripted miss: homes on a point missBy m beside its target, never fuses
     this.missBy = 0;
     this.missSide = 1;                           // which side of the target the dud passes (+1 / -1)
@@ -915,6 +917,9 @@ export class Weapons {
     this.missileFuse = 14;                   // m proximity fuse
     this.missileLag = 0.18;                  // s, airframe response lag on the guidance command (late breaks overshoot)
     this.missileBlindRange = 90;             // m, the seeker stops steering this close (last-instant jinks cause misses)
+    this.missileBlindTime = 0;               // s: when > 0, the blind range is at most this many s of closure (0 = metres only)
+    this.missileBlindTailCos = 0.3;          //   (tail-aspect launches only: target velocity within ~70 deg of the line of sight,
+    this.missileBlindTailRange = 1800;       //   launched within this many m)
     this.missileArmTime = 0.25;              // s before the fuse arms
     this.dudBurstRadius = 25;                // m: a dud passing this close to anyone airbursts harmlessly (never a hit)
     this.missileDamage = 65;
@@ -1575,11 +1580,24 @@ export class Weapons {
     m.turnScale = 1;                       // per-shot multiplier on the turn limit (game balance hook)
     m.maxSpeed = this.missileMaxSpeed; m.boostTime = this.missileBoostTime; m.drag = this.missileDrag; m.life = this.missileLife;   // per-shot kinematics
     m.fuse = this.missileFuse;             //   and fuse (likewise)
+    m.blind = this.missileBlindRange; m.blindTime = this.missileBlindTime;   //   and seeker blind range (likewise)
     m.dud = false; m.missBy = 0; m.missSide = 1; m.lethal = false;   // pooled: the launch callback may set these
     m.ax = 0; m.ay = 0; m.az = 0;          // pooled: guidance lag state (_guide's own reset never fires: it starts after the rail drop)
     m.mesh.updateMatrix(); m.mesh.matrixWorld.copy(m.mesh.matrix);
     this.missiles.push(m);
     if (this.onMissileLaunch) this.onMissileLaunch(m);
+    // the closure-time blind range (blindTime) is for good tail shots only: launched within missileBlindTailRange with the
+    // target flying away from the missile (its velocity within acos(missileBlindTailCos) of the line of sight). Crossing,
+    // head-on and long-range shots keep the fixed blind range, so they still overshoot a hard turn
+    if (m.blindTime > 0) {
+      const T0 = m.target, tv = T0 && T0.velocity, sp = tv ? tv.length() : 0;
+      if (!T0 || !T0.position || sp < 1) m.blindTime = 0;
+      else {
+        _v0.subVectors(T0.position, m.position);
+        const d = _v0.length();
+        if (d < 1 || d > this.missileBlindTailRange || _v0.dot(tv) / (d * sp) < this.missileBlindTailCos) m.blindTime = 0;
+      }
+    }
     // launched into a fresh flare burst (within flareProtectTime): the target's flares spoof this one too. Done after
     // the launch callback so that it still reports the intended target.
     const T = m.target;
@@ -1772,14 +1790,19 @@ export class Weapons {
     if (r2 < 1e-4) return;
     const dist = Math.sqrt(r2), lx = rx / dist, ly = ry / dist, lz = rz / dist;
     if (lx * dir.x + ly * dir.y + lz * dir.z < this.missileSeekerCos) { m.target = null; return; }
-    if (dist < this.missileBlindRange) return;                    // terminal: no more corrections
     const vrx = tv.x - m.velocity.x, vry = tv.y - m.velocity.y, vrz = tv.z - m.velocity.z;
-    // LOS rotation rate  Ω = (r × v_rel) / |r|²,   closing speed Vc = -(r · v_rel) / |r|
-    const ox = (ry * vrz - rz * vry) / r2, oy = (rz * vrx - rx * vrz) / r2, oz = (rx * vry - ry * vrx) / r2;
+    // closing speed Vc = -(r · v_rel) / |r|
     const vc = Math.max(-(rx * vrx + ry * vry + rz * vrz) / dist, 150);
+    // blind range: m.blind metres, or with m.blindTime set, no more than that many seconds of closure. A fixed distance
+    // is a fixed time only at one closing speed: 90 m is ~0.07 s head-on but 0.25-0.35 s in a close tail chase (a slow
+    // missile closing at 250-400 m/s), long enough for a bandit's ordinary turn to carry it out of the fuse radius
+    const blind = m.blindTime > 0 ? Math.min(m.blind, vc * m.blindTime) : m.blind;
+    if (dist < blind) return;                                     // terminal: no more corrections
+    // LOS rotation rate  Ω = (r × v_rel) / |r|²
+    const ox = (ry * vrz - rz * vry) / r2, oy = (rz * vrx - rx * vrz) / r2, oz = (rx * vry - ry * vrx) / r2;
     // air launches: lagged lead pursuit (N, lead fraction) blending into terminal PN over the missileTermTime s before
     // the blind range (so the endgame course is set by the time the seeker stops steering)
-    const sam = m.groundLaunch === true, tg = dist / vc, tb = (dist - this.missileBlindRange) / vc;
+    const sam = m.groundLaunch === true, tg = dist / vc, tb = (dist - blind) / vc;
     const w = sam ? 1 : tb >= this.missileTermTime ? 0 : 1 - tb / this.missileTermTime;   // 0 midcourse .. 1 at blind range
     const k = (sam ? this.samNavGain : this.missileNavGain + (this.missileTermNavGain - this.missileNavGain) * w) * vc;
     // pursuit point: the target's position plus a fraction of its travel over the estimated time-to-go (SAMs: all of it)

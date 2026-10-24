@@ -51,21 +51,31 @@ const KEY_TO_CODE = {
 const AXES = ['pitch', 'roll', 'yaw', 'throttle'];
 const BUTTON_ACTIONS = ['gun', 'missile', 'target', 'lookBack', 'pause', 'invertPitch', 'restart', 'graphics', 'overlay', 'flares'];
 
+/** Default gamepad stick expo for pitch, roll and yaw (Settings > Controls sliders override it per axis). The curve is
+ *  e*m^3 + (1-e)*m on the deflection m past the deadzone: 0 = linear, 1 = pure cubic; full deflection is always full rate.
+ *  0.9 puts half deflection at ~16% rate (was 0.8: ~20%) for finer gun tracking. */
+export const STICK_EXPO = 0.9;
+export const EXPO_MAX = 1;
+const THROTTLE_EXPO = 0.8;      // thrust axis (left stick Y) keeps its old curve
+const TOUCH_EXPO = 0.8;         // on-screen touch sticks keep theirs
+/** The expo curve alone on 0..1 (no deadzone): what the Settings graph draws. */
+export function expoCurve(m, expo = STICK_EXPO) {
+  const e = Math.min(EXPO_MAX, Math.max(0, Number.isFinite(expo) ? expo : STICK_EXPO));
+  m = Math.min(1, Math.max(0, m));
+  return e * m * m * m + (1 - e) * m;
+}
 /** Deadzone + rescale to 0..1 past the deadzone + expo curve (fine control near center, full range at the ends). */
-export function shapeAxis(v) {
+export function shapeAxis(v, expo = STICK_EXPO) {
   if (typeof v !== 'number' || !Number.isFinite(v)) return 0;
   const a = Math.abs(v);
   if (a < DEADZONE) return 0;
-  let m = (a - DEADZONE) / (1 - DEADZONE);
-  if (m > 1) m = 1;
-  const e = EXPO * m * m * m + (1 - EXPO) * m;    // half deflection -> ~20% rate: fine control near center
+  const e = expoCurve((a - DEADZONE) / (1 - DEADZONE), expo);
   return v < 0 ? -e : e;
 }
-const EXPO = 0.8;
 /** Expo only (no deadzone): for the on-screen touch sticks, which apply their own deadzone. */
 export function expoOnly(v) {
   if (typeof v !== 'number' || !Number.isFinite(v)) return 0;
-  const m = Math.min(1, Math.abs(v)), e = EXPO * m * m * m + (1 - EXPO) * m;
+  const e = expoCurve(Math.abs(v), TOUCH_EXPO);
   return v < 0 ? -e : e;
 }
 
@@ -137,6 +147,9 @@ export class Input {
     this._pollGamepads = this.gamepadSupported;
     this._gpConnectHint = false;        // a gamepadconnected event arrived; poll even if we had given up
     this._disposed = false;
+    // Gamepad stick expo per axis (0..EXPO_MAX), set from Settings; stickRaw = last raw deflection (for the Settings graph)
+    this.expo = { pitch: STICK_EXPO, roll: STICK_EXPO, yaw: STICK_EXPO };
+    this.stickRaw = { pitch: 0, roll: 0, yaw: 0 };
     // ---- mouse (War Thunder-style mouse aim when no gamepad is in use) --------------------------------------------
     this._mdx = 0; this._mdy = 0; this._wheel = 0;
     this._mLeft = false; this._mRight = false; this._mLeftPrev = false; this._mRightPrev = false; this._mRightTap = 0;
@@ -220,7 +233,8 @@ export class Input {
       const M = this._kbMenu;
       if (code === 'ArrowUp') M.u++; else if (code === 'ArrowDown') M.d++; else if (code === 'ArrowLeft') M.l++; else if (code === 'ArrowRight') M.r++;
       else if (code === 'Enter' || code === 'NumpadEnter' || code === 'Space') M.a++; else if (code === 'Escape' || code === 'Backspace') M.b++;
-    }
+    } else if (code === 'ArrowLeft') this._kbMenu.l++;    // held ←/→ repeat (OS key repeat): sliders keep stepping
+    else if (code === 'ArrowRight') this._kbMenu.r++;
     if (!action) return;
     // fullscreen: plain U (Shift allowed: it is held for boost); Ctrl / Alt / Meta combos are left to the browser and OS
     if (action === 'fullscreen' && (e.ctrlKey || e.altKey || e.metaKey)) return;
@@ -340,10 +354,12 @@ export class Input {
     if (gp) {
       const ax = gp.axes || [];
       const rawLX = ax[AXIS.LX] || 0, rawLY = ax[AXIS.LY] || 0, rawRX = ax[AXIS.RX] || 0, rawRY = ax[AXIS.RY] || 0;
-      gpYaw = shapeAxis(rawLX);
-      gpThr = -shapeAxis(rawLY);                 // gamepad up is -Y; push up = +throttle
-      gpRoll = shapeAxis(rawRX);
-      gpPitch = shapeAxis(rawRY);                // pull back (+Y) = nose up (+1)
+      const X = this.expo || {};
+      gpYaw = shapeAxis(rawLX, X.yaw);
+      gpThr = -shapeAxis(rawLY, THROTTLE_EXPO);  // gamepad up is -Y; push up = +throttle
+      gpRoll = shapeAxis(rawRX, X.roll);
+      gpPitch = shapeAxis(rawRY, X.pitch);       // pull back (+Y) = nose up (+1)
+      this.stickRaw.pitch = rawRY; this.stickRaw.roll = rawRX; this.stickRaw.yaw = rawLX;
       if (Math.abs(rawLX) > STICK_ACTIVE || Math.abs(rawLY) > STICK_ACTIVE || Math.abs(rawRX) > STICK_ACTIVE || Math.abs(rawRY) > STICK_ACTIVE) gpActive = true;
       const b = gp.buttons;
       const nb = Math.min(b.length, 32);
@@ -367,7 +383,7 @@ export class Input {
       gpL3 = isPressed(b[10]);
       gpDD = isPressed(b[13]); gpA = isPressed(b[BTN.A]); gpB = isPressed(b[BTN.B]);
       lsU = rawLY < -0.6; lsD = rawLY > 0.6; lsL = rawLX < -0.6; lsR = rawLX > 0.6;
-    }
+    } else { const S = this.stickRaw; S.pitch = S.roll = S.yaw = 0; }
 
     // ---- on-screen touch controls (phones): a second "gamepad" with the same mode-2 layout ---------------------------
     const T = this.touch;
@@ -385,7 +401,12 @@ export class Input {
       const M = this._kbMenu, G = this._gpMenuPrev;
       const u = gpDU || lsU, d = gpDD || lsD, l = gpDL || lsL, r = gpDR || lsR;
       this.menuUp = M.u > 0 || (u && !G.u); this.menuDown = M.d > 0 || (d && !G.d);
-      this.menuLeft = M.l > 0 || (l && !G.l); this.menuRight = M.r > 0 || (r && !G.r);
+      // held left / right on the pad repeats (after 0.35 s, every 0.07 s) so settings sliders can be swept
+      const R = this._gpMenuRep || (this._gpMenuRep = { l: 0, r: 0 });
+      let repL = false, repR = false;
+      if (l && !r) { R.l += dt; if (R.l > 0.35) { repL = true; R.l -= 0.07; } } else R.l = 0;
+      if (r && !l) { R.r += dt; if (R.r > 0.35) { repR = true; R.r -= 0.07; } } else R.r = 0;
+      this.menuLeft = M.l > 0 || (l && !G.l) || repL; this.menuRight = M.r > 0 || (r && !G.r) || repR;
       this.menuConfirm = M.a > 0 || (gpA && !G.a); this.menuBack = M.b > 0 || (gpB && !G.b);
       G.u = u; G.d = d; G.l = l; G.r = r; G.a = gpA; G.b = gpB;
       M.u = M.d = M.l = M.r = M.a = M.b = 0;
@@ -454,6 +475,12 @@ export class Input {
   }
 
   /** Set & persist the pitch inversion preference (also toggled internally by I / Back-Select). */
+  /** Gamepad stick expo for 'pitch' | 'roll' | 'yaw', 0 (linear) .. EXPO_MAX (cubic). Invalid values are ignored. */
+  setExpo(axis, v) {
+    const n = Number(v);
+    if (!this.expo || !(axis in this.expo) || !Number.isFinite(n)) return;
+    this.expo[axis] = Math.min(EXPO_MAX, Math.max(0, n));
+  }
   setInvertPitch(v) {
     this.invertPitch = !!v;
     try { if (this._win && this._win.localStorage) this._win.localStorage.setItem(STORAGE_KEY, this.invertPitch ? '1' : '0'); } catch (e) { /* ignore */ }

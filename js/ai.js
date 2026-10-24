@@ -1,5 +1,6 @@
 import * as THREE from 'https://cdnjs.cloudflare.com/ajax/libs/three.js/0.170.0/three.module.min.js';
 import { FLIGHT } from './aircraft.js';
+import { AIRCRAFT_TYPES } from './missions.js';
 
 // Pilot brains.
 // EnemyBrain: bank-to-turn steering + a small state machine (pursue / evade / extend / avoid terrain). It chases any
@@ -12,7 +13,17 @@ const _q = new THREE.Quaternion(), _pt = new THREE.Vector3(), _up = new THREE.Ve
 const _rel = new THREE.Vector3(), _vr = new THREE.Vector3(), _hf = new THREE.Vector3(), _slot = new THREE.Vector3(), _away = new THREE.Vector3();
 const WORLD_UP = new THREE.Vector3(0, 1, 0);
 const controls = { pitch: 0, roll: 0, yaw: 0, throttleDelta: 0 };
+const EVADE_TTI = 2.2;    // s: an evasive transit (EnemyBrain.evasive) breaks hard once a missile is this close to impact
 const LAUNCH_GAP = 1.5;   // s: the AI never launches at one target within this of its previous launch at it
+// Break discipline (EnemyBrain, aces and bosses): energy. PULL_MAX + PULL_MAX_SKILL x skill s of continuous max-G pull,
+// then UNLOAD + UNLOAD_SKILL x skill s unloaded with the pull capped at UNLOAD_PULL (skill 0.95: 1.95 s, then 2.4 s;
+// other aces than bosses unload 0.8 s longer)
+const PULL_MAX = 1.0, PULL_MAX_SKILL = 1.0, UNLOAD = 3.5, UNLOAD_SKILL = -1.2, UNLOAD_PULL = 0.3;
+// ...and flares: per incoming missile a boss pops them with odds FLARE_P_BOSS (other aces FLARE_P_ACE), x (0.6 + 0.4 x
+// skill), once the time to impact is under FLARE_TTI x 0.5-1.5, at most once per FLARE_RELOAD s (a follow-up shot after a
+// flare burst connects). A player missile in a close tail chase can't be out-turned late, so this is how an ace beats a
+// good shot some of the time.
+const FLARE_P_BOSS = 0.42, FLARE_P_ACE = 0.35, FLARE_RELOAD = 7, FLARE_TTI = 1.2;
 // Altitude game (bandits only, EnemyBrain.altGame): out of a close turning fight a bandit wants 300-800 m (by skill) over
 // its target; holding flights orbit there, slot-waiters stack above it, attackers dive in from it and zoom back up.
 export const ALT_CEILING = 4500;  // m ASL: hard cap, enforced in the steering. Highest terrain is ~2.6 km; matches the
@@ -53,6 +64,10 @@ export class EnemyBrain {
     this.noiseTimer = 0;
     this.throttleTarget = 0;        // thrust axis command: -1 airbrake .. 0 cruise .. +1 boost
     this.passive = false;           // unarmed types (transports, AWACS, bombers, drones, cruise missiles): transit + jink
+    this.evasive = false;           // passive only (the Glassfall's Thunderheads, js/glassfall.js): weave along the course
+    this.lockedOn = false;          //   while the game reports a player lock (lockedOn), hard-break late (< EVADE_TTI s)
+                                    //   instead of at the launch, so pursuit-guided shots mostly overshoot
+    this._breaking = false;         // (evasive: breaking from a missile this frame)
     this.obstacle = null;           // optional (point) => truthy when the point is inside solid structure (tunnel ridge)
     this.transitDir = new THREE.Vector3(0, 0, -1);
     this.transitAlt = 0;            // transit altitude (0 = hold the current one)
@@ -78,6 +93,29 @@ export class EnemyBrain {
     // per-frame sensing results (declared here so every brain keeps one shape)
     this._agl = 0; this._aheadAgl = 0; this._sink = 0; this._overWater = false; this._diving = false;
     this._inbound = false; this._minTti = Infinity; this._minRange = Infinity; this._threatMsl = null; this._scanned = false;
+    // Break discipline (aces and bosses: AIRCRAFT_TYPES entries with ace or bars; everyone else keeps the plain rule
+    // below): consistency, not capability. Per incoming missile the brain rolls a plan (_planBreak): a break at the time
+    // to impact it judges right (an ace's ~0.7-1.8 s, spread by skill), an early break as soon as it notices the launch,
+    // or a misjudged one (no missile break), and whether to answer it with flares (FLARE_*). A guns-on threat makes it
+    // break after a reaction delay instead of on the first frame. A max-G pull costs energy: after PULL_MAX s of
+    // continuous hard pull (skill-scaled) it must unload for a few seconds (pull capped, no fresh break), so back-to-back
+    // perfect breaks aren't free and a stable tail position gets its shot.
+    this.breakDiscipline = false;   // (resolved from the aircraft's type name in update)
+    this._typeName = null; this._boss = false;
+    this._mslId = -1; this._mslPlan = 2; this._mslTti = 0; this._mslNotice = 0;
+    this._pull = 0; this._tired = 0; this._gunT = 0; this._gunDelay = -1; this._mslFlare = false; this._flareTti = 0; this._flareT = 0;
+  }
+
+  /** Roll how this brain will answer missile m (break discipline above). */
+  _planBreak(m) {
+    const s = this.skill, r = Math.random();
+    this._mslId = m.id;
+    this._mslNotice = (0.15 + 0.5 * (1 - s)) * (0.5 + Math.random());          // s after launch before it can react
+    const pMiss = (this._boss ? 0.2 : 0.3) + 0.3 * (1 - s), pEarly = 0.08 + 0.3 * Math.max(0, s - 0.55);
+    this._mslPlan = r < pMiss ? 0 : r < pMiss + pEarly ? 1 : 2;
+    this._mslTti = (0.9 + 0.6 * s) * (0.45 + 0.8 * Math.random());              // timed: break once the tti is under this
+    this._mslFlare = Math.random() < (this._boss ? FLARE_P_BOSS : FLARE_P_ACE) * (0.6 + 0.4 * s);
+    this._flareTti = FLARE_TTI * (0.5 + Math.random());
   }
 
   // Steer toward a world point; writes pitch/roll/yaw into controls. gain scales aggressiveness.
@@ -289,9 +327,33 @@ export class EnemyBrain {
     if (watch && watch.alive) threatened = this._threatFrom(watch);
     if (this._scanned) this._scanned = false; else this._scanMissiles(weapons, false);   // (a WingmanBrain scans first)
     const missileInbound = this._inbound, minTti = this._minTti;
-    // Rookies break as soon as they see the launch (too early: the missile corrects). Aces wait for the last
-    // second and a half, which is when a hard break makes the missile overshoot.
-    const breakNow = missileInbound && (this.skill < 0.55 || minTti < 0.9 + this.skill * 0.6);
+    // Rookies break as soon as they see the launch (too early: the missile corrects). Better pilots wait for the moment
+    // they judge right, with skill-scaled errors (break discipline: _planBreak), and tire after a long max-G break.
+    let breakNow;
+    if (ac.name !== this._typeName) {   // pooled airframes change type on respawn
+      this._typeName = ac.name; const T = AIRCRAFT_TYPES[ac.name];
+      this.breakDiscipline = !(this instanceof WingmanBrain) && !!T && (T.ace === true || T.bars > 0);
+      this._boss = !!T && T.bars > 0;   // bosses misjudge less and recover faster than the other aces
+    }
+    if (!this.breakDiscipline) breakNow = missileInbound && (this.skill < 0.55 || minTti < 0.9 + this.skill * 0.6);
+    else {
+      breakNow = false;
+      if (missileInbound) {
+        const m = this._threatMsl;
+        if (m.id !== this._mslId) this._planBreak(m);
+        if (m.age >= this._mslNotice) {
+          breakNow = this._mslPlan === 1 || (this._mslPlan === 2 && minTti < this._mslTti);
+          if (this._mslFlare && this._flareT <= 0 && minTti < this._flareTti) { weapons.deployFlares(ac); this._flareT = FLARE_RELOAD; this._mslFlare = false; }
+        }
+      }
+      // guns-on threat: break after a reaction delay (rolled when the threat appears), not on the first frame
+      if (threatened) {
+        if (this._gunDelay < 0) this._gunDelay = (1.0 + 1.2 * (1 - this.skill)) * (0.5 + Math.random());
+        this._gunT += dt; threatened = this._gunT >= this._gunDelay;
+      } else { this._gunT = Math.max(0, this._gunT - dt); if (this._gunT === 0) this._gunDelay = -1; }
+      this._tired = Math.max(0, this._tired - dt); this._flareT -= dt;
+      if (this._tired > 0) { breakNow = false; threatened = false; }   // unloading (energy, below): no fresh break
+    }
 
     // Terrain / boundary / ceiling overrides. A passive transit closing on its goal over open sea (diving onto a ship)
     // ignores the sea-level floor: hitting the goal is the point
@@ -323,14 +385,20 @@ export class EnemyBrain {
       _pt.set(0, Math.max(800, ac.position.y), 0);
       this.steerToward(_pt, 0.8); this.throttleTarget = 0.2;
     } else {
-      if (this.passive) {
+      if (this.passive && this.evasive) {
+        // Evasive transit: weave while locked, break hard late when a missile closes; back on course 1.5 s after both end
+        this._breaking = missileInbound && minTti < EVADE_TTI;
+        if ((this._breaking || this.lockedOn) && this.state !== 'evade') { this.state = 'evade'; this.stateTime = 0; this.evadeDir = Math.random() < 0.5 ? -1 : 1; this.jinkTimer = 0; }
+        else if (!this._breaking && !this.lockedOn && this.state === 'evade' && this.stateTime > 1.5) { this.state = 'transit'; this.stateTime = 0; }
+        else if (this.state !== 'evade') this.state = 'transit';
+      } else if (this.passive) {
         // Transit straight along the assigned heading at constant altitude; jink when a missile comes in
         if (missileInbound && this.state !== 'evade') { this.state = 'evade'; this.stateTime = 0; this.evadeDir = Math.random() < 0.5 ? -1 : 1; this.jinkTimer = 0; }
         else if (!missileInbound && this.state === 'evade' && this.stateTime > 2.5) { this.state = 'transit'; this.stateTime = 0; }
         else if (this.state !== 'evade') this.state = 'transit';
       }
       // State transitions
-      if (!this.passive && this.state !== 'evade' && (breakNow || threatened) && Math.random() < 0.6 + this.skill * 0.4) {
+      if (!this.passive && this.state !== 'evade' && (breakNow || threatened) && (this.breakDiscipline || Math.random() < 0.6 + this.skill * 0.4)) {
         this.state = 'evade'; this.stateTime = 0; this.evadeDir = Math.random() < 0.5 ? -1 : 1; this.jinkTimer = 0;
       }
       if (!this.passive && this.state === 'evade' && this.stateTime > 2.5 + this.skill * 2 && !missileInbound) { this.state = dist < 500 ? 'extend' : 'pursue'; this.stateTime = 0; }
@@ -353,6 +421,15 @@ export class EnemyBrain {
           this.steerToward(_pt, 0.45);
         } else this.steerToward(goal, 0.9);     // terminal glide: straight at it
         this.throttleTarget = 0;
+      } else if (this.state === 'evade' && this.evasive && !this._breaking) {
+        // Evasive transit, locked: weave across the course (toward the goal, else along transitDir), a jink every ~1 s
+        this.jinkTimer -= dt;
+        if (this.jinkTimer <= 0) { this.jinkTimer = 0.7 + Math.random() * 0.6; this.evadeDir = -this.evadeDir; }
+        if (goal !== null) _tmp.set(goal.x - ac.position.x, 0, goal.z - ac.position.z).normalize(); else _tmp.copy(this.transitDir);
+        _pt.copy(ac.position).addScaledVector(_tmp, 1400).addScaledVector(_tmp.set(-_tmp.z, 0, _tmp.x), 650 * this.evadeDir);
+        _pt.y = (this.transitAlt || ac.position.y) + 140 * this.evadeDir;
+        this.steerToward(_pt, 1);
+        this.throttleTarget = 1;
       } else if (this.state === 'evade') {
         // Hard break turn perpendicular to the threat, with periodic jinks and a rolling component
         this.jinkTimer -= dt;
@@ -433,6 +510,18 @@ export class EnemyBrain {
     // Skill-based sloppiness
     const slop = (1 - this.skill) * 0.15;
     controls.pitch = THREE.MathUtils.clamp(controls.pitch + Math.sin(time * 1.7 + this.noiseTimer) * slop, -1, 1);
+    // energy (break discipline): PULL_MAX s of continuous max-G pull (a break, or a hard turn after its target) must be
+    // paid for by unloading for UNLOAD s, the pull capped at UNLOAD_PULL. Never while terrain avoidance flies
+    if (this.breakDiscipline && !lowTerrain) {
+      if (this._tired > 0) controls.pitch = Math.min(controls.pitch, UNLOAD_PULL);
+      else if (controls.pitch > 0.8) {
+        this._pull += dt;
+        if (this._pull > PULL_MAX + PULL_MAX_SKILL * this.skill) {
+          this._pull = 0; this._tired = UNLOAD + UNLOAD_SKILL * this.skill + (this._boss ? 0 : 0.8);
+          if (this.state === 'evade') { this.state = 'pursue'; this.stateTime = 0; }
+        }
+      } else this._pull = Math.max(0, this._pull - dt * 0.6);
+    }
     ac.setControls(controls);
   }
 }
@@ -470,6 +559,7 @@ export class WingmanBrain extends EnemyBrain {
     this.target = null; this.pickT = 0; this.standoff = false;
     this.returning = false; this.mode = 'form';
     this.flareT = 0; this.breakT = 0; this.sepT = 0; this.avoidT = 0;
+    this.noFlares = false;                         // (js/glassfall.js: Mainspring's shots are not decoyed)
     this.burst = 0; this.burstPause = 0;
     this.missileCooldown = 20 + Math.random() * 20;
   }
@@ -498,7 +588,7 @@ export class WingmanBrain extends EnemyBrain {
     //      range < 1.2 km), flares and a hard break. One missile scan per frame (shared with EnemyBrain.update).
     this._scanMissiles(weapons, true);
     const threat = this._threatMsl;
-    if (threat && this.flareT <= 0 && threat.age > 0.3 && (this._minTti < 2 || this._minRange < 1200)) {
+    if (threat && !this.noFlares && this.flareT <= 0 && threat.age > 0.3 && (this._minTti < 2 || this._minRange < 1200)) {
       weapons.deployFlares(ac);                    // decoys every missile tracking us within flareDecoyRange
       this.flareT = 4; this.breakT = 2.2; this.flareBursts++;   // at most one burst per 4 s
       ac.getRight(_tmp); _rel.subVectors(threat.position, ac.position);

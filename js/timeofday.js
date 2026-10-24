@@ -1,14 +1,18 @@
 // js/timeofday.js — time-of-day lighting presets (day, golden hour, dusk, overcast dusk, evening, night) and the one
 // function that applies a preset to the world, the PostFX pipeline, the weapon smoke and the night lights.
 //
-// A preset only changes values: uniforms, light colours, fog, exposure, bloom, the sky lookup table (rebuilt on the CPU
-// when the light direction or the sky terms change) and, when the light direction moves, the baked terrain shadow and
-// the PMREM environment (World.setLighting caches the shadow per direction, so the bake runs once per preset). Nothing
-// here runs per frame and no shader is switched: the night extras (stars, ground lights, stronger nav lights and engine
-// glow) are behind uniforms or visibility flags, so the day look and its cost are unchanged.
+// A preset only changes values: uniforms, light colours, fog, exposure, bloom, the sky lookup table (re-graded on the CPU
+// from a cached ungraded table) and, when the light direction moves, the baked terrain shadow and the PMREM environment
+// (re-rendered into the same target). prewarmTimeOfDay (at boot) has World bake every preset's shadow and ungraded sky
+// table in idle time, so the first use of a preset copies cached data instead of baking for 80-250 ms. Nothing here runs
+// per frame and no shader is switched: the night extras (stars, ground lights, stronger nav lights and engine glow) are
+// behind uniforms or visibility flags (the ground lights are built at boot so the shader precompile and warm-up cover
+// them), so the day look and its cost are unchanged.
 //
 // Campaign missions name their preset in js/missions.js (`time`, default 'day'); INFINITY rotates presets every
 // ROTATE_ROUNDS rounds (js/infinity.js timeForRound). ?tod=<name> overrides both (benchmarks, screenshots).
+// The Glassfall (js/glassfall.js) blends any preset toward its red variant (glassfallPreset, GLASSFALL below): one step
+// per detonation, and missions[].red (M21) starts fully red.
 //
 // Lights for the night (shared uniform objects, read by js/aircraft.js, js/engine_fx.js, js/targets.js and js/world.js):
 //   NIGHT_FX.uNav     x: nav light / strobe intensity multiplier, y: minimum sprite size in px
@@ -99,16 +103,34 @@ export const TIME_PRESETS = {
 };
 export const TIME_NAMES = Object.keys(TIME_PRESETS);
 
+/** Boot: build what a preset change would otherwise build mid-game (the ground lights, before the shader precompile) and
+ *  queue the idle-time bakes of every preset's light direction (World.queueLighting), most used first. */
+export function prewarmTimeOfDay(world, { bake = true } = {}) {
+  if (!world) return;
+  if (world._buildGroundLights && !world.groundLights && TIME_NAMES.some((n) => TIME_PRESETS[n].lights.ground > 0)) {
+    world._buildGroundLights(); world.groundLights.visible = false;
+  }
+  if (bake && world.queueLighting) for (const n of ['golden', 'dusk', 'overcast', 'night', 'evening']) world.queueLighting(TIME_PRESETS[n].sun);
+}
+
 /** The preset object for a name; unknown or missing names give 'day'. */
 export function timePreset(name) { return TIME_PRESETS[name] || TIME_PRESETS.day; }
 
 /**
  * Apply preset `name` to { world, post, weapons } (each optional). Values only; World.setLighting skips the sky,
- * shadow and environment rebuilds when nothing they depend on changed. Returns the preset name actually applied.
+ * shadow and environment rebuilds when nothing they depend on changed. `glass` (0..1) blends the preset toward its red
+ * Glassfall variant (glassfallPreset); env: true / 'defer' / false (World.setLighting). Returns the preset name applied.
  */
-export function applyTimeOfDay(name, { world = null, post = null, weapons = null } = {}) {
-  const key = TIME_PRESETS[name] ? name : 'day', P = TIME_PRESETS[key];
-  if (world && world.setLighting) world.setLighting(P);
+export function applyTimeOfDay(name, { world = null, post = null, weapons = null } = {}, glass = 0, env = true) {
+  const key = TIME_PRESETS[name] ? name : 'day';
+  applyPreset(glass > 0 ? glassfallPreset(key, glass) : TIME_PRESETS[key], { world, post, weapons }, env);
+  return key;
+}
+
+/** Apply a preset object (a TIME_PRESETS entry or a glassfallPreset blend) to { world, post, weapons }. env = false
+ *  skips the environment-map rebuild (World.setLighting). */
+export function applyPreset(P, { world = null, post = null, weapons = null } = {}, env = true) {
+  if (world && world.setLighting) world.setLighting(P, env);
   if (post) {
     const q = P.post;
     post.exposure = q.exposure; post.bloomStrength = q.bloom; post.bloomThreshold = q.threshold; post.flareStrength = q.flare;
@@ -122,5 +144,80 @@ export function applyTimeOfDay(name, { world = null, post = null, weapons = null
   nav.x = L.nav; nav.y = L.navPx;
   NIGHT_FX.engine = L.engine;
   NIGHT_FX.uGround.value = L.ground;
-  return key;
+}
+
+// ---- The Glassfall (js/glassfall.js): thunderglass warheads turn the sky red ------------------------------------------
+// GLASSFALL is a red variant of whichever preset is current, not a preset of its own: colours take its hue at the base
+// preset's brightness (so a red day stays a day and a red evening stays an evening), and the brightness terms scale the
+// base's. The sun direction is the base's, so a blend never re-bakes the terrain shadow: World.setLighting only re-grades
+// the cached sky table (well under a millisecond) and, on the last step only, the environment, copied from the red end
+// state World.prepareEnvVariant rendered at mission load (js/glassfall.js prepare; steps run one frame after each
+// detonation, under the flash).
+// glassfallPreset(name, k) linearly blends the base preset toward that variant (k = 0: the base, 1: fully red).
+export const GLASSFALL = {
+  sunColor: [1, 0.3, 0.17], skyAmb: [1, 0.3, 0.26], groundAmb: [1, 0.36, 0.28],   // hues (scaled to the base's luminance)
+  skyTint: [4.2, 0.55, 0.26], skySat: 1.15, skyK: 0.55, skyBase: [0.0045, 0.0006, 0.0005],   // tint relative to the base's
+  disc: { k: 0.8, tint: [1, 0.38, 0.28] }, stars: 0.4, fog: 1.45,
+  light: { color: [1, 0.36, 0.24], k: 0.95 }, hemi: { sky: [1, 0.36, 0.3], ground: [1, 0.42, 0.32], k: 1 }, env: 0.9,
+  clouds: { tint: [1.4, 0.45, 0.38] }, water: { tint: [1.1, 0.45, 0.4], spec: 0.85 },
+  post: { exposure: 1.04, bloom: 0.08, flare: 0.6, sat: 1.06, contrast: 1.04, wb: [1.12, 0.9, 0.87] },
+  smoke: { amb: [1, 0.42, 0.36] },
+};
+const lum = (c) => 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+const hex3 = (h, o) => { o[0] = ((h >> 16) & 255) / 255; o[1] = ((h >> 8) & 255) / 255; o[2] = (h & 255) / 255; return o; };
+const toHex = (c) => (Math.round(Math.min(1, Math.max(0, c[0])) * 255) << 16) | (Math.round(Math.min(1, Math.max(0, c[1])) * 255) << 8) | Math.round(Math.min(1, Math.max(0, c[2])) * 255);
+const _a = [0, 0, 0], _b = [0, 0, 0], _c = [0, 0, 0];
+const _blend = {};   // the result object of glassfallPreset, reused (one blend in use at a time)
+/** out = lerp(a, hue scaled to a's luminance x gain, k) (3-vectors). */
+function towardHueMax(out, a, hue, k) {   // the same for a display colour (0..1): hue scaled to a's brightest channel
+  const s = Math.max(a[0], a[1], a[2]) / Math.max(hue[0], hue[1], hue[2]);
+  for (let i = 0; i < 3; i++) out[i] = a[i] + (hue[i] * s - a[i]) * k;
+  return out;
+}
+function towardHue(out, a, hue, k, gain = 1) {
+  const s = lum(a) / Math.max(1e-6, lum(hue)) * gain;
+  for (let i = 0; i < 3; i++) out[i] = a[i] + (hue[i] * s - a[i]) * k;
+  return out;
+}
+const mix = (a, b, k) => a + (b - a) * k;
+/**
+ * Preset `name` blended toward its red Glassfall variant by k (0..1). Returns a shared object (overwritten by the next
+ * call; applyPreset copies the values out). Called on detonations and mission loads, never per frame.
+ */
+export function glassfallPreset(name, k) {
+  const B = timePreset(name), G = GLASSFALL, o = _blend;
+  k = Math.min(1, Math.max(0, k));
+  o.label = B.label + ' (Glassfall)'; o.sun = B.sun;
+  o.sunColor = towardHue(o.sunColor || [0, 0, 0], B.sunColor, G.sunColor, k, 0.95);
+  o.skyAmb = towardHue(o.skyAmb || [0, 0, 0], B.skyAmb, G.skyAmb, k);
+  o.groundAmb = towardHue(o.groundAmb || [0, 0, 0], B.groundAmb, G.groundAmb, k);
+  const S = o.sky || (o.sky = { k: 1, tint: [1, 1, 1], sat: 1, base: [0, 0, 0] });
+  S.k = mix(B.sky.k, B.sky.k * G.skyK, k); S.sat = mix(B.sky.sat, G.skySat, k);
+  for (let i = 0; i < 3; i++) {
+    S.tint[i] = mix(B.sky.tint[i], B.sky.tint[i] * G.skyTint[i], k);
+  }
+  { const s = Math.max(lum(B.sky.base), lum(G.skyBase) * Math.min(1, B.sky.k)) / lum(G.skyBase);   // the red glow
+    for (let i = 0; i < 3; i++) S.base[i] = mix(B.sky.base[i], G.skyBase[i] * s, k); }
+  const D = o.disc || (o.disc = { k: 1, tint: [1, 1, 1] });
+  D.k = mix(B.disc.k, B.disc.k * G.disc.k, k);
+  for (let i = 0; i < 3; i++) D.tint[i] = mix(B.disc.tint[i], G.disc.tint[i], k);
+  o.stars = mix(B.stars, B.stars * G.stars, k); o.fog = mix(B.fog, B.fog * G.fog, k);
+  const Li = o.light || (o.light = { color: 0, intensity: 1 });
+  Li.color = toHex(towardHueMax(_c, hex3(B.light.color, _a), G.light.color, k)); Li.intensity = mix(B.light.intensity, B.light.intensity * G.light.k, k);
+  const H = o.hemi || (o.hemi = { sky: 0, ground: 0, intensity: 1 });
+  H.sky = toHex(towardHueMax(_c, hex3(B.hemi.sky, _a), G.hemi.sky, k)); H.ground = toHex(towardHueMax(_c, hex3(B.hemi.ground, _b), G.hemi.ground, k));
+  H.intensity = mix(B.hemi.intensity, B.hemi.intensity * G.hemi.k, k);
+  o.env = mix(B.env, B.env * G.env, k);
+  const C = o.clouds || (o.clouds = { cut: 0.5, tint: [1, 1, 1], puff: 1 });
+  C.cut = B.clouds.cut; C.puff = B.clouds.puff; towardHue(C.tint, B.clouds.tint, G.clouds.tint, k);
+  const W = o.water || (o.water = { tint: [1, 1, 1], spec: 1 });
+  towardHue(W.tint, B.water.tint, G.water.tint, k); W.spec = mix(B.water.spec, B.water.spec * G.water.spec, k);
+  const P = o.post || (o.post = { exposure: 1, bloom: 0.5, threshold: 1, flare: 1, sat: 1, contrast: 1, wb: [1, 1, 1] }), q = B.post;
+  P.exposure = mix(q.exposure, q.exposure * G.post.exposure, k); P.bloom = mix(q.bloom, q.bloom + G.post.bloom, k); P.threshold = q.threshold;
+  P.flare = mix(q.flare, q.flare * G.post.flare, k); P.sat = mix(q.sat, q.sat * G.post.sat, k); P.contrast = mix(q.contrast, q.contrast * G.post.contrast, k);
+  for (let i = 0; i < 3; i++) P.wb[i] = mix(q.wb[i], q.wb[i] * G.post.wb[i], k);
+  const M = o.smoke || (o.smoke = { sun: 1, amb: [0, 0, 0] });
+  M.sun = B.smoke.sun; towardHue(M.amb, B.smoke.amb, G.smoke.amb, k);
+  o.lights = B.lights;
+  return o;
 }

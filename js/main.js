@@ -21,8 +21,9 @@ import { fullscreenSupported, onFullscreenChange } from './fullscreen.js';
 import { TouchControls } from './touch.js';
 import { Music } from './music.js';
 import { Flights, SLOTS as FLIGHT_SLOTS, mulberry32, isHolding, orbitRadius, HOLD_MAX, SCRAMBLE_MAX } from './flights.js';
-import { InfinityRun } from './infinity.js';
-import { applyTimeOfDay } from './timeofday.js';
+import { InfinityRun, timeForRound } from './infinity.js';
+import { applyTimeOfDay, prewarmTimeOfDay, timePreset } from './timeofday.js';
+import { Glassfall } from './glassfall.js';
 
 // Fallback campaign (replaced by js/missions.js data once it exists): PW-style missions made of phases of groups.
 const FALLBACK_AIR_TYPES = {
@@ -81,10 +82,14 @@ const ENEMY_MISSILE_TURN = 0.6;  // enemy shots: turn-limit scale, the same on e
 // than the global (enemy, dodgeable) profile: from the 2.8 km lock range they run down a bandit fleeing straight at full
 // speed in ~6 s. turnScale 1.3 keeps the old turn radius at the higher speed (1000 / 760 m/s), so close crossing shots
 // don't get worse; a 13 m fuse (enemy missiles are cut to 11 m to stay dodgeable). With the pursuit-style guidance
-// (js/weapons.js _guide) tail chases, gentle turns and head-ons inside ~1.5 km connect, while high crossing angles,
-// max-range shots at a hard turner and evading veterans and aces mostly miss. Per-shot values on the Missile, set in
-// onMissileLaunch.
-const PLAYER_MISSILE = { maxSpeed: 1000, boostTime: 2.4, drag: 0.7e-4, life: 8.5, turnScale: 1.3, fuse: 13 };
+// (js/weapons.js _guide) tail chases (an evading bandit included), gentle turns and head-ons inside ~1.5 km connect,
+// while high crossing angles and long shots at a hard turner or an evading bandit mostly miss; aces beat some good
+// shots with flares (js/ai.js break discipline). blindTime: on a tail-aspect launch inside 1.8 km the seeker's blind
+// range is at most 0.05 s of closure (15-25 m) instead of the flat 90 m, which in a close tail chase (a missile still
+// accelerating, closing at 250-450 m/s) left 0.2-0.35 s unguided: long enough for an ordinary evasive turn to slip the
+// 13 m fuse. Crossing, head-on and long shots keep 90 m (js/weapons.js fireMissile). Per-shot values on the Missile,
+// set in onMissileLaunch.
+const PLAYER_MISSILE = { maxSpeed: 1000, boostTime: 2.4, drag: 0.7e-4, life: 8.5, turnScale: 1.3, fuse: 13, blindTime: 0.05 };
 const WORLD_UP = new THREE.Vector3(0, 1, 0);
 const PARAMS = new URLSearchParams(location.search);
 
@@ -156,6 +161,7 @@ class Game {
     this.aimDir = new THREE.Vector3(0, 0, -1); this._qInv = new THREE.Quaternion();
     this.aimUp = new THREE.Vector3(0, 1, 0); this._lookDir = new THREE.Vector3(0, 0, -1); this._aimQ = new THREE.Quaternion();
     this._ovRoll = 0; this._ovPitch = 0; this._behindDir = 0;
+    this._aimPush = false; this._rollSide = 0; this._aimLx = 0; this._aimTrim = 0; this._aimPI = 0;
     // Player settings (the settings menu replaces this object when it lands)
     this.settings = loadSettings();   // persisted player settings (menu module); the menu edits this object in place
     this.frame = this.makeFrame();
@@ -267,6 +273,10 @@ class Game {
       ? new Squadron(this.scene, { world: this.world, tunnel: this.tunnel, profiler: this.profiler, fxQuality: PRESETS[this.quality].sub, worldHalf: WORLD_HALF })
       : null;
     this.allies = this.squad ? this.squad.allies : [];   // squadmates flying this mission (isAlly, team 'player', callsign)
+    // The Glassfall story events (js/glassfall.js: M15 phase 2, M20's ending): pooled blasts and the untargetable Q12,
+    // built before the shader precompile. The Q12's team 'glass' tests an empty target list
+    this.glassfall = new Glassfall(this, { fxQuality: PRESETS[this.quality].sub, worldHalf: WORLD_HALF });
+    this.teamTargets.glass = [];
     if (this.squad) {
       for (const a of Object.values(this.squad.members)) this.allAircraft.push(a);
       this.weapons.damageFilter = (target, dmg, shooter, kind, m) => this.squad.damage(target, dmg, shooter, kind, m);
@@ -299,6 +309,7 @@ class Game {
     this.resetPlayer();
     this.chase.snap(this.player);
     this.resize();
+    prewarmTimeOfDay(this.world, { bake: !this.bench });   // night ground lights before the precompile; idle-time preset bakes
     if (!PARAMS.has('noprecompile')) this.precompileShaders();
     if (!this.bench && !PARAMS.has('nowarm')) this.warmUpEffects();
     renderer.domElement.addEventListener('webglcontextlost', () => console.warn('WebGL context lost at t=' + this.time.toFixed(2) + ' (' + this.state + ')'), false);
@@ -355,12 +366,25 @@ class Game {
       // Step the effects through their lifecycle (missile ignition, smoke, flares burning, debris, decay) and render
       // each stage once, so every material/blend/state combination gets its pipeline built now rather than mid-fight.
       const r = this.renderer, prev = r.getRenderTarget();
+      // the Glassfall's blast materials and the night lights (settlements, unit lights) stay hidden until mid-mission too
+      // (an INFINITY round turning dark showed the unit lights for the first time: a 0.2-1.2 s first-use stall)
+      const extras = [this.world.groundLights, this.ground.lights].filter(Boolean), was = extras.map((o) => o.visible);
+      this.glassfall.warmUp(true, _v2.copy(P).add(new THREE.Vector3(0, 0, -320)));
+      for (const o of extras) o.visible = true;
       for (let step = 0; step < 14; step++) {
         w.update(step === 0 ? 1 / 60 : 0.15, this.combatList, cam);
         if (step === 6) { w.fireMissile(dummy, null); _v.copy(P).add(new THREE.Vector3(-70, 10, -260)); w.explode(_v, 0.7); }
         if (this.post.rtScene) { r.setRenderTarget(this.post.rtScene); r.render(this.scene, cam); }
       }
+      // and one pass with frustum culling off, so what the warm-up camera can't see draws once too: the tunnel's three
+      // materials otherwise stalled ~1 s each (first use) the first time the ridge came into view, title orbit included
+      const culled = [];
+      this.scene.traverse((o) => { if (o.frustumCulled && o.visible && (o.isMesh || o.isPoints || o.isLine)) { culled.push(o); o.frustumCulled = false; } });
+      if (this.post.rtScene) { r.setRenderTarget(this.post.rtScene); r.render(this.scene, cam); }
+      for (const o of culled) o.frustumCulled = true;
       r.setRenderTarget(prev);
+      this.glassfall.warmUp(false);
+      extras.forEach((o, i) => { o.visible = was[i]; });
       dummy.kill();
       for (const m of w.missiles) if (m.owner === dummy) m.alive = false;
       if (this.player.vapor) this.player.vapor.visible = false;
@@ -497,7 +521,9 @@ class Game {
     const list = this.missions, n = list.length;
     this.missionIndex = i;
     const M = this.mission = list[((i % n) + n) % n];
-    this.applyTime(M.time);                // lighting preset (js/timeofday.js), before anything spawns
+    this.glassfall.reset();                // no Glassfall event running (js/glassfall.js)
+    this.applyTime(M.time, M.red ? 1 : 0); // lighting preset (js/timeofday.js; red: its Glassfall variant), before anything spawns
+    this.glassfall.prepare(M);             // a Glassfall mission: its red end state's environment map, rendered now
     this.resetPlayer();
     this.setSortieFrame();                 // the frame every phase of the mission is placed in (spawnGroup)
     this._nextAnchor = null;               // (nextPhase: later phases are anchored where the previous one's targets stood)
@@ -530,17 +556,24 @@ class Game {
   }
   /** Lighting preset `name` (js/timeofday.js; ?tod=<name> overrides it): values only, rebuilds the sky, shadow and
    *  environment only when the preset changes. */
-  applyTime(name) {
+  applyTime(name, glass = 0, env = true) {
     const want = PARAMS.has('tod') ? PARAMS.get('tod') : this.bench ? 'day' : name;   // benchmarks stay comparable: day
-    if (want === this.timeOfDay && this._todApplied) return;
-    this.timeOfDay = applyTimeOfDay(want, { world: this.world, post: this.post, weapons: this.weapons });
+    if (this.bench) glass = 0;
+    if (want === this.timeOfDay && glass === this.todGlass && this._todApplied) { if (env === true) this.world.refreshEnvironment(); return; }
+    this.timeOfDay = applyTimeOfDay(want, { world: this.world, post: this.post, weapons: this.weapons }, glass, env);
+    this.todGlass = glass;                 // 0..1 toward the red Glassfall variant (js/glassfall.js steps it)
+    this.bloomBase = this.post.bloomStrength;   // the preset's bloom (the Glassfall's bloom pulse adds to it)
     this._todApplied = true;
   }
   /** Spawn the next phase of the current mission, or complete the mission after the last one. */
   nextPhase() {
     const M = this.mission;
     this.phaseIndex++;
-    if (this.phaseIndex >= M.phases.length) { this.missionComplete(); return; }
+    if (this.phaseIndex >= M.phases.length) {
+      // M20: clearing the last phase starts the Glassfall ending in place of the completion (it completes the mission)
+      if (M.glassfall === 'mainspring' && !this.glassfall.played) { this.glassfall.startMainspring(); return; }
+      this.missionComplete(); return;
+    }
     const P = M.phases[this.phaseIndex];
     let air = 0, ground = 0, naval = 0;
     const allowed = (this.diff || DIFFICULTY.normal).groups;
@@ -593,6 +626,7 @@ class Game {
     const parts = [];
     if (air) parts.push(`${air} AIR`); if (ground) parts.push(`${ground} GROUND`); if (naval) parts.push(`${naval} NAVAL`);
     if (parts.length) this.message(parts.join(' · ') + ' TARGETS', false, 4);
+    if (P.glassfall) this.glassfall.startSalvos(P.glassfall);   // M15: the Thunderhead salvos (js/glassfall.js)
   }
   missionComplete() {
     this.missionDoneT = 0.001;
@@ -608,6 +642,7 @@ class Game {
   startInfinity() {
     if (this.infinity && !this.infinity.over) this.infinity.finish('ABANDONED');
     const seed = PARAMS.has('infseed') ? Number(PARAMS.get('infseed')) : undefined;
+    this.glassfall.reset();
     const run = this.infinity = new InfinityRun({ difficulty: DIFFICULTY, missileLoad: FLIGHT.MAX_MISSILES, missileDamage: this.weapons.missileDamage, seed });
     this.mission = run.mission;            // { name: 'Infinity', wingmen: ['2', '3'], phases: [] }: both squadmates fly
     this.score = 0; this.kills = 0;
@@ -637,7 +672,8 @@ class Game {
    *  starts (spawnGroup), every draw from the round's seed. */
   nextRound() {
     const plan = this.infinity.nextRound();
-    this.applyTime(plan.time);             // INFINITY rotates the lighting every few rounds (js/infinity.js timeForRound)
+    this.applyTime(plan.time, 0, 'defer'); // INFINITY rotates the lighting every few rounds (js/infinity.js timeForRound); the
+                                           // environment map follows two frames later (World.setLighting)
     this.applyRamp(plan.ramp);
     this.infT = -1; this.waveTimer = 0;
     this.wave = plan.round; this.phaseIndex = plan.round - 1;
@@ -682,7 +718,15 @@ class Game {
   updateRounds(dt, left) {
     const run = this.infinity, p = this.player;
     if (!p.alive || run.over) return;
-    if (this.infT >= 0) { this.infT -= dt; if (this.infT < 0) this.nextRound(); return; }
+    if (this.infT >= 0) {
+      this.infT -= dt;
+      // the next round's lighting, while nothing is flying: its shadow and sky bakes (if idle time hasn't done them) and,
+      // mid-intermission, its environment map (World.prepareEnvVariant), so the round change only swaps cached data
+      const P = this._nextTod;
+      if (P) { this.world.bakeTick(2); if (this.infT < 3) { this.world.prepareEnvVariant(P); this._nextTod = null; } }
+      if (this.infT < 0) this.nextRound();
+      return;
+    }
     if (left > 0) { this.waveTimer = 0; return; }
     this.waveTimer += dt;
     if (this.waveTimer <= 0.1) return;
@@ -692,6 +736,9 @@ class Game {
     p.health = run.repairedHealth(p.health, 100);                                               // hull +35 %, capped
     if (p.health >= 35) this.lowHealthSaid = false;
     this.infT = I.seconds;
+    { const name = PARAMS.has('tod') ? PARAMS.get('tod') : this.bench ? 'day' : timeForRound(run.round + 1, run.seed);
+      this._nextTod = name !== this.timeOfDay ? timePreset(name) : null;
+      if (this._nextTod) this.world.queueLighting(this._nextTod.sun, true); }
     this.message('AREA CLEAR', true, 2.5);
     this.message(`REARMED · HULL ${Math.round(p.health)}%`, false, 3.5);
     this.say('waveClear', 2); this.audio.ui('wave');
@@ -1056,6 +1103,7 @@ class Game {
     ac.brain.missileReload = type.missileReload || 0;   // per-type override (Mainspring: a third of the player's hardpoint reload)
     if (type.missileReload) ac.missiles = 999;
     ac.brain.passive = type.armed === false;
+    ac.brain.evasive = false; ac.brain.lockedOn = false; ac._glass = false;   // pooled: the Glassfall tags its Thunderheads
     ac.brain.gunsOnly = type.armed === false ? 'none' : null;
     if (ac.brain.passive) { ac.getForward(ac.brain.transitDir); ac.brain.transitAlt = pos.y; ac.brain.state = 'transit'; }
     ac.brain.setTransitGoal(null);                       // pooled: a leaker's goal must not carry over
@@ -1359,7 +1407,7 @@ class Game {
   onMissileLaunch(m) {
     if (m.owner && m.owner.team === 'player') {   // the player's and the squadmates' shots: the fast profile
       const P = PLAYER_MISSILE;
-      m.maxSpeed = P.maxSpeed; m.boostTime = P.boostTime; m.drag = P.drag; m.life = P.life; m.turnScale = P.turnScale; m.fuse = P.fuse;
+      m.maxSpeed = P.maxSpeed; m.boostTime = P.boostTime; m.drag = P.drag; m.life = P.life; m.turnScale = P.turnScale; m.fuse = P.fuse; m.blindTime = P.blindTime;
     }
     if (this.flights && m.target && m.target.brain && m.owner && m.owner.team === 'player') this.flights.attacked(m.target, this.time);
     if (this.squad && this.squad.onMissileLaunch(m, this.weapons)) return;   // a squadmate's shot: lethal or a dud
@@ -1413,22 +1461,33 @@ class Game {
     // enemies are drawn larger than life, more so far from the camera (Aircraft.updateDrawScale: a few flops each)
     for (let i = 0; i < this.enemies.length; i++) { const e = this.enemies[i]; if (e.alive) e.updateDrawScale(this.camera.position); }
 
-    prof.cpuEnd('logic'); prof.cpuBegin('world');
-    this.world.update(dt, this.camera, this.time);
-    if (this._hidden) for (const o of this._hidden) o.visible = false;
-    if (this.hideJets) for (const ac of this.allAircraft) ac.mesh.visible = false;
-    prof.cpuEnd('world');
-    // Sun screen position for lens effects
-    this.camera.updateMatrixWorld();
-    _v.copy(this.camera.position).addScaledVector(this.world.sunDirection, 20000).project(this.camera);
-    const sunVisible = _v.z < 1 && Math.abs(_v.x) < 1.4 && Math.abs(_v.y) < 1.4;
-    this.post.setSunScreenPos(_v.x * 0.5 + 0.5, _v.y * 0.5 + 0.5, sunVisible);
-    prof.cpuBegin('render');
-    this.post.render(this.scene, this.camera, dt);
-    prof.cpuEnd('render'); prof.cpuBegin('hud');
-    this.buildFrame(dt);
-    if (!this.noHud) this.hud.render(this.frame);
-    prof.cpuEnd('hud');
+    prof.cpuEnd('logic');
+    // Paused: the simulation is frozen, so half a second after pausing the view behind the pause menu is redrawn at
+    // 15 Hz instead of every display frame (menus and input still run every frame): no full-rate GPU and CPU drawing
+    // while nobody is flying (phones heat up and drain in a pause menu otherwise). The canvas keeps the last frame.
+    let draw = true;
+    if (this.state === 'paused' && !this.bench) {
+      this._pausedT = (this._pausedT || 0) + dt; this._pauseDrawT = (this._pauseDrawT || 0) + dt;
+      if (this._pausedT > 0.5 && this._pauseDrawT < 1 / 15) draw = false; else this._pauseDrawT = 0;
+    } else this._pausedT = 0;
+    if (draw) {
+      prof.cpuBegin('world');
+      this.world.update(dt, this.camera, this.time);
+      if (this._hidden) for (const o of this._hidden) o.visible = false;
+      if (this.hideJets) for (const ac of this.allAircraft) ac.mesh.visible = false;
+      prof.cpuEnd('world');
+      // Sun screen position for lens effects
+      this.camera.updateMatrixWorld();
+      _v.copy(this.camera.position).addScaledVector(this.world.sunDirection, 20000).project(this.camera);
+      const sunVisible = _v.z < 1 && Math.abs(_v.x) < 1.4 && Math.abs(_v.y) < 1.4;
+      this.post.setSunScreenPos(_v.x * 0.5 + 0.5, _v.y * 0.5 + 0.5, sunVisible);
+      prof.cpuBegin('render');
+      this.post.render(this.scene, this.camera, dt);
+      prof.cpuEnd('render'); prof.cpuBegin('hud');
+      this.buildFrame(dt);
+      if (!this.noHud) this.hud.render(this.frame);
+      prof.cpuEnd('hud');
+    }
     this.updateTitleStatus();
     if (!this.bench || PARAMS.has('dynres')) this.updateDynamicResolution(dt);
     this.updateOverlay(dt);
@@ -1459,6 +1518,7 @@ class Game {
       this.profiler.cpuEnd('allies');
     }
     this.weapons.update(dt, this.combatList, this.camera, this.teamTargets);
+    this.glassfall.update(dt, false);      // blasts keep fading (the event itself waits: the player is down or done)
     if (this.combatDirty) this.rebuildCombatList();
     this.audio.setEngine({ throttle: 0, speedFrac: 0, afterburner: false, alive: false });
     this.ageMessages(dt);
@@ -1537,6 +1597,7 @@ class Game {
       const h = Math.max(world.getHeight(e.position.x, e.position.z), 0);
       if (e.position.y < h + 3 * e.sizeScale || (this.tunnel && this.tunnel.collide(e.position, 6) === 'wall')) {   // (life size)
         if (this.allied.leakers.length > 0 && this.allied.crashLeak(e)) continue;   // a leaker that hit the sea at the fleet: a leak
+        if (e._glass && this.glassfall.crash(e)) continue;                          // a Thunderhead down in the city: a strike
         weapons.aircraftDeath(e); e.kill(); this.combatDirty = true; if (!this.infinity) this.score += 300; this.message('BANDIT CRASHED', false, 2);
         if (this.target === e) { this.target = null; this.lockTimer = 0; this.locked = false; }
         continue;
@@ -1593,6 +1654,8 @@ class Game {
     if (this.flareT > 0) this.flareT = Math.max(0, this.flareT - dt);
     this.ground.update(dt, p, weapons, this._onFlak, this.diff || DIFFICULTY.normal);   // flak: the difficulty's aaGuns, aaError
     weapons.update(dt, this.combatList, this.camera, this.teamTargets);
+    // The Glassfall (js/glassfall.js): strikes, salvos, the Q12, detonations; it completes the mission itself
+    this.profiler.cpuBegin('glassfall'); this.glassfall.update(dt, p.alive); this.profiler.cpuEnd('glassfall');
     if (this.combatDirty) this.rebuildCombatList();   // a unit died this frame: drop it from the target lists
     // Mission progression: a phase is cleared when no enemy aircraft or ground/naval targets remain (friendlies don't count)
     let surfaceAlive = 0;
@@ -1600,6 +1663,8 @@ class Game {
     if (this.missionDoneT > 0) {
       this.missionDoneT += dt;
       if (this.missionDoneT > 4.5) { this.missionDoneT = 0; this.setState('complete'); this.showDebrief(true); }
+    } else if (this.glassfall.active) {
+      // a Glassfall event runs: no phase clears (its Thunderheads are optional); it calls missionComplete when it ends
     } else if (this.infinity) {
       this.updateRounds(dt, aliveEnemies + surfaceAlive);   // INFINITY: rounds, not phases
     } else if (aliveEnemies + surfaceAlive === 0 && p.alive && this._pending && this._pending.length) {
@@ -1637,7 +1702,7 @@ class Game {
 
   updateTargeting(dt) {
     const p = this.player, input = this.input;
-    if (this.target && !this.target.alive) { this.target = null; this.lockTimer = 0; this.locked = false; }
+    if (this.target && (!this.target.alive || this.target.untargetable)) { this.target = null; this.lockTimer = 0; this.locked = false; }
     if (!this.target) { this.target = this.bestTarget(); this.lockTimer = 0; }
     // RB: tap = next target, hold = padlock
     if (input.targetPressed) { this.tbDownTime = this.time; this.padlockEngaged = false; }
@@ -1676,6 +1741,11 @@ class Game {
       const was = this.locked; this.locked = this.lockTimer >= LOCK_TIME - 1e-6;
       if (this.locked && !was) { this.audio.ui('select'); this.target._lockedOnce = true; }
     } else { this.lockTimer = 0; this.locked = false; }
+    // An evasive brain (the Glassfall's Thunderheads) weaves while the player holds or builds a lock on it
+    const lk = this.target && this.target.alive && this.target.brain && (this.locked || this.lockTimer > 0.25) ? this.target.brain : null;
+    if (this._lockBrain && this._lockBrain !== lk) this._lockBrain.lockedOn = false;
+    if (lk) lk.lockedOn = true;
+    this._lockBrain = lk;
   }
   /** Line of sight to the current target, cached: re-checked every LOS_PERIOD and at once when the target changes.
    *  updateTargeting asks only while the target is otherwise lockable. */
@@ -1830,6 +1900,7 @@ class Game {
       case 'perfOverlay': if (this.ui.perf) this.ui.perf.hidden = !v; this.syncProfilerCpu(); break;
       case 'invertPitch': this.input.setInvertPitch(!!v); if (this.touch && this.touch.setPitchInverted) this.touch.setPitchInverted(!!v); break;
       case 'touch': if (this.touch) this.touch.setMode(v || 'auto'); break;
+      case 'expoPitch': case 'expoRoll': case 'expoYaw': if (this.input.setExpo) this.input.setExpo(key.slice(4).toLowerCase(), v); break;
       case 'cameraShake': this.chase.shakeScale = v === false ? 0 : 1; break;
       case 'screenFlash': this.post.flashEnabled = v === true; break;   // white PostFX flash (explosions, flak, shot down)
       case 'master': this.audio.setMaster(Number(v)); break;
@@ -1857,6 +1928,7 @@ class Game {
   }
   quitToTitle() {
     this.leaveInfinity();
+    this.glassfall.reset();
     for (const e of this.enemies) e.kill();
     if (this.squad) this.squad.hide();
     this.ground.clear(); this.allied.clear();
@@ -1926,6 +1998,7 @@ class Game {
     this.lookYaw = 0; this.lookPitch = 0;
     this.aimDir.copy(_fwd); this.aimUp.set(0, 1, 0); this._lookDir.copy(_fwd);
     this._ovRoll = 0; this._ovPitch = 0; this._behindDir = 0;
+    this._aimPush = false; this._rollSide = 0; this._aimLx = 0; this._aimTrim = 0; this._aimPI = 0;
   }
   /** Mouse moves the aim (or the camera alone while free look is held); the jet is flown toward the aim. */
   updateAim(dt) {
@@ -1971,22 +2044,53 @@ class Game {
     const ang = Math.acos(THREE.MathUtils.clamp(-lz, -1, 1));
     p.getUp(_up); p.getRight(_right);
     let pitch, roll, yaw;
-    if (ang < 0.14) {
-      pitch = ly * 8 - r.pitch * 0.25;
-      yaw = lx * 6 - r.yaw * 0.3;
-      const bank = Math.atan2(-_right.y, _up.y);
-      roll = -bank * 0.9 + lx * 2.5 - r.roll * 0.08;               // drift the wings level while fine-aiming
-    } else if (lz > 0.75) {
+    // Push or pull, decided in the jet's own frame with hysteresis: an aim point within ~50 deg of straight below the
+    // canopy floor and up to ~35 deg off is pushed onto rather than rolled inverted for (a nose-down attitude alone
+    // doesn't count), and it takes a clear move away (past ~46 deg, or off to the side) to switch back.
+    const pullErr = Math.atan2(lx, ly);
+    if (this._aimPush) { if (ang > 0.8 || Math.abs(pullErr) < 1.8 || lz > 0.75) this._aimPush = false; }
+    else if (ly < 0 && ang < 0.62 && Math.abs(pullErr) > 2.2) this._aimPush = true;
+    if (lz > 0.75) {
       // aim well behind: commit to one turn direction and pull hard until it comes around (no dithering)
       if (!this._behindDir) this._behindDir = lx >= 0 ? 1 : -1;
       const rollErr = Math.atan2(this._behindDir, Math.max(ly, 0.25));
       roll = rollErr * 2.4 - r.roll * 0.12; pitch = 1; yaw = this._behindDir * 0.3;
     } else {
-      const rollErr = Math.atan2(lx, ly);                            // roll the aim point overhead...
-      roll = rollErr * 2.4 - r.roll * 0.12;
-      pitch = Math.max(0, Math.cos(rollErr)) * Math.min(1, ang * 2.6) - r.pitch * 0.08;   // ...then pull
-      if (ly < 0 && ang < 0.35 && Math.abs(rollErr) > 2.2) { roll = lx * 3; pitch = ly * 5; }   // slightly below: push
-      yaw = lx * 1.2;
+      // Fine aim: pitch and rudder straight onto the aim with the wings drifting level (fading out near vertical). Lateral
+      // error banks the jet only through a filtered, dead-banded copy, so aim jitter and a jinking target's twitches go to
+      // rudder and pitch instead of see-sawing the ailerons. Integral trims, active only once the nose is settled near the
+      // aim, take up a steady offset (a target in a gentle turn) with a held bank and pitch rate.
+      const bank = Math.atan2(-_right.y, _up.y);
+      const lxF = this._aimLx += (lx - this._aimLx) * (1 - Math.exp(-dt / 0.15));
+      const lxB = Math.sign(lxF) * Math.max(0, Math.abs(lxF) - 0.008);
+      const settled = (1 - THREE.MathUtils.smoothstep(ang, 0.03, 0.06)) * (1 - THREE.MathUtils.smoothstep(Math.abs(r.pitch) + Math.abs(r.yaw), 0.08, 0.25));
+      const keep = settled + (1 - settled) * Math.exp(-dt / 0.2);
+      this._aimTrim = THREE.MathUtils.clamp(this._aimTrim * keep + lxF * 4 * dt * settled, -0.6, 0.6);
+      this._aimPI = THREE.MathUtils.clamp(this._aimPI * keep + ly * 2 * dt * settled, -0.4, 0.4);
+      const fRoll = -(bank - this._aimTrim) * 0.9 * THREE.MathUtils.clamp(_up.y * 2, 0, 1) + lxB * 2.5 - r.roll * 0.08;
+      const fPitch = ly * 8 + this._aimPI - r.pitch * 0.25, fYaw = lx * 6 - r.yaw * 0.3;
+      let bRoll, bPitch;
+      if (this._aimPush) {
+        const rollErr = Math.atan2(lx, -ly);                         // roll the aim straight below, then push
+        bRoll = rollErr * 2.4 - r.roll * 0.12;
+        bPitch = -Math.max(0, Math.cos(rollErr)) * Math.min(1, ang * 5) - r.pitch * 0.08;
+        this._rollSide = 0;
+      } else {
+        // roll the aim overhead, then pull; near straight below, commit to one roll direction so the target doesn't flip
+        // between +180 and -180 deg as the aim wanders across the jet's centreline
+        let rollErr = pullErr;
+        if (Math.abs(rollErr) > 2.5) {
+          if (!this._rollSide) this._rollSide = Math.sign(rollErr) || 1;
+          if (Math.sign(rollErr) !== this._rollSide) rollErr += this._rollSide * 2 * Math.PI;
+        } else this._rollSide = 0;
+        bRoll = rollErr * 2.4 - r.roll * 0.12;
+        bPitch = Math.max(0, Math.cos(rollErr)) * Math.min(1, ang * 2.6) - r.pitch * 0.08;
+      }
+      // blend fine -> big over 7-14 deg instead of switching at one angle, so a wandering aim doesn't flip the roll command
+      const w = THREE.MathUtils.smoothstep(ang, 0.12, 0.25);
+      roll = fRoll + (bRoll - fRoll) * w;
+      pitch = fPitch + (bPitch - fPitch) * w;
+      yaw = fYaw + (lx * 1.2 - fYaw) * w;
     }
     // The jet pushes at only PUSH_FACTOR of its pull rate: scale push commands to match, so small downward corrections are
     // as crisp as upward ones (a hard push still tops out at the jet's limit; well below the nose it rolls and pulls)

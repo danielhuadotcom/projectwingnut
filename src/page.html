@@ -177,6 +177,10 @@ body { margin: 0; background: var(--bg); color: var(--fg); font-family: var(--mo
   box-shadow: 0 0 0 1px rgba(2, 8, 14, 0.85), 0 0 12px rgba(156, 235, 255, 0.6); }
 .m-val { flex: none; min-width: 6ch; text-align: right; font: 700 13px/1 var(--mono); font-variant-numeric: tabular-nums; color: var(--pale); }
 .m-rowfoot { display: flex; padding: 16px 0 8px; }
+.m-expo { display: grid; grid-template-columns: minmax(0, 1fr) minmax(220px, 300px); align-items: center; gap: 5px 24px; padding: 10px 14px 14px 16px; border-bottom: 1px solid rgba(156, 235, 255, 0.08); }
+.m-expo-t { margin: 0; font: 400 11.5px/1.45 var(--mono); color: var(--muted); }
+.m-expo-t b { display: block; margin-bottom: 3px; font: 600 12px/1.2 var(--display); letter-spacing: 0.12em; text-transform: uppercase; color: var(--hud); }
+.m-expo-c { display: block; width: 100%; height: 132px; border: 1px solid var(--line); background: rgba(0, 0, 0, 0.22); }
 
 /* Mission select */
 .m-mbody { flex: 1 1 auto; min-height: 0; display: grid; grid-template-columns: minmax(250px, 340px) minmax(0, 1fr); margin: 18px -30px 0; border-top: 1px solid var(--line); }
@@ -277,6 +281,7 @@ body { margin: 0; background: var(--bg); color: var(--fg); font-family: var(--mo
   .m-mbody { margin: 14px -16px 0; }
   .m-mlist { padding: 8px 10px; }
   .m-row { grid-template-columns: minmax(0, 1fr); grid-template-areas: "t" "d" "c"; gap: 6px; padding: 12px 12px 14px; }
+  .m-expo { grid-template-columns: minmax(0, 1fr); gap: 6px; padding: 10px 12px 14px; }
   .m-ctl { margin-top: 4px; }
   .m-credit { grid-template-columns: minmax(0, 1fr); gap: 6px; }
   .m-actions .m-btn { flex-basis: 100%; }
