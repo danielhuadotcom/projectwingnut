@@ -14,7 +14,7 @@
 //                      so it hires mercenaries.
 //   Saltjaw Corsairs   sea-stack pirates who rob both sides and sell to whoever is buying.
 //   Loose Screws       the player's mercenary squadron: second-hand jets, questionable judgment. Wingnut (player) with
-//                      Cotter (#2, ex-navy) and Rivet (#3); a WSO in Wingnut's back seat; AWACS Claude on radar.
+//                      Cotter (#2, ex-navy) and Rivet (#3); Spanner, the WSO in Wingnut's back seat; AWACS Claude on radar.
 //   Chime Squadron     the Concord's clockwork elite in Orrery Works prototypes: Mainspring (commander and recurring ace:
 //                      each time she is shot down she comes back in a newer Orrery jet, always in her oxblood-and-gold
 //                      paint), Tick and Tock (interceptor twins), Cuckoo Flight (cadets), plus Shearpin Squadron
