@@ -166,15 +166,17 @@ function noOverlap(r, name) {
   check('no he/him lines about Mainspring', he === 0, he);
   log(`RADIO_OK split ${(100 * wso / n).toFixed(1)} % WSO`);
 }
-// 9) tunnel: the WSO's lines replace AWACS's; AWACS keeps the crash line. Death without Mainspring: AWACS
+// 9) tunnel: one speaker per trigger, WSO 60 % (rand < WSO_SHARE) else AWACS's own commentary; AWACS keeps the crash
+//    line. Death without Mainspring: AWACS
 {
-  const { r } = make(null, { rand: () => 0.99 });
-  r.say('tunnelApproach', { cooldown: 45 }); run(r, 4); r.say('tunnelEnter', { cooldown: 20 }); run(r, 5); r.say('tunnelExit', { cooldown: 20 }); run(r, 4);
-  r.say('tunnelCrash'); run(r, 4);
-  const s = starts(r);
-  check('tunnel: WSO approach/enter/exit', ['tunnel_1', 'tunnel_2', 'tunnel_3'].every((i) => s.some((e) => e.id === i && e.speaker === 'WSO')), s.map((e) => e.id));
-  check('tunnel: no AWACS tunnel commentary', !s.some((e) => /^tunnel(Approach|Enter|Exit)/.test(e.id)));
-  check('tunnel: AWACS crash line', s.some((e) => e.id.startsWith('tunnelCrash') && e.speaker === 'AWACS'));
+  const seq = (r) => { r.say('tunnelApproach', { cooldown: 45 }); run(r, 4); r.say('tunnelEnter', { cooldown: 20 }); run(r, 5); r.say('tunnelExit', { cooldown: 20 }); run(r, 4); r.say('tunnelCrash'); run(r, 4); return starts(r); };
+  const w = seq(make(null, { rand: () => 0 }).r);
+  check('tunnel (WSO roll): WSO approach/enter/exit', ['tunnel_1', 'tunnel_2', 'tunnel_3'].every((i) => w.some((e) => e.id === i && e.speaker === 'WSO')), w.map((e) => e.id));
+  check('tunnel (WSO roll): no AWACS tunnel commentary', !w.some((e) => /^tunnel(Approach|Enter|Exit)/.test(e.id)));
+  const s = seq(make(null, { rand: () => 0.99 }).r);
+  check('tunnel (AWACS roll): AWACS approach/enter/exit', ['tunnelApproach', 'tunnelEnter', 'tunnelExit'].every((k) => s.some((e) => e.id.startsWith(k) && e.speaker === 'AWACS')), s.map((e) => e.id));
+  check('tunnel (AWACS roll): no WSO tunnel lines', !s.some((e) => /^tunnel_\d/.test(e.id)));
+  check('tunnel: AWACS crash line', s.some((e) => e.id.startsWith('tunnelCrash') && e.speaker === 'AWACS') && w.some((e) => e.id.startsWith('tunnelCrash') && e.speaker === 'AWACS'));
   const d = make(1, { rand: () => 0.99 }).r; d.playerDown(false); run(d, 1);
   check('death without Mainspring: AWACS playerDown', ids(d)[0] && ids(d)[0].startsWith('playerDown'), ids(d));
   log('RADIO_OK tunnel and deaths');

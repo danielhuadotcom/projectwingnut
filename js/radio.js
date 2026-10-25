@@ -20,7 +20,7 @@
 // Story rules handled here: the WSO takes AWACS's tactical calls 60 % of the time where the pool has a version (in a
 // noAwacs mission every time, and AWACS says nothing); the WSO goes silent below the mission's wsoBlackout boss health;
 // The WSO voice can be switched off (wsoOn): AWACS then takes every pooled call and its own tunnel commentary, and
-// the WSO's script lines and WSO-only calls are silent. "Typical." from Mainspring replaces the AWACS death call while she is in the fight; the tunnel calls are the WSO's
+// the WSO's script lines and WSO-only calls are silent. "Typical." from Mainspring replaces the AWACS death call while she is in the fight; the tunnel calls go to the WSO WSO_SHARE of the time
 // (AWACS keeps its crash line); AWACS goes silent after the first detonation of the M20 Glassfall.
 import { DIALOGUE, DIALOGUE_PATH } from './dialogue_data.js';
 import { AWACS_CLIPS } from './awacs_clips.js';
@@ -158,11 +158,10 @@ export class Radio {
     if (this.t - (this._cool[key] ?? -1e9) < cd) return false;
     if (WSO_CALLS[key] && this.t < (this._next[key] ?? -1e9)) return false;
     if (this._has(key)) return false;                                     // no duplicates
-    const pri = CRITICAL.has(key) ? 'critical' : 'ambient';
-    // tunnel calls: the WSO's lines replace AWACS's commentary
-    if (this.tunnel[key] && this.wsoOn) {
-      if (this.wsoSilent) return false;
-      const it = this._story(this.tunnel[key], 'critical', key === 'tunnelEnter' ? 1.0 : 0);
+    const tun = this.tunnel[key], pri = CRITICAL.has(key) || tun ? 'critical' : 'ambient';
+    // tunnel calls: one speaker per trigger, the WSO's line WSO_SHARE of the time, else AWACS's own commentary
+    if (tun && this.wsoOn && !this.wsoSilent && (this.noAwacs || this.awacsSilent || !AWACS_CLIPS[key] || this.rand() < WSO_SHARE)) {
+      const it = this._story(tun, 'critical', key === 'tunnelEnter' ? 1.0 : 0);
       it.key = key; it.ttl = this.t + (key === 'tunnelEnter' ? 3.5 : CRIT_TTL);
       return this._enqueue(it);
     }
@@ -183,7 +182,7 @@ export class Radio {
       it = { kind: 'voice', id: key + '#' + i, speaker: 'AWACS', text: clips[i].text, dur: clips[i].dur, awacs: [key, i], pri };
     }
     it.key = key; it.at = this.t;
-    it.ttl = this.t + (EXPIRY[key] ?? (pri === 'critical' ? CRIT_TTL : AMBIENT_TTL));
+    it.ttl = this.t + (key === 'tunnelEnter' ? 3.5 : EXPIRY[key] ?? (pri === 'critical' ? CRIT_TTL : AMBIENT_TTL));
     return this._enqueue(it);
   }
 
