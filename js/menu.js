@@ -68,7 +68,7 @@ import { fullscreenSupported, isFullscreen, setFullscreen, onFullscreenChange } 
 // =================================================================================================================
 export const DEFAULT_SETTINGS = Object.freeze({
   quality: 'auto', perfOverlay: false, invertPitch: false, mouseSens: 1, mouseKeys: 'simple', touch: 'auto', cameraShake: true, screenFlash: false,
-  master: 0.8, music: 0.7, sfx: 0.9, voice: 1.0, wso: true, subtitles: true, difficulty: 'normal',
+  master: 0.8, music: 0.7, sfx: 0.9, voice: 1.0, wso: false, subtitles: true, difficulty: 'normal',
   expoPitch: STICK_EXPO, expoRoll: STICK_EXPO, expoYaw: STICK_EXPO, padLayout: 'mode2',
 });
 const STORE_KEY = 'wingnut.settings';

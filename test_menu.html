@@ -395,20 +395,20 @@ async function runSelfTest() {
   const swRow = menu.el.querySelector('.m-row[data-key="subtitles"]'), sub0 = settings.subtitles;
   swRow.querySelector('.m-label').click();
   check('clicking a toggle row flips it', settings.subtitles === !sub0);
-  check('WSO voice defaults On', DEFAULT_SETTINGS.wso === true);
+  check('WSO voice defaults Off', DEFAULT_SETTINGS.wso === false);
   const wsoRow = menu.el.querySelector('.m-row[data-key="wso"]');
   check('WSO voice row in Settings > Audio', !!wsoRow && !!wsoRow.closest('[data-tabpanel="audio"]'));
-  if (wsoRow) { wsoRow.querySelector('.m-label').click(); check('clicking WSO voice turns it Off', settings.wso === false && last()[0] === 'set' && last()[1] === 'wso', last()); }
+  if (wsoRow) { wsoRow.querySelector('.m-label').click(); check('clicking WSO voice turns it On', settings.wso === true && last()[0] === 'set' && last()[1] === 'wso', last()); }
   try {
     const keep = localStorage.getItem('wingnut.settings');
-    localStorage.setItem('wingnut.settings', JSON.stringify({ wso: false }));
-    check('WSO voice Off persists', loadSettings().wso === false);
+    localStorage.setItem('wingnut.settings', JSON.stringify({ wso: true }));
+    check('WSO voice On persists', loadSettings().wso === true);
     localStorage.setItem('wingnut.settings', JSON.stringify({ quality: 'high' }));
-    check('an older save loads WSO voice On', loadSettings().wso === true);
+    check('an older save loads WSO voice Off', loadSettings().wso === false);
     if (keep === null) localStorage.removeItem('wingnut.settings'); else localStorage.setItem('wingnut.settings', keep);
   } catch { /* storage blocked */ }
   menu.el.querySelector('.m-row[data-key="subtitles"]').closest('.m-tabpanel').querySelector('[data-act="reset-tab"]').click();
-  check('Restore defaults resets the tab', settings.music === DEFAULT_SETTINGS.music && settings.subtitles === DEFAULT_SETTINGS.subtitles && settings.master === DEFAULT_SETTINGS.master && settings.wso === true, { music: settings.music, subtitles: settings.subtitles, master: settings.master, wso: settings.wso });
+  check('Restore defaults resets the tab', settings.music === DEFAULT_SETTINGS.music && settings.subtitles === DEFAULT_SETTINGS.subtitles && settings.master === DEFAULT_SETTINGS.master && settings.wso === false, { music: settings.music, subtitles: settings.subtitles, master: settings.master, wso: settings.wso });
   check('pointer events never leak to window', leaked === 0, leaked);
   window.removeEventListener('pointerdown', leak); window.removeEventListener('mousedown', leak); window.removeEventListener('click', leak);
   menu.show('missions', { selected: 6 }); step(1 / 60);
