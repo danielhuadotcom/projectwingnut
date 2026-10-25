@@ -56,7 +56,7 @@ export const DIALOGUE = [
   {"id":"m12_4","speaker":"MAINSPRING","pri":"plot","on":"boss","n":50,"mission":12,"text":"Now you're in for it, merc!","dur":2.114},
   {"id":"m12_5","speaker":"MAINSPRING","pri":"plot","on":"complete","mission":12,"text":"Fine. Keep the wreck. I have newer jets.","dur":2.91},
   {"id":"m13_1","speaker":"AWACS","pri":"plot","on":"start","mission":13,"text":"Home Fleet's tied up and half asleep. Sun's at your back.","dur":2.922},
-  {"id":"m13_2","speaker":"WSO","pri":"flavor","on":"phase","n":2,"mission":13,"text":"All lined up like that? Feels a bit like cheating.","dur":2.673},
+  {"id":"m13_2","speaker":"WSO","pri":"flavor","on":"phase","n":1,"mission":13,"text":"All lined up like that? Feels a bit like cheating.","dur":2.673},
   {"id":"m13_3","speaker":"WSO","pri":"plot","on":"complete","mission":13,"text":"Their whole fleet, sitting on the harbor floor. All in a day's work.","dur":4.595},
   {"id":"m14_1","speaker":"WSO","pri":"flavor","on":"start","mission":14,"text":"They're torching the forest on the way out? Bastards!","dur":2.426},
   {"id":"m14_2","speaker":"AWACS","pri":"plot","on":"complete","mission":14,"text":"Concord rearguard's laying down arms. Hold your fire.","dur":2.327},

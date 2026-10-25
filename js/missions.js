@@ -93,9 +93,11 @@
 //     Placement never follows the player and its random jitter is seeded by mission, phase and group, so every attempt
 //     looks the same. Distances keep time to engagement short (behavior makes the variety): inbound waves within 7 km
 //     and fast, holding flights within 4.5 km of the anchor, scrambles within 5 km, surface groups about 3.5-5.5 km
-//     (missile shooters farther where needed: none may reach the start, see startKeepOut).
+//     (missile shooters farther where needed: none may reach the start, see startKeepOut). Where the source mission
+//     has a long transit or spread-out target areas, the layout follows it (M6's three areas, M7's cruise-missile
+//     chase): separate clusters take their own position and distance, so they stand apart as in the source.
 //       position = 'ahead' | 'left' | 'right' | 'behind' | 'high' | 'low' ('ahead' at +900 m / -350 m) or a bearing in
-//         degrees (0 = ahead, clockwise); distance = m from the anchor (air: 1500-7500; aces 1500-9500), or from the near site.
+//         degrees (0 = ahead, clockwise); distance = m from the anchor (air: 1500-7500; aces 1500-9500; target 'fleet' up to 13000), or from the near site.
 //       near = a surface type (this phase's, else the latest earlier phase's): the site is where those units stand and
 //         distance (0-3000, default 0) offsets it toward position. For task 'escort': an air type entering with it.
 //       after = s into the phase before the group enters (waves, ambushes, scrambles); sooner if the field is cleared.
@@ -170,7 +172,7 @@ export const GROUND_TYPES = {
   aa:                { shape: 'box',   size: [4, 3, 4],      hp: 50,  refHp: 30,  shoots: 'gun',     range: 1500, naval: false, note: 'AA gun: fragile, dangerous in clusters.' },
   'c-ram':           { shape: 'box',   size: [3, 5, 3],      hp: 50,  refHp: 30,  shoots: 'gun',     range: 2000, naval: false, note: 'Point-defense gun turret (Phalanx-type CIWS): very high rate of fire.' },
   sam:               { shape: 'prism', size: [6, 5, 10],     hp: 50,  refHp: 30,  shoots: 'missile', range: 4000, naval: false, note: 'SAM launcher (S-75-sized); short-range micro-missile launchers are folded in.' },
-  'l-sam':           { shape: 'prism', size: [7, 6, 12],     hp: 50,  refHp: 30,  shoots: 'missile', range: 8000, naval: false, note: 'Long-range SAM: twice the reach (its missile still flies the common profile). Put a mountain between you and it.' },
+  'l-sam':           { shape: 'prism', size: [7, 6, 12],     hp: 50,  refHp: 30,  shoots: 'missile', range: 5600, naval: false, note: 'Long-range SAM: 1.4x a SAM\'s reach (5.6 km; its missile still flies the common profile). Put a mountain between you and it.' },
   railgun:           { shape: 'box',   size: [10, 8, 16],    hp: 180, refHp: 100, shoots: 'gun',     range: 4000, naval: false, note: 'Armored thunderglass railgun turret (heavy variants folded in): slow, heavy shot that leaves a damaging trail.' },
   // ---- land vehicles and structures (they do not shoot at aircraft) ----
   tank:              { shape: 'box',   size: [3.6, 2.6, 8],  hp: 100, refHp: 20,  shoots: false, naval: false, note: 'Eight-wheeled armored vehicle; takes 2 missiles.' },
@@ -190,6 +192,8 @@ export const GROUND_TYPES = {
   truck:             { shape: 'box',   size: [3, 3, 8],      hp: 40,              shoots: false, naval: false, note: 'Truck (not used by the missions below).' },
   'siege crawler':   { shape: 'box',   size: [30, 22, 70],   hp: 650, refHp: 50,  shoots: 'missile', range: 5000, naval: false, note: 'Concord superheavy tracked fortress: 4 railguns, 10 SAMs, 12 AA guns (mounts pooled into one HP bar). Size estimated.' },
   // ---- naval ----
+  // Inert hulls (shoots false: cargo ship, spy ship, the moored classes) carry no aa / main mounts, never fire and are one
+  // hitbox each (validateMissions checks it); PW's docked Task Force and unarmed merchant hulls map to them.
   buoy:              { shape: 'prism', size: [3, 4, 3],      hp: 25,              shoots: false,                  naval: true, note: 'Channel marker buoy on the approaches (M1 opening): a static warm-up target, one missile or a short burst. HP estimated.' },
   boat:              { shape: 'prism', size: [5, 3, 22],     hp: 40,  refHp: 20,  shoots: 'gun',     range: 800,  naval: true, aa: 1, note: 'Fast patrol boat, one machine gun; hard to hit, low threat.' },
   frigate:           { shape: 'prism', size: [32, 16, 127],  hp: 160, refHp: 50,  shoots: 'missile', range: 4000, naval: true, note: 'Littoral frigate (127 m trimaran): 1 SAM + 1 AA gun.' },
@@ -242,6 +246,8 @@ export const MISSIONS = [
       ] },
       { label: 'The crate', groups: [
         { kind: 'ground', type: 'cargo crate', count: 1, area: 'base', distance: 3500 },
+        { kind: 'ground', type: 'substation', count: 4, area: 'base', distance: 3500, optional: true },   // the fort's power and signal plant (PW: non-priority)
+        { kind: 'ground', type: 'comm tower', count: 1, area: 'base', distance: 3500, optional: true },
       ] },
     ],
   },
@@ -326,7 +332,7 @@ export const MISSIONS = [
     //   bombers coast in late.
     phases: [
       { label: 'Relieve the Herring Guard', groups: [
-        { kind: 'ground', type: 'artillery', count: 12, area: 'convoy', distance: 4400 },
+        { kind: 'ground', type: 'artillery', count: 16, area: 'convoy', distance: 4400 },
         { kind: 'ground', type: 'tank', count: 10, area: 'convoy', distance: 4800 },
         { kind: 'ground', type: 'gun emplacement', count: 3, area: 'ridge', distance: 5100 },
         { kind: 'ground', type: 'bunker', count: 2, area: 'ridge', distance: 5100 },
@@ -347,10 +353,11 @@ export const MISSIONS = [
         { kind: 'ground', type: 'sam', count: 6, area: 'base', distance: 4800 },
         { kind: 'ground', type: 'aa', count: 7, area: 'base', distance: 4800 },
         { kind: 'ground', type: 'comm tower', count: 1, area: 'base', distance: 5100 },
+        { kind: 'ground', type: 'oil tank', count: 2, area: 'base', distance: 5100, optional: true },
         { kind: 'air', type: 'KD-28H', count: 6, formation: 'loose', position: 'low', distance: 1500, near: 'tank', task: 'patrol' },
         { kind: 'air', type: 'HAILSTONE-25', count: 3, formation: 'vee', position: 'low', distance: 2000, near: 'tank', task: 'patrol' },
-        { kind: 'air', type: 'KD-52', count: 3, formation: 'line', position: 'high', distance: 5700, after: 20 },
-        { kind: 'air', type: 'GUST-37', count: 2, formation: 'pair', position: 'left', distance: 6200, task: 'engage', optional: true },
+        { kind: 'air', type: 'KD-52', count: 4, formation: 'line', position: 'high', distance: 5700, after: 20 },
+        { kind: 'air', type: 'GUST-37', count: 1, formation: 'pair', position: 'left', distance: 6200, task: 'engage', optional: true },   // PW: 3 + 4 optional fighters; 2 here (phase air cap)
         { kind: 'air', type: 'NV-18E', count: 2, formation: 'pair', position: 'right', distance: 6200, task: 'engage', optional: true },
         { kind: 'ground', type: 'l-sam', count: 2, area: 'base', distance: 5100, difficulty: 'mercenary' },
         { kind: 'ground', type: 'railgun', count: 2, area: 'base', distance: 4800, difficulty: 'mercenary' },
@@ -370,7 +377,7 @@ export const MISSIONS = [
         { kind: 'air', type: 'NV-16', count: 3, formation: 'vee', position: 340, distance: 3500, task: 'patrol' },
         { kind: 'air', type: 'NV-14', count: 6, formation: 'vee', position: 20, distance: 3500, task: 'patrol' },
         { kind: 'ground', type: 'aa', count: 10, area: 'scattered', distance: 4000, optional: true },
-        { kind: 'ground', type: 'l-sam', count: 4, area: 'base', distance: 6500, optional: true },   // 6500: out of reach of the start (startThreatProblems)
+        { kind: 'ground', type: 'l-sam', count: 4, area: 'base', distance: 4000, optional: true },   // out of reach of the start (startThreatProblems)
         { kind: 'naval', type: 'cruiser', count: 2, area: 'fleet', distance: 5500, optional: true },
         { kind: 'naval', type: 'frigate', count: 1, area: 'fleet', distance: 5500, optional: true },
         { kind: 'naval', type: 'railgun frigate', count: 2, area: 'fleet', distance: 5500, optional: true, difficulty: 'mercenary' },
@@ -399,34 +406,37 @@ export const MISSIONS = [
     briefing: 'The Concord refines its thunderglass in Glasswater Gorge and has parked a SAM on every ledge. Burn the refineries and mind the walls.',
     setting: 'gorge', location: 'Glasswater Gorge, Anvil Range', clock: '17:30', time: 'golden',
     startBack: 5000,   // m behind the sortie frame: a quiet lead-in before first contact
-    // Layout (PW Machine of the Mantle): the scrambled QRF arrives mid-raid in waves; Chime Squadron runs you down
-    //   from behind.
+    // Layout (PW Machine of the Mantle): three areas up the gorge: a first yard of targets of opportunity on the way
+    //   in, the refinery works (the targets) past it, then the summit crater with the extractors (phase 2). The
+    //   scrambled QRF meets you at the works in waves; Chime Squadron runs you down from behind.
     phases: [
       { label: 'Refineries', groups: [
-        { kind: 'ground', type: 'refinery', count: 8, area: 'base', distance: 4400 },
-        { kind: 'ground', type: 'sam', count: 13, area: 'scattered', distance: 4800 },
-        { kind: 'ground', type: 'aa', count: 7, area: 'base', distance: 4400 },
-        { kind: 'ground', type: 'c-ram', count: 1, area: 'base', distance: 4400 },
-        { kind: 'ground', type: 'refinery', count: 2, area: 'base', distance: 4000, optional: true },
-        { kind: 'ground', type: 'container', count: 6, area: 'base', distance: 4000, optional: true },
-        { kind: 'ground', type: 'oil tank', count: 3, area: 'base', distance: 4000, optional: true },
+        { kind: 'ground', type: 'refinery', count: 3, area: 'base', position: 'ahead', distance: 2000, optional: true },   // area 1: on the way in, nothing required
+        { kind: 'ground', type: 'oil tank', count: 12, area: 'scattered', position: 'ahead', distance: 2000, optional: true },
+        { kind: 'ground', type: 'container', count: 12, area: 'scattered', position: 'ahead', distance: 2300, optional: true },
+        { kind: 'ground', type: 'refinery', count: 8, area: 'base', position: 'ahead', distance: 5600 },                    // area 2: the works
+        { kind: 'ground', type: 'sam', count: 13, area: 'scattered', position: 'ahead', distance: 5800 },
+        { kind: 'ground', type: 'aa', count: 7, area: 'base', position: 'ahead', distance: 5600 },
+        { kind: 'ground', type: 'c-ram', count: 1, area: 'base', position: 'ahead', distance: 5600 },
+        { kind: 'ground', type: 'refinery', count: 2, area: 'base', position: 'ahead', distance: 5900, optional: true },
+        { kind: 'ground', type: 'container', count: 12, area: 'scattered', position: 'ahead', distance: 5900, optional: true },
         { kind: 'ground', type: 'radar', count: 2, area: 'ridge', distance: 4800, optional: true },
         { kind: 'ground', type: 'comm tower', count: 2, area: 'ridge', distance: 4800, optional: true },
-        { kind: 'air', type: 'NV-16', count: 6, formation: 'vee', position: 'ahead', distance: 5500, after: 8, task: 'engage' },
-        { kind: 'air', type: 'NV-4', count: 6, formation: 'vee', position: 'left', distance: 5000, after: 40, task: 'engage' },
+        { kind: 'air', type: 'NV-16', count: 6, formation: 'vee', position: 'ahead', distance: 7000, after: 20, task: 'engage' },   // the QRF meets you over the works
+        { kind: 'air', type: 'NV-4', count: 6, formation: 'vee', position: 'left', distance: 6000, after: 50, task: 'engage' },
         { kind: 'ground', type: 'c-ram', count: 6, area: 'base', distance: 4400, difficulty: 'mercenary' },  // extras split across phases 1-2 like the SAMs and AA
-        { kind: 'ground', type: 'l-sam', count: 1, area: 'ridge', distance: 5400, difficulty: 'mercenary' },   // 5400: out of reach of the start
-        { kind: 'air', type: 'NV-4', count: 1, formation: 'pair', position: 'right', distance: 5000, after: 40, task: 'engage', difficulty: 'mercenary' },
-        { kind: 'air', type: 'Q09', count: 1, formation: 'pair', position: 'right', distance: 5000, after: 50, task: 'engage', difficulty: 'mercenary' },
-        { kind: 'air', type: 'FLURRY-29', count: 1, formation: 'pair', position: 'high', distance: 5000, after: 50, task: 'engage', difficulty: 'mercenary' },
+        { kind: 'ground', type: 'l-sam', count: 1, area: 'ridge', distance: 3100, difficulty: 'mercenary' },   // out of reach of the start
+        { kind: 'air', type: 'NV-4', count: 1, formation: 'pair', position: 'right', distance: 6000, after: 50, task: 'engage', difficulty: 'mercenary' },
+        { kind: 'air', type: 'Q09', count: 1, formation: 'pair', position: 'right', distance: 6000, after: 60, task: 'engage', difficulty: 'mercenary' },
+        { kind: 'air', type: 'FLURRY-29', count: 1, formation: 'pair', position: 'high', distance: 6000, after: 60, task: 'engage', difficulty: 'mercenary' },
       ] },
       { label: 'Summit rigs', groups: [
-        { kind: 'ground', type: 'extractor', count: 3, area: 'base', distance: 4800 },
-        { kind: 'ground', type: 'sam', count: 10, area: 'base', distance: 4800 },
-        { kind: 'ground', type: 'aa', count: 6, area: 'base', distance: 4800 },
+        { kind: 'ground', type: 'extractor', count: 3, area: 'base', position: 'ahead', distance: 5200 },   // area 3: the summit crater, one cluster
+        { kind: 'ground', type: 'sam', count: 10, area: 'base', position: 'ahead', distance: 5200 },
+        { kind: 'ground', type: 'aa', count: 6, area: 'base', position: 'ahead', distance: 5200 },
         { kind: 'air', type: 'SQUALL-27', count: 6, formation: 'vee', position: 'ahead', distance: 5000, after: 15, task: 'engage' },
-        { kind: 'ground', type: 'c-ram', count: 5, area: 'base', distance: 4800, difficulty: 'mercenary' },
-        { kind: 'ground', type: 'railgun', count: 2, area: 'base', distance: 4800, difficulty: 'mercenary' },
+        { kind: 'ground', type: 'c-ram', count: 5, area: 'base', position: 'ahead', distance: 5200, difficulty: 'mercenary' },
+        { kind: 'ground', type: 'railgun', count: 2, area: 'base', position: 'ahead', distance: 5200, difficulty: 'mercenary' },
         { kind: 'air', type: 'Q07', count: 3, formation: 'vee', position: 'left', distance: 5000, after: 25, task: 'engage', difficulty: 'mercenary' },
       ] },
       { label: 'Chime Squadron', endAtRemaining: 2, groups: [   // won with two left: the rest of Chime pulls out with Mainspring
@@ -446,8 +456,9 @@ export const MISSIONS = [
         units: [{ type: 'battleship', count: 1 }, { type: 'cruiser', count: 4, escort: true }, { type: 'cargo ship', count: 1, escort: true }] },
     ],
     startBack: 5000,   // m behind the sortie frame: a quiet lead-in before first contact
-    // Layout (PW Eminent Domain): a CAP over the enemy ships with AWACS high; attackers swarm in; MG-31 stand-ins
-    //   escort the Bodkin run.
+    // Layout (PW Eminent Domain): a CAP over the enemy ships with AWACS high; she arrives with the battlegroup both
+    //   ahead of and behind her and attackers swarm in; MG-31 stand-ins escort the Bodkin run, launched from shore well
+    //   out to the southeast: a long chase to catch them.
     phases: [
       { label: 'Concord pickets', stagger: 30, groups: [
         { kind: 'air', type: 'NV-18E', count: 6, formation: 'vee', position: 'high', distance: 3000, near: 'cruiser', task: 'patrol' },
@@ -463,17 +474,17 @@ export const MISSIONS = [
       { label: 'Shield the Hand-Me-Down', groups: [
         { kind: 'air', type: 'SQUALL-30', count: 4, formation: 'vee', position: 'right', distance: 5500, task: 'engage' },
         { kind: 'air', type: 'HAILSTONE-25', count: 8, formation: 'loose', position: 'left', distance: 5500, task: 'engage' },
-        { kind: 'naval', type: 'cruiser', count: 4, area: 'fleet', distance: 5100 },
-        { kind: 'naval', type: 'frigate', count: 3, area: 'fleet', distance: 4800 },
-        { kind: 'naval', type: 'railgun frigate', count: 2, area: 'fleet', distance: 5500 },
+        { kind: 'naval', type: 'cruiser', count: 4, area: 'fleet', position: 'ahead', distance: 6500 },          // in front of her
+        { kind: 'naval', type: 'frigate', count: 3, area: 'fleet', position: 'behind', distance: 3500 },         // and closing from behind
+        { kind: 'naval', type: 'railgun frigate', count: 2, area: 'fleet', position: 'behind', distance: 3800 },
         { kind: 'naval', type: 'carrier', count: 1, area: 'fleet', distance: 5500, difficulty: 'mercenary' },
         { kind: 'naval', type: 'battleship', count: 2, area: 'fleet', distance: 5500, difficulty: 'mercenary' },
         { kind: 'air', type: 'Q07', count: 1, formation: 'pair', position: 'ahead', distance: 6400, task: 'engage', difficulty: 'mercenary' },  // 2 -> 1 (phase air cap)
         { kind: 'air', type: 'NV-14', count: 3, formation: 'pair', distance: 800, near: 'carrier', after: 20, task: 'scramble', difficulty: 'mercenary' },  // 8 -> 3 (phase air cap); also stands in for carrier launches
       ] },
       { label: 'Bodkins inbound', groups: [
-        { kind: 'air', type: 'BODKIN', count: 5, formation: 'line', position: 'right', distance: 6000, target: 'fleet' },   // at the Hand-Me-Down's escorts
-        { kind: 'air', type: 'BODKIN', count: 5, formation: 'line', position: 'right', distance: 6500, target: 'fleet' },
+        { kind: 'air', type: 'BODKIN', count: 5, formation: 'line', position: 'right', distance: 11000, target: 'fleet' },   // at the Hand-Me-Down's escorts, from far out
+        { kind: 'air', type: 'BODKIN', count: 5, formation: 'line', position: 'right', distance: 11500, target: 'fleet' },
         { kind: 'air', type: 'FALLWIND-31', count: 4, formation: 'vee', near: 'BODKIN', task: 'escort' },
         { kind: 'air', type: 'SQUALL-30', count: 2, formation: 'pair', near: 'BODKIN', task: 'escort', difficulty: 'mercenary' },  // 4 -> 2 (phase air cap)
       ] },
@@ -517,14 +528,18 @@ export const MISSIONS = [
     setting: 'night fjord', location: 'Vesper Fjord', clock: '22:00', time: 'night',
     wingmen: [],   // a lone sortie
     startBack: 3000,   // m behind the sortie frame: a quiet lead-in before first contact
-    // Layout (PW Stepping Stone): a patrol over Bravo, helicopters at the clusters, recalled fighters inbound, Echo
-    //   scrambles, a late hive.
+    // Layout (PW Stepping Stone): seven defense clusters, Alpha to Golf, up the range; the paired sites (Hammer and
+    //   Tongs = Alpha and Bravo, Vise and Clamp = Delta and Echo) stand apart on their own ridges. A patrol over
+    //   Bravo, helicopters at the clusters, recalled fighters inbound, Echo scrambles from its tunnel, a late hive.
     phases: [
       { label: 'Sites Hammer and Tongs', groups: [
-        { kind: 'ground', type: 'l-sam', count: 3, area: 'ridge', distance: 7200 },   // 7200: out of reach of the start (startThreatProblems)
-        { kind: 'ground', type: 'c-ram', count: 5, area: 'ridge', distance: 4400 },
-        { kind: 'ground', type: 'aa', count: 7, area: 'ridge', distance: 4400 },
-        { kind: 'ground', type: 'radar', count: 1, area: 'ridge', distance: 4800 },
+        { kind: 'ground', type: 'l-sam', count: 1, area: 'ridge', position: 20, distance: 4800 },   // Hammer (Alpha); out of reach of the start (startThreatProblems)
+        { kind: 'ground', type: 'c-ram', count: 1, area: 'ridge', position: 20, distance: 4400 },
+        { kind: 'ground', type: 'aa', count: 3, area: 'ridge', position: 20, distance: 4400 },
+        { kind: 'ground', type: 'l-sam', count: 2, area: 'ridge', position: 70, distance: 6600 },     // Tongs (Bravo)
+        { kind: 'ground', type: 'c-ram', count: 4, area: 'ridge', position: 70, distance: 6400 },
+        { kind: 'ground', type: 'aa', count: 4, area: 'ridge', position: 70, distance: 6400 },
+        { kind: 'ground', type: 'radar', count: 1, area: 'ridge', position: 70, distance: 6600 },
         { kind: 'air', type: 'FALLWIND-31', count: 4, formation: 'vee', position: 'high', distance: 2500, near: 'radar', task: 'patrol' },
       ] },
       { label: 'Site Pliers', groups: [
@@ -538,9 +553,11 @@ export const MISSIONS = [
         { kind: 'air', type: 'Q09', count: 1, formation: 'pair', position: 'left', distance: 6300, task: 'engage', difficulty: 'mercenary' },
       ] },
       { label: 'Sites Vise and Clamp', groups: [
-        { kind: 'ground', type: 'l-sam', count: 5, area: 'ridge', distance: 5100 },
-        { kind: 'ground', type: 'c-ram', count: 5, area: 'ridge', distance: 4400 },
-        { kind: 'ground', type: 'sam', count: 2, area: 'ridge', distance: 4400 },
+        { kind: 'ground', type: 'l-sam', count: 1, area: 'ridge', position: 'left', distance: 4400 },    // Vise (Delta)
+        { kind: 'ground', type: 'c-ram', count: 3, area: 'ridge', position: 'left', distance: 4400 },
+        { kind: 'ground', type: 'l-sam', count: 4, area: 'ridge', position: 30, distance: 5600 },       // Clamp (Echo), with its tunnel runway
+        { kind: 'ground', type: 'c-ram', count: 2, area: 'ridge', position: 30, distance: 5600 },
+        { kind: 'ground', type: 'sam', count: 2, area: 'ridge', position: 30, distance: 5600 },
         { kind: 'air', type: 'NV-14', count: 3, formation: 'vee', distance: 800, near: 'sam', after: 15, task: 'scramble' },       // scrambling from a tunnel runway
         { kind: 'air', type: 'NV-18E', count: 3, formation: 'vee', distance: 900, near: 'sam', after: 25, task: 'scramble' },
       ] },
@@ -554,7 +571,7 @@ export const MISSIONS = [
       { label: 'Site Anvil', groups: [
         { kind: 'ground', type: 'l-sam', count: 3, area: 'ridge', distance: 5100 },
         { kind: 'ground', type: 'c-ram', count: 10, area: 'ridge', distance: 4400 },
-        { kind: 'ground', type: 'container', count: 2, area: 'ridge', distance: 4400, optional: true },
+        { kind: 'ground', type: 'container', count: 6, area: 'ridge', distance: 4400, optional: true },   // in the tunnels
         { kind: 'air', type: 'KD-480E', count: 2, formation: 'pair', position: 'high', distance: 3000, near: 'c-ram', task: 'patrol' },
       ] },
     ],
@@ -570,7 +587,7 @@ export const MISSIONS = [
       { label: 'Landing zone', groups: [
         { kind: 'ground', type: 'aa', count: 6, area: 'scattered', distance: 4400 },
         { kind: 'ground', type: 'c-ram', count: 3, area: 'base', distance: 4800 },
-        { kind: 'ground', type: 'l-sam', count: 3, area: 'base', distance: 7000 },   // 7000: out of reach of the start (startThreatProblems)
+        { kind: 'ground', type: 'l-sam', count: 3, area: 'base', distance: 4600 },   // out of reach of the start (startThreatProblems)
         { kind: 'ground', type: 'comm tower', count: 1, area: 'base', distance: 5100, optional: true },
         { kind: 'air', type: 'NV-18E', count: 4, formation: 'vee', position: 'ahead', distance: 6200, task: 'engage' },
         { kind: 'air', type: 'NV-18E', count: 3, formation: 'vee', position: 'left', distance: 4500, after: 40, task: 'engage' },
@@ -582,8 +599,11 @@ export const MISSIONS = [
         { kind: 'ground', type: 'radar', count: 4, area: 'base', distance: 4400 },
         { kind: 'ground', type: 'bunker', count: 3, area: 'base', distance: 4400 },
         { kind: 'ground', type: 'aa', count: 5, area: 'base', distance: 4400 },
-        { kind: 'ground', type: 'tank', count: 12, area: 'convoy', distance: 4800 },
+        { kind: 'ground', type: 'tank', count: 20, area: 'convoy', distance: 4800 },        // the array's ground reinforcements
         { kind: 'ground', type: 'artillery', count: 4, area: 'convoy', distance: 5100 },
+        { kind: 'ground', type: 'oil tank', count: 3, area: 'base', distance: 4400, optional: true },
+        { kind: 'ground', type: 'refinery', count: 1, area: 'base', distance: 4400, optional: true },
+        { kind: 'ground', type: 'container', count: 3, area: 'base', distance: 4400, optional: true },
       ] },
       { label: 'Kaldmoor airbase', groups: [
         { kind: 'ground', type: 'railgun', count: 4, area: 'base', distance: 4400 },
@@ -592,8 +612,8 @@ export const MISSIONS = [
         { kind: 'ground', type: 'substation', count: 4, area: 'base', distance: 4800 },
         { kind: 'ground', type: 'sam', count: 2, area: 'base', distance: 4400 },
         { kind: 'ground', type: 'aa', count: 13, area: 'scattered', distance: 4400 },
-        { kind: 'ground', type: 'hangar', count: 3, area: 'base', distance: 4400, optional: true },
-        { kind: 'ground', type: 'oil tank', count: 3, area: 'base', distance: 4800, optional: true },
+        { kind: 'ground', type: 'hangar', count: 6, area: 'base', distance: 4400, optional: true },
+        { kind: 'ground', type: 'oil tank', count: 12, area: 'base', distance: 4800, optional: true },
         { kind: 'air', type: 'NV-18E', count: 4, formation: 'vee', position: 'ahead', distance: 6400, task: 'engage' },
         { kind: 'air', type: 'NV-18E', count: 3, formation: 'pair', distance: 800, near: 'hangar', after: 15, task: 'scramble' },        // taking off
         { kind: 'air', type: 'FALLWIND-31', count: 4, formation: 'vee', position: 'high', distance: 2500, near: 'railgun', task: 'patrol' },
@@ -650,17 +670,21 @@ export const MISSIONS = [
     briefing: 'The Concord is working a night shift on its Morrow Deep rigs, test-firing railguns. Tear down the batteries and everything guarding them.',
     setting: 'night sea', location: 'Morrow Deep rigs', clock: '00:30', time: 'night',
     startBack: 4000,   // m behind the sortie frame: a quiet lead-in before first contact
-    // Layout (PW Midnight Light): jump jets and helicopters patrol the rigs; after the alarm more choppers scramble;
-    //   Mainspring takes off from a rig.
+    // Layout (PW Midnight Light): a field of platforms: the railgun rigs ahead, the SAM and C-RAM rigs off to the
+    //   left, long-range SAM rigs farther out to the right, buoys and shipping between; jump jets and helicopters
+    //   patrol the rigs; after the alarm more choppers scramble; Mainspring takes off from a rig.
     phases: [
       { label: 'Morrow Deep rigs', groups: [
-        { kind: 'ground', type: 'railgun', count: 8, area: 'scattered', distance: 4800 },
-        { kind: 'ground', type: 'sam', count: 5, area: 'base', distance: 4400 },
-        { kind: 'ground', type: 'c-ram', count: 6, area: 'base', distance: 4400 },
-        { kind: 'ground', type: 'l-sam', count: 3, area: 'scattered', distance: 6800 },   // 6800: out of reach of the start (startThreatProblems)
-        { kind: 'ground', type: 'aa', count: 2, area: 'base', distance: 4400 },
-        { kind: 'ground', type: 'radar', count: 3, area: 'base', distance: 4800, optional: true },
-        { kind: 'ground', type: 'container', count: 2, area: 'base', distance: 4400, optional: true },
+        { kind: 'ground', type: 'railgun', count: 11, area: 'scattered', position: 'ahead', distance: 5200 },
+        { kind: 'ground', type: 'sam', count: 7, area: 'base', position: 300, distance: 4800 },   // micro-SAM launchers folded in
+        { kind: 'ground', type: 'c-ram', count: 8, area: 'base', position: 300, distance: 4800 },
+        { kind: 'ground', type: 'l-sam', count: 5, area: 'scattered', position: 50, distance: 5300 },   // out of reach of the start (startThreatProblems)
+        { kind: 'ground', type: 'aa', count: 2, area: 'base', position: 300, distance: 4800 },
+        { kind: 'ground', type: 'radar', count: 3, area: 'base', position: 300, distance: 5200, optional: true },
+        { kind: 'ground', type: 'container', count: 7, area: 'base', position: 'ahead', distance: 4600, optional: true },
+        { kind: 'ground', type: 'refinery', count: 2, area: 'base', position: 'ahead', distance: 4600, optional: true },
+        { kind: 'ground', type: 'oil tank', count: 1, area: 'base', position: 'ahead', distance: 4600, optional: true },
+        { kind: 'naval', type: 'buoy', count: 3, area: 'scattered', position: 'ahead', distance: 3000, optional: true },
         { kind: 'naval', type: 'frigate', count: 1, area: 'fleet', distance: 4800 },
         { kind: 'naval', type: 'spy ship', count: 1, area: 'fleet', distance: 5100 },
         { kind: 'naval', type: 'cargo ship', count: 4, area: 'fleet', distance: 5500, optional: true },
@@ -679,32 +703,35 @@ export const MISSIONS = [
     briefing: 'The Concord Home Fleet is tied up at Vantmouth with half its crews ashore. Wreck the harbor defenses and depots before anyone finds their boots.',
     setting: 'harbor', location: 'Vantmouth naval yard', clock: '07:00', time: 'golden',
     startBack: 4000,   // m behind the sortie frame: a quiet lead-in before first contact
-    // Layout (PW Valkyrie's Call): the port CAP is caught by surprise; the returning escorts arrive from two
-    //   bearings.
+    // Layout (PW Valkyrie's Call): one strike on the whole port: the shore defenses and depots, and the Home Fleet
+    //   moored along the piers beyond them, hit together while the port CAP is caught by surprise. As in PW the moored
+    //   hulls are inert (no crews, no weapons, no mounts to strip); only two cruisers are manned and shoot back, and
+    //   the militarized freighter tied up with the merchants is as dead as they are. Then the returning escorts arrive
+    //   from two bearings.
     phases: [
-      { label: 'Harbor defenses', groups: [
-        { kind: 'ground', type: 'sam', count: 7, area: 'base', distance: 4400 },
-        { kind: 'ground', type: 'aa', count: 12, area: 'scattered', distance: 4400 },
-        { kind: 'ground', type: 'railgun', count: 4, area: 'base', distance: 4800 },
-        { kind: 'ground', type: 'bunker', count: 3, area: 'base', distance: 4400 },
-        { kind: 'ground', type: 'refinery', count: 6, area: 'base', distance: 4400 },
-        { kind: 'ground', type: 'container', count: 6, area: 'base', distance: 4400 },
+      { label: 'Vantmouth naval yard', groups: [
+        { kind: 'ground', type: 'sam', count: 7, area: 'base', position: 'ahead', distance: 4400 },
+        { kind: 'ground', type: 'aa', count: 12, area: 'scattered', position: 'ahead', distance: 4400 },
+        { kind: 'ground', type: 'aa', count: 10, area: 'scattered', position: 'ahead', distance: 6200, optional: true },
+        { kind: 'ground', type: 'railgun', count: 4, area: 'base', position: 'left', distance: 4800 },
+        { kind: 'ground', type: 'bunker', count: 3, area: 'base', position: 'ahead', distance: 4400 },
+        { kind: 'ground', type: 'refinery', count: 6, area: 'base', position: 'left', distance: 4400 },
+        { kind: 'ground', type: 'container', count: 10, area: 'base', position: 'left', distance: 4400 },
         { kind: 'air', type: 'NV-15C', count: 4, formation: 'vee', position: 'high', distance: 2500, near: 'refinery', task: 'patrol' },
+        { kind: 'naval', type: 'moored carrier', count: 1, area: 'fleet', position: 345, distance: 6000 },   // the piers, past the shore defenses
+        { kind: 'naval', type: 'moored battleship', count: 2, area: 'fleet', position: 345, distance: 6400 },
+        { kind: 'naval', type: 'moored battleship', count: 3, area: 'fleet', position: 345, distance: 6800, optional: true },
+        { kind: 'naval', type: 'cruiser', count: 2, area: 'fleet', position: 345, distance: 5600 },         // the only manned ships
+        { kind: 'naval', type: 'moored cruiser', count: 8, area: 'fleet', position: 345, distance: 6400 },
+        { kind: 'naval', type: 'moored cruiser', count: 3, area: 'fleet', position: 345, distance: 6800, optional: true },
+        { kind: 'naval', type: 'moored frigate', count: 6, area: 'fleet', position: 345, distance: 6000 },
+        { kind: 'naval', type: 'moored frigate', count: 4, area: 'fleet', position: 345, distance: 6800, optional: true },
+        { kind: 'naval', type: 'cargo ship', count: 14, area: 'fleet', position: 345, distance: 7200, optional: true },   // merchants, the militarized one among them (unmanned)
+        { kind: 'naval', type: 'spy ship', count: 2, area: 'fleet', position: 345, distance: 7200, optional: true },
       ] },
-      { label: 'Home Fleet at anchor', groups: [
-        { kind: 'naval', type: 'moored carrier', count: 1, area: 'fleet', distance: 4800 },
-        { kind: 'naval', type: 'moored battleship', count: 2, area: 'fleet', distance: 5100 },
-        { kind: 'naval', type: 'cruiser', count: 2, area: 'fleet', distance: 4400 },
-        { kind: 'naval', type: 'moored cruiser', count: 8, area: 'fleet', distance: 5100 },
-        { kind: 'naval', type: 'moored frigate', count: 6, area: 'fleet', distance: 4800 },
-        { kind: 'naval', type: 'moored frigate', count: 2, area: 'fleet', distance: 5500, optional: true },
-        { kind: 'naval', type: 'cargo ship', count: 3, area: 'fleet', distance: 5500, optional: true },
-        { kind: 'naval', type: 'armed cargo', count: 1, area: 'fleet', distance: 5500, optional: true },
-        { kind: 'naval', type: 'spy ship', count: 2, area: 'fleet', distance: 5500, optional: true },
-      ] },
-      { label: 'Escorts rushing home', groups: [
-        { kind: 'air', type: 'NV-16', count: 3, formation: 'vee', position: 'ahead', distance: 6600, task: 'engage' },
-        { kind: 'air', type: 'Q07', count: 6, formation: 'vee', position: 'left', distance: 6600, task: 'engage' },
+      { label: 'Escorts rushing home', groups: [   // back from patrol in two formations
+        { kind: 'air', type: 'NV-16', count: 3, formation: 'vee', position: 'ahead', distance: 7000, task: 'engage' },
+        { kind: 'air', type: 'Q07', count: 6, formation: 'vee', position: 'left', distance: 7000, task: 'engage' },
       ] },
     ],
   },
@@ -731,9 +758,9 @@ export const MISSIONS = [
         { kind: 'air', type: 'NV-15C', count: 6, formation: 'vee', near: 'KD-28H', task: 'escort' },
       ] },
       { label: 'Retreating columns', groups: [
-        { kind: 'ground', type: 'tank', count: 8, area: 'convoy', distance: 4400 },
-        { kind: 'ground', type: 'artillery', count: 6, area: 'convoy', distance: 4800 },
-        { kind: 'ground', type: 'gun emplacement', count: 6, area: 'base', distance: 4800 },
+        { kind: 'ground', type: 'tank', count: 20, area: 'convoy', distance: 4400 },
+        { kind: 'ground', type: 'artillery', count: 9, area: 'convoy', distance: 4800 },
+        { kind: 'ground', type: 'gun emplacement', count: 12, area: 'base', distance: 4800 },
         { kind: 'ground', type: 'aa', count: 12, area: 'scattered', distance: 4400 },
         { kind: 'ground', type: 'sam', count: 2, area: 'base', distance: 4400 },
         { kind: 'ground', type: 'railgun', count: 2, area: 'base', distance: 5100 },
@@ -754,14 +781,16 @@ export const MISSIONS = [
       { label: 'Kelderwick air cover', groups: [
         { kind: 'air', type: 'NV-16', count: 6, formation: 'vee', position: 'ahead', distance: 5500, task: 'engage' },
         { kind: 'air', type: 'NV-14', count: 3, formation: 'vee', position: 'left', distance: 5600, task: 'engage' },
-        { kind: 'air', type: 'NV-14', count: 3, formation: 'pair', distance: 800, near: 'l-sam', after: 15, task: 'scramble' },      // scrambling from hardened city shelters
-        { kind: 'air', type: 'FLURRY-29', count: 4, formation: 'vee', position: 'ahead', distance: 5000, after: 40, task: 'engage' },
-        { kind: 'ground', type: 'l-sam', count: 6, area: 'scattered', distance: 10700 },   // the city's SAM belt: 10.7 km, out of reach of the furball start (startThreatProblems)
+        { kind: 'ground', type: 'hangar', count: 2, area: 'base', position: 'ahead', distance: 3500, optional: true },   // the city's underground runway
+        { kind: 'air', type: 'NV-14', count: 3, formation: 'pair', distance: 800, near: 'hangar', after: 15, task: 'scramble' },      // scrambling from the underground runway
+        { kind: 'air', type: 'FLURRY-29', count: 4, formation: 'vee', position: 'ahead', distance: 6500, after: 40, task: 'engage' },   // reinforcements from due north
+        { kind: 'ground', type: 'l-sam', count: 6, area: 'scattered', distance: 8300 },   // the city's SAM belt, out of reach of the furball start (startThreatProblems)
+        { kind: 'naval', type: 'moored battleship', count: 2, area: 'fleet', distance: 4000, optional: true },   // landed in the harbor, unmanned: easy credit
       ] },
       { label: 'Thunderheads inbound', glassfall: { impacts: 7 }, groups: [
         { kind: 'air', type: 'THUNDERHEAD', count: 6, formation: 'line', position: 'ahead', distance: 4800, optional: true },
         { kind: 'air', type: 'THUNDERHEAD', count: 6, formation: 'line', position: 'left', distance: 4600, after: 12, optional: true },
-        { kind: 'air', type: 'NV-14', count: 4, formation: 'pair', distance: 800, near: 'l-sam', after: 5, task: 'scramble' },      // scrambling from hardened city shelters
+        { kind: 'air', type: 'NV-14', count: 4, formation: 'pair', distance: 800, near: 'hangar', after: 5, task: 'scramble' },      // scrambling from the underground runway
       ] },
     ],
   },
@@ -788,10 +817,10 @@ export const MISSIONS = [
     // Layout (PW No Respite): a pair holds over the radar net and the fortress scrambles its four-ship.
     phases: [
       { label: 'Brassgate Fortress', groups: [
-        { kind: 'ground', type: 'radar', count: 12, area: 'base', distance: 4400 },
-        { kind: 'ground', type: 'railgun', count: 6, area: 'base', distance: 4800 },
-        { kind: 'ground', type: 'c-ram', count: 6, area: 'base', distance: 4400 },
-        { kind: 'ground', type: 'aa', count: 9, area: 'scattered', distance: 4400 },
+        { kind: 'ground', type: 'radar', count: 16, area: 'base', distance: 4400 },
+        { kind: 'ground', type: 'railgun', count: 8, area: 'base', distance: 4800 },
+        { kind: 'ground', type: 'c-ram', count: 8, area: 'base', distance: 4400 },
+        { kind: 'ground', type: 'aa', count: 12, area: 'scattered', distance: 4400 },
         { kind: 'ground', type: 'sam', count: 3, area: 'base', distance: 4800 },
         { kind: 'air', type: 'NV-14', count: 2, formation: 'pair', position: 'ahead', distance: 1500, near: 'radar', task: 'patrol' },
         { kind: 'air', type: 'NV-18E', count: 4, formation: 'vee', distance: 800, near: 'railgun', after: 10, task: 'scramble' },
@@ -852,7 +881,7 @@ export const MISSIONS = [
         { kind: 'naval', type: 'carrier', count: 1, area: 'fleet', distance: 5500 },
         { kind: 'naval', type: 'cruiser', count: 3, area: 'fleet', distance: 5100 },
         { kind: 'naval', type: 'railgun frigate', count: 3, area: 'fleet', distance: 4800 },
-        { kind: 'naval', type: 'boat', count: 16, area: 'scattered', distance: 4000 },
+        { kind: 'naval', type: 'boat', count: 18, area: 'scattered', distance: 4000 },
         { kind: 'air', type: 'NV-14', count: 4, formation: 'pair', distance: 800, near: 'carrier', after: 5, task: 'scramble' },       // carrier launches
       ] },
     ],
@@ -876,11 +905,12 @@ export const MISSIONS = [
         { kind: 'ground', type: 'artillery', count: 6, area: 'convoy', distance: 4400 },
         { kind: 'ground', type: 'gun emplacement', count: 6, area: 'base', distance: 4800 },
         { kind: 'ground', type: 'bunker', count: 5, area: 'base', distance: 4800 },
-        { kind: 'ground', type: 'sam', count: 5, area: 'base', distance: 4400 },
-        { kind: 'ground', type: 'aa', count: 6, area: 'scattered', distance: 4400 },
+        { kind: 'ground', type: 'sam', count: 3, area: 'base', distance: 4400 },
+        { kind: 'ground', type: 'sam', count: 2, area: 'base', distance: 4400, optional: true },
+        { kind: 'ground', type: 'aa', count: 6, area: 'scattered', distance: 4400, optional: true },
         { kind: 'ground', type: 'railgun', count: 1, area: 'base', distance: 4800 },
-        { kind: 'air', type: 'NV-4', count: 4, formation: 'vee', position: 'ahead', distance: 2000, near: 'gun emplacement', task: 'patrol' },
-        { kind: 'air', type: 'Q09', count: 6, formation: 'vee', position: 'left', distance: 2500, near: 'bunker', task: 'patrol' },
+        { kind: 'air', type: 'NV-4', count: 4, formation: 'vee', position: 'ahead', distance: 2000, near: 'gun emplacement', task: 'patrol', optional: true },   // optional, as in PW: they stay up into the next phases
+        { kind: 'air', type: 'Q09', count: 6, formation: 'vee', position: 'left', distance: 2500, near: 'bunker', task: 'patrol', optional: true },
       ] },
       { label: 'Sky over Lanternport', groups: [
         { kind: 'air', type: 'NV-15C', count: 8, formation: 'vee', position: 'ahead', distance: 5500, task: 'engage' },
@@ -902,8 +932,8 @@ export const MISSIONS = [
         { kind: 'ground', type: 'sam', count: 6, area: 'base', distance: 4000 },
         { kind: 'ground', type: 'gun emplacement', count: 12, area: 'base', distance: 4000 },
         { kind: 'ground', type: 'aa', count: 12, area: 'base', distance: 4000 },
-        { kind: 'air', type: 'KD-28H', count: 5, formation: 'loose', position: 'low', distance: 1500, near: 'gun emplacement', task: 'patrol' },
-        { kind: 'air', type: 'KD-28H', count: 3, formation: 'loose', position: 'low', distance: 1500, near: 'sam', task: 'patrol' },
+        { kind: 'air', type: 'KD-28H', count: 5, formation: 'loose', position: 'low', distance: 1500, near: 'gun emplacement', task: 'patrol', optional: true },   // optional (PW)
+        { kind: 'air', type: 'KD-28H', count: 3, formation: 'loose', position: 'low', distance: 1500, near: 'sam', task: 'patrol', optional: true },
       ] },
     ],
   },
@@ -1028,7 +1058,9 @@ function airPlacementProblems(m, i, g) {
     if (!c) out.push(`escort needs near = an air type of this phase`);
     else if (!spawnsWith(c) || (c.after || 0) !== (g.after || 0) || (c.near && G.indexOf(c) > G.indexOf(g))) out.push(`escort's ${g.near} group must enter first: same after, spawning whenever it does, listed earlier if it has a near`);
   } else if ('near' in g && !m.phases.slice(0, i + 1).some(surface)) out.push(`near '${g.near}' must be a surface type of this or an earlier phase`);
-  const farMax = AIRCRAFT_TYPES[g.type] && AIRCRAFT_TYPES[g.type].ace ? 9500 : 7500;   // aces and Mainspring enter from farther out, leaving room for their radio lines
+  // aces and Mainspring enter from farther out, leaving room for their radio lines; target 'fleet' runs from farther
+  // still (PW's shore-launched cruise missiles: a long chase)
+  const farMax = g.target === 'fleet' ? 13000 : AIRCRAFT_TYPES[g.type] && AIRCRAFT_TYPES[g.type].ace ? 9500 : 7500;
   if ('distance' in g && !(g.near ? g.distance >= 0 && g.distance <= 3000 : g.distance >= 1500 && g.distance <= farMax)) out.push(g.near ? 'distance from a near site must be 0-3000 m' : `distance must be 1500-${farMax} m`);
   return out;
 }
@@ -1038,6 +1070,9 @@ function airPlacementProblems(m, i, g) {
 export function validateMissions(missions = MISSIONS) {
   const out = [];
   missions.forEach((m, mi) => out.push(...startThreatProblems(m, mi)));   // missile shooters clear of the start
+  for (const [k, t] of Object.entries(GROUND_TYPES)) {   // inert hulls (shoots false) carry no weapon mounts
+    if (!t.shoots && (t.aa || t.main)) out.push(`GROUND_TYPES ${k}: an inert type (shoots false) takes no aa / main mounts`);
+  }
   for (const m of missions) {
     if ('time' in m && !TIMES.includes(m.time)) out.push(`M${m.id}: time must be one of ${TIMES.join(', ')}`);
     if ('glassfall' in m && m.glassfall !== 'mainspring') out.push(`M${m.id}: glassfall must be 'mainspring'`);

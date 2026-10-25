@@ -59,7 +59,7 @@ export const DIALOGUE_LINES = [
   {"id":"m12_4","mission":12,"speaker":"MAINSPRING","trigger":{"on":"boss","n":50},"text":"Now you're in for it, merc!","note":"calm, blaming"},
   {"id":"m12_5","mission":12,"speaker":"MAINSPRING","trigger":{"on":"complete"},"text":"Fine. Keep the wreck. I have newer jets.","note":"unbothered, ejecting"},
   {"id":"m13_1","mission":13,"speaker":"AWACS","trigger":{"on":"start"},"text":"Home Fleet's tied up and half asleep. Sun's at your back.","note":"calm, brisk"},
-  {"id":"m13_2","mission":13,"speaker":"WSO","trigger":{"on":"phase","n":2},"text":"All lined up like that? Feels a bit like cheating.","note":"dry, uneasy"},
+  {"id":"m13_2","mission":13,"speaker":"WSO","trigger":{"on":"phase","n":1},"text":"All lined up like that? Feels a bit like cheating.","note":"dry, uneasy"},
   {"id":"m13_3","mission":13,"speaker":"WSO","trigger":{"on":"complete"},"text":"Their whole fleet, sitting on the harbor floor. All in a day's work.","note":"satisfied"},
   {"id":"m14_1","mission":14,"speaker":"WSO","trigger":{"on":"start"},"text":"They're torching the forest on the way out? Bastards!","note":"angry, low, insult enunciated and punctuated"},
   {"id":"m14_2","mission":14,"speaker":"AWACS","trigger":{"on":"complete"},"text":"Concord rearguard's laying down arms. Hold your fire.","note":"calm, relieved"},
