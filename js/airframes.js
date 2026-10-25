@@ -5,8 +5,8 @@ import * as THREE from 'https://cdnjs.cloudflare.com/ajax/libs/three.js/0.170.0/
 // 2) Low-fidelity procedural airframes for every AI aircraft family (MiG-21 delta, Viggen, Phantom, F-16, F-15, Super
 //    Hornet, Harrier, Tomcat, MiG-31, MiG-29, Su-27 family, Su-25, the original Orrery Q04/Q10/Q11/Q12, 737 AEW, C-17,
 //    B-52, recon drone, floatplane, attack helicopter, cruise missile). They are built for silhouette reading at 2-5 km
-//    (planform, tail count and layout, canards, intakes, engine count), not close-up detail: a few hundred to ~2k
-//    triangles each. Same frame and 0.8 scale convention as the F-22: nose -Z, up +Y, right wing +X, origin near the
+//    (planform, tail count and layout, canards, intakes, engine count), not close-up detail: about 100-300 triangles
+//    (fighters; ~300-500 for the big ones) each. Same frame and 0.8 scale convention as the F-22: nose -Z, up +Y, right wing +X, origin near the
 //    center of mass, real dimensions x 0.8 (the cruise missile is drawn a little larger than life so it stays visible).
 // Geometry (position / normal / aSurf / index) is built once per family and cached; js/aircraft.js adds the per-scheme
 // vertex colors (acquireScheme) and renders it with the same hull material as the F-22 (one GL program, one draw call).
@@ -182,16 +182,38 @@ export function partFromGeometry(geom, kind, smoothDeg = 30, sid = 0) {
 // =============================================================================================
 // Airframe builder helpers. Stations / sections are plain arrays (meters, model frame).
 
+/** Cross-section point count actually built: about half the nominal `seg` (12 -> 6, 10 -> 6, 8 -> 4), always even so the
+ *  section stays left/right symmetric. Silhouette over roundness: hex fuselages, diamond-section small bodies. */
+const lowSeg = (seg) => Math.max(4, 2 * Math.round(seg / 4));
+
+/** Drops interior stations that a straight line between their neighbours already matches within STATION_TOL m (or a
+ *  fifth of the section's size if smaller; width, top, bottom and x), greedily, keeping the ends: fewer rings, same
+ *  side and top profiles to the eye. */
+const STATION_TOL = 0.08;
+function thinStations(st) {
+  const s = st.slice();
+  for (let i = 1; i < s.length - 1;) {
+    const a = s[i - 1], b = s[i], c = s[i + 1], t = (b[0] - a[0]) / (c[0] - a[0]);
+    const tol = Math.min(STATION_TOL, 0.2 * Math.max(b[1], (b[2] - b[3]) / 2));   // (relative for slim bodies: rails, pods)
+    let ok = true;
+    for (let j = 1; j < 5 && ok; j++) { const av = a[j] ?? 0, cv = c[j] ?? 0, bv = b[j] ?? 0; if (Math.abs(av + (cv - av) * t - bv) > tol) ok = false; }
+    if (ok) s.splice(i, 1); else i++;
+  }
+  return s;
+}
+
 /**
  * Lofted body along Z. st = [[z, halfWidth, topY, bottomY, x?], ...] front to rear; the cross-section is a superellipse
- * (o.n: 2 = ellipse, higher = boxier) of o.seg points. o.front / o.rear = { kind, s, d } add a recessed intake / nozzle:
- * a lip ring of `kind`, then an inner ring scaled by s and d m deeper, capped. o.kindFn(kind, x, y, z) may repaint
+ * (o.n: 2 = ellipse; >= 3 = a plain rectangle) of about half of o.seg points (lowSeg). o.front / o.rear = { kind } add an intake /
+ * nozzle: a lip ring of `kind`, capped flat (the old recess fields s, d, inner are ignored). o.kindFn(kind, x, y, z) may repaint
  * vertices. o.mirror adds the x-mirrored copy.
  */
 function body(parts, st, o = {}) {
-  const seg = o.seg || 12, e = 2 / (o.n || 2), kind = o.kind ?? PK.CAMO;
+  st = thinStations(st);
+  const box = (o.n || 2) >= 3, seg = box ? 4 : lowSeg(o.seg || 12), e = 2 / (o.n || 2), kind = o.kind ?? PK.CAMO;
   const ring = (s, k = 1, dz = 0) => {
     const z = s[0], w = s[1] * k, yc = (s[2] + s[3]) / 2, h = (s[2] - s[3]) / 2 * k, x0 = s[4] ?? o.x ?? 0, r = [];
+    if (box) { for (const [a, b] of [[1, 1], [-1, 1], [-1, -1], [1, -1]]) r.push([x0 + a * w, yc + b * h, z + dz]); return r; }   // boxy (n >= 3): a plain rectangle
     for (let i = 0; i < seg; i++) {
       const a = (i / seg) * Math.PI * 2, c = Math.cos(a), sn = Math.sin(a);
       r.push([x0 + w * Math.sign(c) * Math.pow(Math.abs(c), e), yc + h * Math.sign(sn) * Math.pow(Math.abs(sn), e), z + dz]);
@@ -199,10 +221,11 @@ function body(parts, st, o = {}) {
     return r;
   };
   const rings = [], kinds = [], last = st[st.length - 1];
-  if (o.front) { rings.push(ring(st[0], o.front.s ?? 0.72, o.front.d ?? 0.4)); kinds.push(o.front.inner ?? o.front.kind); rings.push(ring(st[0])); kinds.push(o.front.kind); }
+  // intake / nozzle: a lip ring in its paint, capped flat (no recessed inner ring: invisible at silhouette range)
+  if (o.front) { rings.push(ring(st[0])); kinds.push(o.front.kind); }
   for (const s of st) { rings.push(ring(s)); kinds.push(kind); }
-  if (o.rear) { rings.push(ring(last)); kinds.push(o.rear.kind); rings.push(ring(last, o.rear.s ?? 0.78, -(o.rear.d ?? 0.3))); kinds.push(o.rear.inner ?? PK.NOZZLE_IN); }
-  const p = new Part(o.smooth ?? 42);
+  if (o.rear) { rings.push(ring(last)); kinds.push(o.rear.kind); }
+  const p = new Part(o.smooth ?? 65);   // (hex sections: smooth across the 60 deg facets, crease the boxy 90s)
   const base = loftRings(p, rings, (i, k, x, y, z) => (o.kindFn ? o.kindFn(kinds[i], x, y, z) : kinds[i]), o.sid || 0);
   const first = o.front ? 1 : st[0][1] > 1e-4, lastOpen = o.rear ? 1 : last[1] > 1e-4;
   if (first) capStart(p, base, seg);
@@ -220,13 +243,13 @@ function wing(parts, secs, o = {}) {
   const strip = (ss, kd) => {
     const p = new Part(o.smooth ?? 30), rings = ss.map(([x, y, z, c, tc]) => {
       const t = 0.5 * tc * c, zm = z + 0.4 * c;
-      return [[x, y, z], [x + n[0] * t, y + n[1] * t, zm + n[2] * t], [x, y, z + c], [x - n[0] * t, y - n[1] * t, zm - n[2] * t]];
+      return [[x, y, z], [x + n[0] * t, y + n[1] * t, zm + n[2] * t], [x, y, z + c]];   // flat bottom, cambered top
     });
     const base = loftRings(p, rings, (i, k) => (k === 0 && o.edge !== false && kd === PK.CAMO ? PK.EDGE : kd), o.sid || 0);
-    capStart(p, base, 4); capEnd(p, base + (rings.length - 1) * 4, 4);
+    capStart(p, base, 3); capEnd(p, base + (rings.length - 1) * 3, 3);
     p.orient(true);
     parts.push(p);
-    if (o.mirror !== false) parts.push(p.mirrored());
+    if (o.mirror !== false && ss.some((q) => Math.abs(q[0]) > 1e-4)) parts.push(p.mirrored());   // (centerline fins: once)
   };
   if (o.accent != null && o.accent > 0 && o.accent < secs.length) { strip(secs.slice(0, o.accent + 1), kind); strip(secs.slice(o.accent), PK.ACCENT); }
   else strip(secs, o.accent === 0 ? PK.ACCENT : kind);
@@ -251,7 +274,7 @@ function pod(parts, x, y, z0, z1, r, o = {}) {
     { seg: o.seg || 10, front: o.closed ? null : { kind: PK.DARK, s: 0.7, d: 0.5 * r }, rear: o.noNozzle ? null : { kind: PK.METAL, s: 0.75, d: 0.4 * r }, mirror: o.mirror, kind: o.kind });
 }
 /** Canopy bubble (glossy dark glass) from stations [z, halfWidth, topY, bottomY]. */
-const canopy = (parts, st, o = {}) => body(parts, st, { seg: 10, kind: PK.GLASS, smooth: 50, ...o });
+const canopy = (parts, st, o = {}) => body(parts, st, { seg: 10, kind: PK.GLASS, smooth: 65, ...o });
 
 const V = (x, y, z) => new THREE.Vector3(x, y, z);
 /** Named empties: guns at (+-gx, gy, gz), wingtips at (+-tx, ty, tz), rails [(-ax,ay,az), (ax,..), (-bx,by,bz), (bx,..)]. */
@@ -646,7 +669,7 @@ export function airframeForType(name, type = null) {
 // Topology cache: one merged, auto-smoothed indexed geometry per family (attributes shared by every color scheme).
 const _cache = new Map();
 const HALO_RINGS = [[0.10, 0.0], [0.16, 0.10], [0.78, 0.16], [0.93, 0.34], [1.0, 0.0]];   // [radius fraction, alpha]
-const HALO_SEG = 32;
+const HALO_SEG = 12;
 function buildHalos(halos) {
   const pos = [], col = [], idx = [], NR = HALO_RINGS.length;
   for (const h of halos) {
@@ -720,7 +743,7 @@ let _haloMat = null;
 /** The one translucent material every rotor / propeller halo shares (vertex RGBA, no depth write, both sides). */
 export function getHaloMaterial() {
   if (!_haloMat) {
-    _haloMat = new THREE.MeshBasicMaterial({ color: 0xffffff, vertexColors: true, transparent: true, depthWrite: false, side: THREE.DoubleSide });
+    _haloMat = new THREE.MeshBasicMaterial({ color: 0xffffff, vertexColors: true, transparent: true, depthWrite: false, side: THREE.DoubleSide, forceSinglePass: true });   // (one pass: a flat disc needs no back-then-front split)
     _haloMat.name = 'rotorHalo';
   }
   return _haloMat;

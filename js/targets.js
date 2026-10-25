@@ -107,14 +107,27 @@ void main() {
   gl_FragColor = vec4(vColor * exp(-r2 * 3.0), 1.0);
 }`;
 
+// Partial instance uploads: only the touched slot's 16 matrix floats / 3 colour floats go to the GPU (three merges the
+// ranges and clears them after the upload; a whole-buffer write still goes out as one range, see clear()).
+function markMatrix(mesh, slot, n = 1) { mesh.instanceMatrix.addUpdateRange(slot * 16, n * 16); mesh.instanceMatrix.needsUpdate = true; }
+function markColor(mesh, slot) { const c = mesh.instanceColor; if (c) { c.addUpdateRange(slot * 3, 3); c.needsUpdate = true; } }
+
 function prismGeometry() {
-  // Triangular prism, unit size: x in [-0.5, 0.5], y in [0, 1] (ridge on top), z in [-0.5, 0.5]; flat shaded
+  // Triangular prism, unit size: x in [-0.5, 0.5], y in [0, 1], z in [-0.5, 0.5] (a wedge: upright face at x = -0.5,
+  // edge at x = +0.5, y = 0.5); flat shaded
   const g = new THREE.CylinderGeometry(0.5, 0.5, 1, 3, 1).rotateX(Math.PI / 2).rotateZ(Math.PI / 2).toNonIndexed();
   g.computeBoundingBox();
   const bb = g.boundingBox; const h = bb.max.y - bb.min.y, w = bb.max.x - bb.min.x;
   g.translate(-(bb.min.x + bb.max.x) / 2, -bb.min.y, 0).scale(1 / w, 1 / h, 1);
-  g.computeVertexNormals();
-  return g;
+  // the cylinder's end caps are 3-triangle fans around a centre point: keep the 3 side quads and close each end with
+  // one triangle over the same outline (same planes and normals, 8 triangles instead of 12; no uv: the material has no map)
+  const P = Array.from(g.attributes.position.array.subarray(0, 18 * 3));
+  P.push(0.5, 0.5, 0.5, -0.5, 1, 0.5, -0.5, 0, 0.5,   -0.5, 1, -0.5, 0.5, 0.5, -0.5, -0.5, 0, -0.5);
+  g.dispose();
+  const out = new THREE.BufferGeometry();
+  out.setAttribute('position', new THREE.Float32BufferAttribute(P, 3));
+  out.computeVertexNormals();
+  return out;
 }
 
 export class GroundTarget {
@@ -313,7 +326,7 @@ export class GroundForces {
     mesh.setMatrixAt(slot, _m);
     mesh.setColorAt(slot, _c.set(ally ? (def.naval ? ALLY_TINT_NAVAL : ALLY_TINT) : tintFor(typeName, def)));
     mesh.count = Math.max(mesh.count, slot + 1);
-    mesh.instanceMatrix.needsUpdate = true; if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+    markMatrix(mesh, slot); markColor(mesh, slot);
     this.targets.push(t);
     const li = (shape === 'prism' ? CAPACITY : 0) + slot;
     this._light(li, x, y + S[1] + 1.5, z, def.naval ? 0.95 : def.shoots ? 1.0 : 1.0, def.naval ? 0.9 : def.shoots ? 0.12 : 0.55, def.naval ? 0.8 : def.shoots ? 0.08 : 0.2);
@@ -405,7 +418,7 @@ export class GroundForces {
     _s.set(S[0] * 0.9, S[1] * 0.25, S[2] * 0.9);
     _m.compose(_v.set(t.position.x, t.position.y - S[1] * 0.5, t.position.z), t.quaternion, _s);
     mesh.setMatrixAt(t.slot, _m); mesh.setColorAt(t.slot, _c.set(WRECK));
-    mesh.instanceMatrix.needsUpdate = true; if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+    markMatrix(mesh, t.slot); markColor(mesh, t.slot);
   }
   /** Scripted sinking (an allied escort lost to a cruise missile): the hull goes dark, lists and settles bow-up under
    *  the surface over SINK_TIME s, then is removed. updateSinking animates it. */
@@ -415,7 +428,7 @@ export class GroundForces {
     t.alive = false; t.health = Math.min(t.health, 0); t.sinkT = 0;
     this.sinking.push(t);
     const mesh = this.meshes[t.shape];
-    mesh.setColorAt(t.slot, _c.set(WRECK)); if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+    mesh.setColorAt(t.slot, _c.set(WRECK)); markColor(mesh, t.slot);
   }
   /** One matrix per sinking hull per frame (bounded by the hulls going down at once); no allocation. */
   updateSinking(dt) {
@@ -430,14 +443,15 @@ export class GroundForces {
         _m.compose(_v.set(t.position.x, 0.5 - e * (s[1] + 0.3 * s[2] + 10), t.position.z), _q, _s.set(s[0], s[1], s[2]));
         mesh.setMatrixAt(t.slot, _m);
       }
-      mesh.instanceMatrix.needsUpdate = true;
+      markMatrix(mesh, t.slot);
     }
   }
   clear() {
     for (const k of ['box', 'prism']) {
       const m = this.meshes[k];
       for (let i = 0; i < this.used[k]; i++) m.setMatrixAt(i, ZERO_SCALE);
-      m.count = 0; m.instanceMatrix.needsUpdate = true;
+      if (this.used[k] > 0) markMatrix(m, 0, this.used[k]);   // (a range, so spawns later this frame cannot shrink it)
+      m.count = 0;
       this.used[k] = 0; this.freeSlots[k].length = 0; this.enemyCount[k] = 0; this.allyCount[k] = 0;
     }
     for (const t of this.targets) t.alive = false;

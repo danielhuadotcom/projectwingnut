@@ -1200,20 +1200,23 @@ void main() {
   gl_Position = projectionMatrix * viewMatrix * vec4(world, 1.0);
 }
 `;
+// mediump below the shared declarations (uniform precisions must match the vertex stage): the colour math runs at half
+// precision on mobile GPUs; the texture coordinates stay highp (fp16 would quantize the noise lookups into blocks).
 const PUFF_FRAG = GLSL_COMMON + GLSL_LIGHT + /* glsl */`
-varying vec2 vUv;
+precision mediump float;
+varying highp vec2 vUv;
 varying float vVis;
-varying vec2 vSeed;
+varying highp vec2 vSeed;
 varying vec3 vRight;
 varying vec3 vUp;
 varying vec3 vBack;
 varying vec3 vHaze;
 varying float vFogT;
 void main() {
-  vec2 q = vUv * 2.0 - 1.0;
-  float r2 = dot(q, q);
+  highp vec2 q = vUv * 2.0 - 1.0;
+  highp float r2 = dot(q, q);
   if (r2 > 1.0 || vVis < 0.002) discard;
-  vec2 pp = (q * 2.1 + vSeed) * DINV;
+  highp vec2 pp = (q * 2.1 + vSeed) * DINV;
   vec4 na = texture(uDetail, pp);
   vec4 nb = texture(uDetail, pp * 2.1 + vec2(0.37, 0.11));
   float n = 0.5 * na.a + 0.25 * nb.a + 0.125 * na.r + 0.0625 * nb.r;
@@ -1494,7 +1497,9 @@ export class World {
       uniforms: U, vertexShader: SKY_VERT, fragmentShader: SKY_FRAG, defines: { FAR_PLANE: 1 },
       side: THREE.BackSide, depthWrite: false, depthTest: true, depthFunc: THREE.LessEqualDepth, fog: false,
     });
-    this._skyGeo = new THREE.SphereGeometry(50000, 32, 16);
+    // The dome is centred on the camera and the shader only uses normalize(position): any closed convex hull around the
+    // camera yields exactly the view-ray direction per pixel, so the tessellation is invisible (16x8: 224 triangles).
+    this._skyGeo = new THREE.SphereGeometry(50000, 16, 8);
     this.sky = new THREE.Mesh(this._skyGeo, this._skyMat);
     this.sky.renderOrder = 1000; this.sky.frustumCulled = false; this.sky.matrixAutoUpdate = true;
     scene.add(this.sky);
@@ -1527,7 +1532,7 @@ export class World {
     // ---- cloud layer disc
     this._cloudGeo = buildDiscGeometry(300, 1.45, 46000, 64);
     this._cloudMat = new THREE.ShaderMaterial({
-      uniforms: U, vertexShader: WATER_VERT, fragmentShader: CLOUD_FRAG, side: THREE.DoubleSide,
+      uniforms: U, vertexShader: WATER_VERT, fragmentShader: CLOUD_FRAG, side: THREE.DoubleSide, forceSinglePass: true,
       transparent: true, depthWrite: false, fog: false,
     });
     this.clouds = new THREE.Mesh(this._cloudGeo, this._cloudMat);
@@ -1537,7 +1542,7 @@ export class World {
     // ---- cloud puffs (positions are generated in the vertex shader from gl_InstanceID)
     this._puffGeo = new THREE.PlaneGeometry(1, 1);
     this._puffMat = new THREE.ShaderMaterial({
-      uniforms: U, vertexShader: PUFF_VERT, fragmentShader: PUFF_FRAG, side: THREE.DoubleSide,
+      uniforms: U, vertexShader: PUFF_VERT, fragmentShader: PUFF_FRAG, side: THREE.DoubleSide, forceSinglePass: true,
       transparent: true, depthWrite: false, fog: false,
     });
     this.puffs = new THREE.InstancedMesh(this._puffGeo, this._puffMat, MAX_PUFF_G * MAX_PUFF_G);

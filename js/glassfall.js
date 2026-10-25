@@ -20,7 +20,7 @@ import { glassfallPreset } from './timeofday.js';
 // glassfallPreset): the last detonation leaves it fully red. A few seconds after the last one the mission completes
 // through Game.missionComplete, which makes the player immortal; until then fighters, flak and SAMs still kill.
 //
-// Cost: DOMES pooled dome + ring meshes (two draw calls each while a blast is up, hidden otherwise), one pooled Aircraft,
+// Cost: DOMES pooled dome + ring meshes (three draw calls per blast while it is up: dome back + front, ring; hidden otherwise), one pooled Aircraft,
 // no lights, nothing allocated per frame (salvo spawns reuse the game's aircraft pool). The sky steps run
 // World.setLighting once per detonation, a frame after it: a re-grade of the cached sky table (no scattering model, well
 // under 1 ms) and, on the last step only, the red environment map, copied from the one prepare() rendered at mission
@@ -83,12 +83,19 @@ export class Glassfall {
       const mat = new THREE.ShaderMaterial({
         uniforms: { uColor: { value: new THREE.Vector3(...CRIMSON) }, uA: { value: 0 }, uCore: { value: 0 } },
         vertexShader: DOME_VERT, fragmentShader: DOME_FRAG,
-        transparent: true, depthWrite: false, side: THREE.DoubleSide, fog: false,   // normal blend: it tints what it covers crimson
+        transparent: true, depthWrite: false, side: THREE.BackSide, fog: false,   // normal blend: it tints what it covers crimson
       });
+      // Normal blending is order-dependent, so the far (inner) side draws first and the near side over it, as three's
+      // DoubleSide two-pass would, but as two fixed materials (sharing uniforms) instead of flipping one material's
+      // side, which marks it needsUpdate twice a frame. The front half is a child: same transform and visibility.
       const dome = new THREE.Mesh(domeGeo, mat); dome.name = 'glassfall-dome'; dome.visible = false; dome.frustumCulled = false;
-      const ringMat = new THREE.MeshBasicMaterial({ color: new THREE.Color(3.5, 0.25, 0.25), transparent: true, opacity: 0, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide, fog: false });
+      const frontMat = new THREE.ShaderMaterial({ uniforms: mat.uniforms, vertexShader: DOME_VERT, fragmentShader: DOME_FRAG,
+        transparent: true, depthWrite: false, side: THREE.FrontSide, fog: false });
+      const front = new THREE.Mesh(domeGeo, frontMat); front.name = 'glassfall-dome-front'; front.frustumCulled = false;
+      dome.add(front);
+      const ringMat = new THREE.MeshBasicMaterial({ color: new THREE.Color(3.5, 0.25, 0.25), transparent: true, opacity: 0, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide, forceSinglePass: true, fog: false });
       const ring = new THREE.Mesh(ringGeo, ringMat); ring.name = 'glassfall-ring'; ring.visible = false; ring.frustumCulled = false;
-      dome.renderOrder = ring.renderOrder = 5;
+      dome.renderOrder = ring.renderOrder = 5; front.renderOrder = 5.001;   // front after back (same depth for the sort)
       scene.add(dome); scene.add(ring);
       if (game.profiler) { game.profiler.instrument(dome, 'glassfall'); game.profiler.instrument(ring, 'glassfall'); }
       this.blasts.push({ dome, ring, t: -1 });

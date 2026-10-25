@@ -71,6 +71,11 @@ const H_END = 26;             // ridge height above the bore crown at the portal
 const NOSE = 260;             // length of the ridge's descending nose at each end (m)
 const LIGHT_DS = 40;          // light ring spacing (m)
 const LIGHT_0 = 20;           // first light ring this far inside each portal (m)
+// Distance LOD of the exterior (one index buffer, switched with drawRange): LOD1 drops every other ring, LOD2 also every
+// other profile point; the end rings keep all points so the portal faces always meet the sweep exactly. Distances
+// are for a 1080-pixel-tall view at the game's 66° FOV and scale with the scene target height and the FOV.
+const EXT_LOD_D = [7000, 12000];
+// The bore interior is skipped while the camera is outside it and behind both portal planes (no opening can be seen).
 const XW = 700, DX = 10;      // lateral extent / resolution of the per-ring collision height table (m)
 const NX = Math.round((2 * XW) / DX) + 1;
 
@@ -485,7 +490,9 @@ void main() {
 // ============================================================================
 const _F = { x: 0, z: 0, fy: 0, tx: 0, tz: 1 };
 const _P = { H: 0, xc: 0, wl: 0, wr: 0 };
-const _loc = { s: 0, x: 0, y: 0, i: 0, fy: 0 };   // last projection (collision helpers; reused, never allocated per call)
+const _loc = { s: 0, x: 0, y: 0, i: 0, fy: 0 };
+const _vs = new THREE.Vector2();
+const TAN33 = Math.tan(THREE.MathUtils.degToRad(33));   // last projection (collision helpers; reused, never allocated per call)
 
 export class Tunnel {
   /**
@@ -532,13 +539,6 @@ export class Tunnel {
     };
     this._intMat = new THREE.ShaderMaterial({ name: 'tunnelInterior', vertexShader: INT_VERT, fragmentShader: INT_FRAG, defines: { ...defines }, fog: false, uniforms: this._intU });
     this._timeU = U.uTime;
-    this._lightMat = new THREE.ShaderMaterial({
-      name: 'tunnelLights', vertexShader: LIGHT_VERT, fragmentShader: LIGHT_FRAG, defines: { ...defines }, fog: false,
-      uniforms: { uSkyLut: U.uSkyLut, uSunDir: U.uSunDir, uFogMie: U.uFogMie, uFogRay: U.uFogRay, uTime: U.uTime },
-      transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
-    });
-
-    // ---- meshes (positions are world space; identity transforms)
     this.exterior = new THREE.Mesh(ext.geo, this._extMat);
     this.interior = new THREE.Mesh(int, this._intMat);
     this.lights = new THREE.Mesh(lights, this._lightMat);
@@ -547,13 +547,17 @@ export class Tunnel {
     // below draws whichever of exterior / interior is in front first (one frame of latency)
     // lamps: transparent, before the cloud layer (10) / puffs (11) / smoke (20+) so those blend over them
     this.exterior.renderOrder = 0.5; this.interior.renderOrder = 0.6; this.lights.renderOrder = 5;
-    const hook = (r, s, camera) => this._onCamera(camera);
-    this.exterior.onBeforeRender = hook; this.interior.onBeforeRender = hook;
+    // Each hook runs right before its own draw and picks that mesh's drawRange for this frame's camera (count 0 = no
+    // draw call): the exterior LOD, and whether the interior can be seen at all (inside, or in front of an opening).
+    this.exterior.onBeforeRender = (r, s, camera) => { this._onCamera(camera); this._pickExtLod(r, camera); };
+    this.interior.onBeforeRender = (r, s, camera) => { this._onCamera(camera); this._pickInterior(camera); };
     for (const m of [this.exterior, this.interior, this.lights]) { m.matrixAutoUpdate = false; m.updateMatrix(); scene.add(m); }
     this.meshes = [this.exterior, this.interior, this.lights];
     this.lampColor = this._intU.uLampCol.value;     // linear RGB of the bore's lamp rings (tweakable at runtime)
-    this.triangles = 0;
-    for (const m of this.meshes) this.triangles += m.geometry.index.count / 3;
+    this.triangles = 0;                              // full detail, interior shown
+    for (const m of [this.exterior, this.interior, this.lights]) this.triangles += Math.min(m.geometry.index.count, m.geometry.drawRange.count) / 3;
+    this.lodBias = 1;                                // > 1 pushes the exterior LODs farther out
+    this.forceLod = null;                            // 0..2 pins the exterior LOD (A/B screenshots)
     this.buildTime = now() - t0;
   }
 
@@ -737,6 +741,33 @@ export class Tunnel {
       const a = j * K + i, b = a + 1, c = a + K, d = c + 1;
       idx.push(a, b, c, b, d, c);                      // (dP/dprofile) x (dP/ds) points out of the ridge
     }
+    // coarser sweeps over the same vertices (shared normals / baked shading): a zipper between two rings' point lists
+    // keeps the full-detail end rings watertight against the coarse ring next to them
+    const sweepLod = [];
+    {
+      const full = [], half = [];
+      for (let i = 0; i < K; i++) { full.push(i); if (i % 2 === 0 || i === K - 1) half.push(i); }
+      const zip = (out, ja, A, jb, B) => {
+        let p = 0, q = 0;
+        while (p < A.length - 1 || q < B.length - 1) {
+          if (q >= B.length - 1 || (p < A.length - 1 && A[p + 1] <= B[q + 1])) { out.push(ja * K + A[p], ja * K + A[p + 1], jb * K + B[q]); p++; }
+          else { out.push(ja * K + A[p], jb * K + B[q + 1], jb * K + B[q]); q++; }
+        }
+      };
+      for (const [ringStep, mid] of [[2, full], [2, half]]) {
+        const rings = [];
+        for (let j = 0; j < NR - 1; j += ringStep) rings.push(j);
+        if (NR - 1 - rings[rings.length - 1] < ringStep && rings.length > 1 && ringStep > 1) rings.pop();
+        rings.push(NR - 1);
+        const out = [];
+        for (let r = 0; r < rings.length - 1; r++) {
+          const ja = rings[r], jb = rings[r + 1];
+          zip(out, ja, ja === 0 ? full : mid, jb, jb === NR - 1 ? full : mid);
+        }
+        sweepLod.push(out);
+      }
+    }
+    const nSweepIdx = idx.length;
     // portal faces: polar rings from the (flared, slightly inset) opening outline out to the end ring + buried closure
     const thM = new Float64Array(KC), ox2 = new Float64Array(KC), oy2 = new Float64Array(KC);
     for (let e = 0; e < 2; e++) {
@@ -796,7 +827,15 @@ export class Tunnel {
     geo.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
     geo.setAttribute('aTan', new THREE.BufferAttribute(tan, 3));
     geo.setIndex(new THREE.BufferAttribute(nv < 65536 ? new Uint16Array(idx) : new Uint32Array(idx), 1));
-    geo.computeVertexNormals();
+    geo.computeVertexNormals();                        // (from the full-detail mesh: every LOD shares these normals)
+    // index buffer = [full sweep + faces][faces + LOD1 sweep][faces + LOD2 sweep]; drawRange picks one
+    {
+      const caps = idx.slice(nSweepIdx), all = idx.slice();
+      this._extLod = [{ start: 0, count: idx.length }];
+      for (const sw of sweepLod) { this._extLod.push({ start: all.length, count: caps.length + sw.length }); for (const v of caps) all.push(v); for (const v of sw) all.push(v); }
+      geo.setIndex(new THREE.BufferAttribute(nv < 65536 ? new Uint16Array(all) : new Uint32Array(all), 1));
+      geo.setDrawRange(0, idx.length);
+    }
     geo.computeBoundingBox(); geo.computeBoundingSphere();
     const bb = geo.boundingBox;
     this._bbMin = bb.min.clone(); this._bbMax = bb.max.clone();
@@ -894,6 +933,28 @@ export class Tunnel {
     geo.computeBoundingSphere();
     geo.boundingSphere.radius += 40;     // billboards grow with distance
     return geo;
+  }
+
+  _pickInterior(camera) {
+    let show = this._intU.uCamIn.value > 0;
+    if (!show) {
+      // outside the bore: the openings are only visible from in front of their planes (30 m slack for the leaning faces)
+      const e = camera.matrixWorld.elements;
+      for (const E of this._ends) if ((e[12] - E.x) * E.ox + (e[14] - E.z) * E.oz > -30) { show = true; break; }
+    }
+    this.interior.geometry.drawRange.count = show ? Infinity : 0;
+  }
+  _pickExtLod(r, camera) {
+    const e = camera.matrixWorld.elements, x = e[12], y = e[13], z = e[14], a = this._bbMin, b = this._bbMax;
+    const dx = Math.max(a.x - x, 0, x - b.x), dy = Math.max(a.y - y, 0, y - b.y), dz = Math.max(a.z - z, 0, z - b.z);
+    const d = Math.sqrt(dx * dx + dy * dy + dz * dz);
+    // metres per pixel matter, not metres: scale by the target height and the field of view (66° = the game's)
+    const rt = r.getRenderTarget(), h = rt ? rt.height : r.getDrawingBufferSize(_vs).y;
+    const k = (h / 1080) * (camera.isPerspectiveCamera ? TAN33 * (camera.zoom || 1) / Math.tan(THREE.MathUtils.degToRad(camera.fov * 0.5)) : 1) * this.lodBias;
+    const L = this._extLod, lod = this.forceLod != null ? this.forceLod : d > EXT_LOD_D[1] * k ? 2 : d > EXT_LOD_D[0] * k ? 1 : 0;
+    const R = L[Math.min(lod, L.length - 1)];
+    this.exterior.geometry.setDrawRange(R.start, R.count);
+    this.lod = lod;
   }
 
   // -------------------------------------------------------------------------- baked per-vertex cavity AO + sun visibility

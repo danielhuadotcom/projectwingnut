@@ -54,7 +54,6 @@ body { margin: 0; background: var(--bg); color: var(--fg); font-family: var(--mo
 /* Glass panel with HUD corner brackets */
 .m-panel { pointer-events: auto; position: relative; display: flex; flex-direction: column; width: 100%; max-height: 100%; padding: 28px 30px 18px;
   background: linear-gradient(180deg, rgba(9, 18, 28, 0.86), rgba(4, 9, 15, 0.88)); border: 1px solid var(--line);
-  -webkit-backdrop-filter: blur(18px) saturate(1.25); backdrop-filter: blur(18px) saturate(1.25);
   box-shadow: 0 28px 80px rgba(0, 0, 0, 0.55), inset 0 1px 0 rgba(255, 255, 255, 0.05);
   animation: m-in 0.2s cubic-bezier(0.2, 0.7, 0.2, 1) both; }
 .m-panel::before { content: ""; position: absolute; inset: -1px; pointer-events: none; --c: var(--hud); --s: 14px;

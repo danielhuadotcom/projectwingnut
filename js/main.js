@@ -5,14 +5,14 @@ import { Input } from './input.js';
 import { HUD } from './hud.js';
 import { AudioFX } from './audio.js';
 import { Aircraft, AIRCRAFT_RADIUS, FLIGHT } from './aircraft.js';
-import { airframeForType } from './airframes.js';
+import { airframeForType, AIRFRAME_IDS, getAirframeTopology } from './airframes.js';
 import { Weapons } from './weapons.js';
 import { ChaseCamera } from './camera.js';
 import { EnemyBrain } from './ai.js';
 import { Squadron } from './squad.js';
 import { AlliedForces } from './allies.js';
 import { Profiler } from './profiler.js';
-import { PRESETS, TIERS, CHOICES, DynamicResolution, StepDown, loadChoice, saveChoice, guessTier } from './quality.js';
+import { PRESETS, TIERS, CHOICES, DynamicResolution, StepDown, loadChoice, saveChoice, guessTier, presetSamples } from './quality.js';
 import { GroundForces, DEFAULT_GROUND_TYPES, unitScale } from './targets.js';
 import { MISSIONS, AIRCRAFT_TYPES, GROUND_TYPES } from './missions.js';
 import { Awacs } from './awacs.js';
@@ -177,7 +177,9 @@ class Game {
   }
 
   init() {
-    const renderer = this.renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: 'high-performance', alpha: false, stencil: false });
+    // depth: false: only PostFX's composite (a depth-test-free fullscreen triangle) draws to the canvas; the scene has
+    // its own depth buffer in PostFX's target, so a canvas depth buffer would be pure memory and tile load/store traffic
+    const renderer = this.renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: 'high-performance', alpha: false, stencil: false, depth: false });
     renderer.toneMapping = THREE.NoToneMapping;
     renderer.outputColorSpace = THREE.SRGBColorSpace;
     renderer.autoClear = true;
@@ -205,7 +207,7 @@ class Game {
     this.inTunnel = false;
     if (PARAMS.has('scale')) this.renderScale = THREE.MathUtils.clamp(Number(PARAMS.get('scale')) || 1, 0.45, 1);
     if (PARAMS.has('dpr')) this.dpr = THREE.MathUtils.clamp(Number(PARAMS.get('dpr')) || 1, 0.5, 2);
-    const msaa = PARAMS.has('msaa') ? Number(PARAMS.get('msaa')) : preset.samples;
+    const msaa = PARAMS.has('msaa') ? Number(PARAMS.get('msaa')) : presetSamples(this.quality, this.gpuName, navigator.maxTouchPoints || 0);
     // PostFX renders the scene at renderScale internally (instant to change) and composites at native resolution
     this.post = new PostFX(renderer, this.glHost.clientWidth, this.glHost.clientHeight, this.dpr, { samples: msaa, renderScale: this.renderScale, quality: preset.sub });
     this.input = new Input(window);
@@ -362,6 +364,11 @@ class Game {
       const P = new THREE.Vector3(0, 9000, -4000);
       const type = this.airTypes['SLEET-21'] || Object.values(this.airTypes)[0];
       const dummy = this.spawnAircraft('SLEET-21', type, P.clone(), 0, 0);
+      // every airframe family's merged geometry now rather than at its first spawn mid-mission (js/airframes.js cache), and
+      // a rotor-halo airframe in view so the halo's translucent program and pipeline are built here too
+      for (const id of AIRFRAME_IDS) getAirframeTopology(id);
+      const heliType = this.airTypes['KD-28H'];
+      const heli = heliType ? this.spawnAircraft('KD-28H', heliType, P.clone().add(new THREE.Vector3(-40, 0, -60)), 0, 1) : null;
       this.rebuildCombatList();
       if (!dummy.fxLite) { dummy.vapor && (dummy.vapor.visible = true); this.player.vapor && (this.player.vapor.visible = true); }   // (off on 'verylow')
       const w = this.weapons;
@@ -397,7 +404,7 @@ class Game {
       r.setRenderTarget(prev);
       this.glassfall.warmUp(false);
       extras.forEach((o, i) => { o.visible = was[i]; });
-      dummy.kill();
+      dummy.kill(); if (heli) heli.kill();
       for (const m of w.missiles) if (m.owner === dummy) m.alive = false;
       if (this.player.vapor) this.player.vapor.visible = false;
       this.rebuildCombatList();
@@ -446,7 +453,7 @@ class Game {
     if (!PARAMS.has('scale')) this.renderScale = Math.min(p.scaleMax, Math.max(p.scaleMin, this.renderScale));
     // Changing the MSAA sample count rebuilds every scene pipeline on first draw (multi-second stalls on some
     // drivers), so automatic tier steps keep the current count; only explicit menu choices change it.
-    if (this.post.setSamples && allowSamples) this.post.setSamples(PARAMS.has('msaa') ? Number(PARAMS.get('msaa')) : p.samples);
+    if (this.post.setSamples && allowSamples) this.post.setSamples(PARAMS.has('msaa') ? Number(PARAMS.get('msaa')) : presetSamples(tier, this.gpuName, navigator.maxTouchPoints || 0));
     if (this.post.setQuality) this.post.setQuality(p.sub);
     if (this.world.setQuality) this.world.setQuality(p.sub);
     if (this.weapons) {
@@ -480,12 +487,17 @@ class Game {
    *  HUD. Never up (only the Settings choice raises it), never below the lowest tier; re-armed by every mission/round load.
    *  rawMs: the unclamped frame interval. */
   updateDynamicResolution(dt, rawMs = dt * 1000) {
-    if (this.state === 'paused') return;
+    // (also not while a menu throttles drawing (title, debrief): skipped frames would read as cheap ones)
+    if (this.state === 'paused' || this._pausedT > 0.5) return;
     const prof = this.profiler, gpu = prof.mode === 'pass' ? prof.lastTotal.pass : 0;
     const fresh = prof.gpuSeq !== this._gpuSeq; this._gpuSeq = prof.gpuSeq;   // (GPU totals arrive every few frames)
     const P = PRESETS[this.quality];
     const r = this.dynres.update(dt, this.renderScale, P, gpu, dt * 1000, fresh);
     this.setRenderScale(r.scale);
+    // sparse GPU samples (every 14th frame): the median looks at the newest 16 (~3.7 s) so a heavier scene is still
+    // answered within ~2 s, as with 48 samples every 4th frame
+    if (!this.bench && !prof.cpuOn) { const ev = this.gpuTimerEvery(); prof.setPassPlan('single', ev); this.dynres.window = ev > 4 && this.dynres.useGpu ? 16 : 48; }
+    else this.dynres.window = 48;
     if (this.qualityChoice !== 'auto' || this.state !== 'playing') return;
     const i = TIERS.indexOf(this.quality);
     if (i <= 0) return;
@@ -496,12 +508,16 @@ class Game {
       this.stepDowns = (this.stepDowns || 0) + 1;
     }
   }
+  /** Normal play's GPU timing cadence: every 4th frame until dynamic resolution has its 12 samples (after start, a
+   *  quality change or a scale change: each resets them), then every 14th to keep watching at a fraction of the cost. */
+  gpuTimerEvery() { return this.dynres && this.dynres.n >= 12 ? 14 : 4; }
   /** CPU section timings are read only by the perf overlay and benchmarks: record them only then. */
   syncProfilerCpu() {
     this.profiler.cpuOn = !!this.bench || !!(this.ui.perf && !this.ui.perf.hidden);
     // GPU timer queries cost ~1 ms of main-thread time per pass timed (js/profiler.js): normal play times one whole
-    // frame in four (dynamic resolution's input), the overlay one pass a frame round-robin, benchmarks every pass
-    this.profiler.setPassPlan(this.bench ? 'all' : this.profiler.cpuOn ? 'rr' : 'single', this.bench || this.profiler.cpuOn ? 1 : 4);
+    // frame in 4 while dynamic resolution collects samples, else one in 14 (gpuTimerEvery), the overlay one pass a
+    // frame round-robin, benchmarks every pass
+    this.profiler.setPassPlan(this.bench ? 'all' : this.profiler.cpuOn ? 'rr' : 'single', this.bench || this.profiler.cpuOn ? 1 : this.gpuTimerEvery());
     if (this.hud) this.hud.prof = this.profiler.cpuOn ? (this.hud.prof || {}) : null;   // per-group HUD times for the overlay
   }
   /** HUD cost control: a HUD that keeps costing > 6 ms per frame in flight (software Canvas2D: Firefox for Android; Chrome's
@@ -520,8 +536,9 @@ class Game {
     const slow = !!this.hudSlow;
     const res = PARAMS.has('hudres') ? Number(PARAMS.get('hudres')) : slow ? 0.75 : 1;
     const sprites = PARAMS.has('hudsprites') ? PARAMS.get('hudsprites') !== '0' : false;   // (no gain measured in Firefox)
-    const cache = PARAMS.has('hudcache') ? PARAMS.get('hudcache') !== '0' : slow;
-    if (this.hud.setBudget) this.hud.setBudget(res, sprites, cache);
+    const P = PRESETS[this.quality] || PRESETS.high;     // per tier: backing-store DPR cap, cached layers on LOW / VERY LOW
+    const cache = PARAMS.has('hudcache') ? PARAMS.get('hudcache') !== '0' : slow || !!P.hudCache;
+    if (this.hud.setBudget) this.hud.setBudget(res, sprites, cache, P.hudScale || 2);
   }
   updateOverlay(dt) {
     const el = this.ui.perf; if (!el || el.hidden) return;
@@ -609,8 +626,10 @@ class Game {
     // radio and soundtrack: the mission's script and clips (js/radio.js), its track and the ones its phases or cues use
     this._bossMark = null;
     this.comms.resetMission(M, this);
+    const extraTracks = M.phases.map((P) => P.music).concat(this.comms.script.filter((e) => e.music && e.music.track).map((e) => e.music.track)).filter(Boolean);
+    this.music.keepOnly([missionTrack(M), ...extraTracks]);   // other tracks' decoded audio (~60 MB each) is released
     this.music.setTrack(missionTrack(M));
-    this.music.prefetch(M.phases.map((P) => P.music).concat(this.comms.script.filter((e) => e.music && e.music.track).map((e) => e.music.track)).filter(Boolean));
+    this.music.prefetch(extraTracks);
     this.say('sortieStart', 3);
     this.comms.missionStart();
     this.nextPhase();
@@ -771,6 +790,7 @@ class Game {
     this.setState('playing');
     this.message('INFINITY', true, 4);
     this.comms.resetMission(null, this);
+    this.music.keepOnly(['epic']);
     this.music.setTrack('epic');
     this.say('sortieStart', 3);
     this.nextRound();
@@ -1588,14 +1608,22 @@ class Game {
     // Paused: the simulation is frozen, so half a second after pausing the view behind the pause menu is redrawn at
     // 15 Hz instead of every display frame (menus and input still run every frame): no full-rate GPU and CPU drawing
     // while nobody is flying (phones heat up and drain in a pause menu otherwise). The canvas keeps the last frame.
+    // The same 15 Hz behind the debrief (mission complete, or shot down), and 30 Hz for the title's orbit (it moves, so
+    // a little more). Skipped frames' time is handed to the next drawn frame (drawDt) so world / HUD animation keeps pace.
     let draw = true;
-    if (this.state === 'paused' && !this.bench) {
+    const st = this.state;
+    const menuHz = this.bench ? 0 : (st === 'paused' || st === 'complete' || st === 'dead') ? 15 : st === 'title' ? 30 : 0;
+    this._drawAcc = (this._drawAcc || 0) + dt;
+    if (menuHz > 0) {
+      if (st !== this._menuDrawState) { this._menuDrawState = st; this._pausedT = 0; }
       this._pausedT = (this._pausedT || 0) + dt; this._pauseDrawT = (this._pauseDrawT || 0) + dt;
-      if (this._pausedT > 0.5 && this._pauseDrawT < 1 / 15) draw = false; else this._pauseDrawT = 0;
-    } else this._pausedT = 0;
+      if (this._pausedT > 0.5 && this._pauseDrawT < 1 / menuHz) draw = false; else this._pauseDrawT = 0;
+    } else { this._pausedT = 0; this._menuDrawState = null; }
+    const drawDt = draw ? Math.min(this._drawAcc, 0.25) : 0;
+    if (draw) this._drawAcc = 0;
     if (draw) {
       prof.cpuBegin('world');
-      this.world.update(dt, this.camera, this.time);
+      this.world.update(drawDt, this.camera, this.time);
       if (this._hidden) for (const o of this._hidden) o.visible = false;
       if (this.hideJets) for (const ac of this.allAircraft) ac.mesh.visible = false;
       prof.cpuEnd('world');
@@ -1605,14 +1633,14 @@ class Game {
       const sunVisible = _v.z < 1 && Math.abs(_v.x) < 1.4 && Math.abs(_v.y) < 1.4;
       this.post.setSunScreenPos(_v.x * 0.5 + 0.5, _v.y * 0.5 + 0.5, sunVisible);
       prof.cpuBegin('render');
-      this.post.render(this.scene, this.camera, dt);
+      this.post.render(this.scene, this.camera, drawDt);
       prof.cpuEnd('render'); prof.cpuBegin('hud');
       const h0 = performance.now();
-      this.buildFrame(dt);
+      this.buildFrame(drawDt);
       const h1 = performance.now();
       if (!this.noHud) this.hud.render(this.frame);
       prof.cpuEnd('hud');
-      this.updateHudBudget(dt, h1 - h0, performance.now() - h1);
+      this.updateHudBudget(drawDt, h1 - h0, performance.now() - h1);
     }
     this.updateTitleStatus();
     if ((!this.bench && !PARAMS.has('scale')) || PARAMS.has('dynres')) this.updateDynamicResolution(dt, rawMs);   // (?scale= pins it)
@@ -2102,6 +2130,7 @@ class Game {
     this.messages.length = 0; this.radio = null; this.target = null;
     if (this.awacs.stop) this.awacs.stop();
     this.comms.resetMission(null, this);
+    this.music.keepOnly(['ceiling']);                // (the mission's tracks are released once the title theme takes over)
     this.music.setTrack('ceiling', { fade: 2 });   // back to the title theme
     this.stopWarnings();                   // only the flight loop switches warning / lock tones off otherwise
     if (this.audio.setPaused) this.audio.setPaused(false);
@@ -2290,11 +2319,22 @@ class Game {
 
   // ---------- benchmark mode (?bench=1&dur=16&warm=4) ----------
   startBench() {
+    // ?bmis=<mission number> or ?bmis=inf benchmarks a real mission's first phase (everything immortal) instead of 6 NV-16s
+    const bm = PARAMS.get('bmis'); if (PARAMS.has('bdiff')) this.diff = DIFFICULTY[PARAMS.get('bdiff')] || this.diff;
+    if (bm === 'inf') this.startInfinity();
+    else if (bm) { this.audio.unlock(); this.loadMission(Number(bm) - 1); }
+    else {
     this.startMission();
     for (const e of this.enemies) e.kill();
     this.ground.clear(); this.allied.clear();
     const p = this.player; p.getForward(_fwd);
     this.spawnAirGroup({ type: 'NV-16', count: 6, formation: 'loose', task: 'engage' }, p.position.x + _fwd.x * 3500, p.position.z + _fwd.z * 3500);   // constant workload
+    }
+    if (PARAMS.has('bmix')) {   // ?bmix=N: N of every aircraft type on top, spread over an arc ahead (worst-case type mix)
+      const n = Number(PARAMS.get('bmix')) || 2, p = this.player, names = Object.keys(this.airTypes); p.getForward(_fwd);
+      names.forEach((name, i) => { const a = Math.atan2(_fwd.x, -_fwd.z) + (i / names.length - 0.5) * 1.2, d = (Number(PARAMS.get('bmixd')) || 2500) + (i % 4) * 150;
+        this.spawnAirGroup({ type: name, count: n, formation: 'loose', task: 'engage' }, p.position.x + Math.sin(a) * d, p.position.z - Math.cos(a) * d); });
+    }
     this.rebuildCombatList();
     const immortal = () => false;
     for (const ac of this.allAircraft) ac.applyDamage = immortal;
@@ -2318,11 +2358,13 @@ class Game {
   updateBench(dt) {
     const b = this.bench; if (b.done) return;
     b.t += dt;
+    if (PARAMS.has('bmis')) { const immortal = () => false; for (const ac of this.allAircraft) ac.applyDamage = immortal; for (const g of (this.ground.targets || [])) if (g) g.applyDamage = immortal; this.player.health = 100; this.missionDoneT = 0; }
+    if (b.t >= b.warm) { b.hn = (b.hn || 0) + 1; if (dt > 0.05) b.h50 = (b.h50 || 0) + 1; b.hmax = Math.max(b.hmax || 0, dt * 1000); }
     const prof = this.profiler;
     if (b.t < b.warm) { prof.setMode('off'); return; }
     if (!b.started) { b.started = true; prof.reset(); b.modeT = 0; }
     b.modeT += dt;
-    prof.setMode(Math.floor(b.modeT / 2) % 2 === 0 ? 'pass' : 'object');
+    prof.setMode(PARAMS.has('pmode') ? PARAMS.get('pmode') : Math.floor(b.modeT / 2) % 2 === 0 ? 'pass' : 'object');
     // Fixed effects cadence: a missile every 2.5 s, an explosion 350 m ahead every 2 s
     b.mslT += dt; b.boomT += dt;
     if (b.mslT > 2.5 && this.state === 'playing') { b.mslT = 0; this.weapons.fireMissile(this.player, this.target || this.nearestEnemy()); }
@@ -2339,6 +2381,10 @@ class Game {
       sum.drawCalls = this.drawCalls; sum.triangles = this.triangles;
       sum.enemies = this.enemies.filter((e) => e.alive).length; sum.state = this.state;
       sum.quality = this.quality; sum.qualityChoice = this.qualityChoice;
+      { const ri2 = this.renderer.info; sum.programs = ri2.programs ? ri2.programs.length : -1; sum.geometries = ri2.memory.geometries; sum.textures = ri2.memory.textures;
+        sum.pool = this.enemies.length; sum.hitch = { n: b.hn, over50: b.h50 || 0, max: +(b.hmax || 0).toFixed(1) };
+        let mats = new Set(), meshes = 0; this.scene.traverse((o) => { if (o.isMesh || o.isPoints || o.isLine) { meshes++; mats.add(o.material); } }); sum.meshes = meshes; sum.materials = mats.size;
+        const types = {}; for (const e of this.enemies) if (e.alive) types[e.airframe || '?'] = (types[e.airframe || '?'] || 0) + 1; sum.types = types; }
       console.log('BENCH_RESULT ' + JSON.stringify(sum));
     }
   }

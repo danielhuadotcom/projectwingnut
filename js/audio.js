@@ -16,6 +16,7 @@ const GUN_MIN_INTERVAL = 0.035;  // s between gun voices
 const GUN_LEVEL = 0.55;          // player cannon buzz level (sfx bus)
 const GUN_RPS = 100;             // M61 Vulcan, 6000 rounds/min: the buzz's fundamental
 const GUN_IDLE_RATE = 0.55;      // buzz playback rate while spun down (spin-up / spin-down glide between)
+const GUN_IDLE_STOP = 1.5;       // s after the trigger is released before the buzz loop is stopped (its tail is long gone)
 const WILHELM_COOLDOWN = 6;      // s between easter-egg screams
 const NOISE_SECONDS = 2;         // length of the looped noise buffers
 const SCHED_INTERVAL_MS = 80;    // JS timer for the beep scheduler
@@ -75,6 +76,15 @@ function makeGunBuzz(ctx) {
   const buf = ctx.createBuffer(1, n, sr), d = buf.getChannelData(0);
   for (let i = 0; i < n; i++) d[i] = raw[i] * 0.9 / (peak || 1);
   return buf;
+}
+
+/** setTargetAtTime unless `p` already glides to (nearly) `v` with the same time constant: setEngine runs at ~40 Hz and
+ *  most of its ~20 parameters hold still, so this keeps the automation event lists short. Allocation-free. */
+function glide(p, v, now, tau) {
+  const last = p._wnV;
+  if (last !== undefined && p._wnTau === tau && Math.abs(v - last) <= 0.002 * Math.abs(v) + 1e-6) return;
+  p._wnV = v; p._wnTau = tau;
+  p.setTargetAtTime(v, now, tau);
 }
 
 function makeNoise(ctx, kind) {
@@ -238,7 +248,7 @@ export class AudioFX {
     setP(N.comp.threshold, COMP_THRESHOLD); setP(N.comp.knee, COMP_KNEE); setP(N.comp.ratio, COMP_RATIO);
     setP(N.comp.attack, 0.003); setP(N.comp.release, 0.2);
     N.compTrim = ctx.createGain(); N.compTrim.gain.value = COMP_TRIM;
-    N.safety = ctx.createWaveShaper(); N.safety.curve = makeSafetyCurve(); try { N.safety.oversample = '2x'; } catch (e) { /* ignore */ }
+    N.safety = ctx.createWaveShaper(); N.safety.curve = makeSafetyCurve(); try { N.safety.oversample = 'none'; } catch (e) { /* ignore */ }
     chain(N.master, N.comp, N.compTrim, N.safety, ctx.destination);
     // game buses go through the pause gate; the UI bus (menu clicks) and anything routed straight into master do not
     // effects volume (settings) sits after the pause gate; the radio (AWACS) and UI bypass both
@@ -249,7 +259,7 @@ export class AudioFX {
     N.warnBus = ctx.createGain(); N.warnBus.gain.value = 0.45; N.warnBus.connect(N.pauseGate);
     N.uiBus = ctx.createGain(); N.uiBus.gain.value = 0.7; N.uiBus.connect(N.master);
     // soft clipper for near-explosion "overload crunch" (synth fallback only)
-    N.crunch = ctx.createWaveShaper(); N.crunch.curve = makeSoftClipCurve(); try { N.crunch.oversample = '2x'; } catch (e) { /* ignore */ }
+    N.crunch = ctx.createWaveShaper(); N.crunch.curve = makeSoftClipCurve(); try { N.crunch.oversample = 'none'; } catch (e) { /* ignore */ }
     N.crunchGain = ctx.createGain(); N.crunchGain.gain.value = 0.8;
     N.crunch.connect(N.crunchGain); N.crunchGain.connect(N.sfxBus);
     this._buffers = { white: makeNoise(ctx, 'white'), pink: makeNoise(ctx, 'pink'), brown: makeNoise(ctx, 'brown') };
@@ -258,16 +268,24 @@ export class AudioFX {
     this._buildGun();
   }
 
-  /** Player cannon: a looped Vulcan buzz, always running, gated by gunLoop(). Spin-up / spin-down glide its rate. */
+  /** Player cannon: a looped Vulcan buzz gated by gunLoop(). Spin-up / spin-down glide its rate. The looping source
+   *  only exists while the gun is in use (_gunSource): GUN_IDLE_STOP s after the last burst it is stopped and dropped. */
   _buildGun() {
     const ctx = this.ctx, G = this._nodes.gun = {};
-    G.src = ctx.createBufferSource(); G.src.buffer = makeGunBuzz(ctx); G.src.loop = true; G.src.playbackRate.value = GUN_IDLE_RATE;
+    G.buffer = makeGunBuzz(ctx); G.src = null; G.offAt = 0;
     G.body = ctx.createBiquadFilter(); G.body.type = 'peaking'; G.body.frequency.value = 160; G.body.Q.value = 0.8; G.body.gain.value = 5;
     G.tone = ctx.createBiquadFilter(); G.tone.type = 'lowpass'; G.tone.frequency.value = 3200; G.tone.Q.value = 0.6;
     G.shape = ctx.createWaveShaper(); G.shape.curve = makeSoftClipCurve();
     G.gain = ctx.createGain(); G.gain.gain.value = 0;
-    chain(G.src, G.body, G.tone, G.shape, G.gain, this._nodes.sfxBus);
-    G.src.start();
+    chain(G.body, G.tone, G.shape, G.gain, this._nodes.sfxBus);
+  }
+  _gunSource() {
+    const G = this._nodes.gun;
+    if (G.src) return G.src;
+    const s = G.src = this.ctx.createBufferSource(); s.buffer = G.buffer; s.loop = true; s.playbackRate.value = GUN_IDLE_RATE;
+    s.connect(G.body);
+    try { s.start(this.ctx.currentTime, Math.random() * 0.9); } catch (e) { /* ignore */ }
+    return s;
   }
 
   _buildEngine() {
@@ -339,11 +357,16 @@ export class AudioFX {
     if (ab) { E.sAbSrc = ab[0]; E.sAbGain = ab[1]; E.sAbLevel = S.afterburner[0].gain; }
     this._engineSamples = true;
     this._engineLast = -1;     // apply the new mix on the next setEngine() call (smoothed crossfade from the synth layers)
+    // the synthesized whine / whistle / roar fade out (setEngine) and are then stopped and unplugged for good
+    E.synthEnd = t + 10 * ENGINE_TAU;
+    for (const o of [E.whineOsc1, E.whineOsc2, E.whistle, E.roarSrc]) { try { o.stop(E.synthEnd); } catch (e) { /* ignore */ } }
+    E.roarSrc.onended = () => { for (const n of [E.whineBP, E.whineGain, E.whistleGain, E.roarLP, E.roarGain]) { try { n.disconnect(); } catch (e) { /* ignore */ } } };
   }
 
   /**
    * Continuous engine mix. Call every frame; parameters are smoothed with setTargetAtTime (~0.2 s, so throttle jumps
-   * between brake / cruise / boost glide instead of stepping) and automation events are rate-limited to ~40 Hz.
+   * between brake / cruise / boost glide instead of stepping) and automation events are rate-limited to ~40 Hz and posted
+   * only for parameters whose target moved (glide).
    * alive=false fades the whole engine out over ~1 s. Allocation-free.
    */
   setEngine(opts) {
@@ -362,50 +385,50 @@ export class AudioFX {
     const abLevel = ab ? this._thunderMod : 0;
     if (this._engineSamples) {
       const sr = 0.84 + 0.28 * thr + 0.05 * spd;                            // deep turbofan roar: pitch & level with throttle
-      E.sRoarSrc.playbackRate.setTargetAtTime(sr, now, TAU);
-      E.sRoarGain.gain.setTargetAtTime(E.sRoarLevel * (0.2 + 0.3 * thr), now, TAU);
+      glide(E.sRoarSrc.playbackRate, sr, now, TAU);
+      glide(E.sRoarGain.gain, E.sRoarLevel * (0.2 + 0.3 * thr), now, TAU);
       if (E.sTurbSrc) {                                                     // turbine body under the roar, spools faster
-        E.sTurbSrc.playbackRate.setTargetAtTime(0.78 + 0.46 * thr + 0.04 * spd, now, TAU);
-        E.sTurbGain.gain.setTargetAtTime(E.sTurbLevel * (0.1 + 0.16 * thr), now, TAU);
+        glide(E.sTurbSrc.playbackRate, 0.78 + 0.46 * thr + 0.04 * spd, now, TAU);
+        glide(E.sTurbGain.gain, E.sTurbLevel * (0.1 + 0.16 * thr), now, TAU);
       }
       if (E.sAbSrc) {
-        E.sAbSrc.playbackRate.setTargetAtTime(0.94 + 0.08 * thr, now, TAU);
-        E.sAbGain.gain.setTargetAtTime(E.sAbLevel * 0.42 * abLevel, now, ab ? 0.12 : TAB);
+        glide(E.sAbSrc.playbackRate, 0.94 + 0.08 * thr, now, TAU);
+        glide(E.sAbGain.gain, E.sAbLevel * 0.42 * abLevel, now, ab ? 0.12 : TAB);
       }
-      E.whineGain.gain.setTargetAtTime(0, now, TAU);                        // synthesized core fades out
-      E.whistleGain.gain.setTargetAtTime(0, now, TAU);
-      E.roarGain.gain.setTargetAtTime(0, now, TAU);
-      E.abGain.gain.setTargetAtTime(0.1 * abLevel, now, ab ? 0.12 : TAB);   // a little extra synthetic low thunder
+      if (now < E.synthEnd) {                                               // synthesized core fades out (then is stopped)
+        glide(E.whineGain.gain, 0, now, TAU); glide(E.whistleGain.gain, 0, now, TAU); glide(E.roarGain.gain, 0, now, TAU);
+      }
+      glide(E.abGain.gain, 0.1 * abLevel, now, ab ? 0.12 : TAB);   // a little extra synthetic low thunder
     } else {
       const f = 70 + 230 * thr + 20 * spd;                                  // turbine fundamental 70..320 Hz
-      E.whineOsc1.frequency.setTargetAtTime(f, now, TAU);
-      E.whineOsc2.frequency.setTargetAtTime(f * 1.012, now, TAU);
-      E.whistle.frequency.setTargetAtTime(f * 7, now, TAU);
-      E.whineBP.frequency.setTargetAtTime(f * 2.2, now, TAU);
-      E.whineGain.gain.setTargetAtTime(0.005 + 0.014 * thr, now, TAU);
-      E.whistleGain.gain.setTargetAtTime(0.0005 + 0.0015 * thr * thr, now, TAU);
-      E.roarLP.frequency.setTargetAtTime(160 + 560 * thr + 180 * spd, now, TAU);
-      E.roarGain.gain.setTargetAtTime(0.1 + 0.26 * thr, now, TAU);
-      E.abGain.gain.setTargetAtTime(0.6 * abLevel, now, ab ? 0.12 : TAB);
+      glide(E.whineOsc1.frequency, f, now, TAU);
+      glide(E.whineOsc2.frequency, f * 1.012, now, TAU);
+      glide(E.whistle.frequency, f * 7, now, TAU);
+      glide(E.whineBP.frequency, f * 2.2, now, TAU);
+      glide(E.whineGain.gain, 0.005 + 0.014 * thr, now, TAU);
+      glide(E.whistleGain.gain, 0.0005 + 0.0015 * thr * thr, now, TAU);
+      glide(E.roarLP.frequency, 160 + 560 * thr + 180 * spd, now, TAU);
+      glide(E.roarGain.gain, 0.1 + 0.26 * thr, now, TAU);
+      glide(E.abGain.gain, 0.6 * abLevel, now, ab ? 0.12 : TAB);
     }
     // sub rumble (both modes): grows with throttle, big push with the afterburner
-    E.subLP.frequency.setTargetAtTime(70 + 50 * thr, now, TAU);
-    E.subGain.gain.setTargetAtTime(0.04 + 0.06 * thr + (ab ? 0.08 : 0), now, ab ? 0.15 : TAU);
+    glide(E.subLP.frequency, 70 + 50 * thr, now, TAU);
+    glide(E.subGain.gain, 0.04 + 0.06 * thr + (ab ? 0.08 : 0), now, ab ? 0.15 : TAU);
     // soft low crackle under the afterburner: sparse pops on a 420 Hz band, quiet
-    E.crackleGain.gain.setTargetAtTime(ab ? 0.05 : 0, now, TAB);
+    glide(E.crackleGain.gain, ab ? 0.05 : 0, now, TAB);
     if (ab) {
       if (now >= this._crackleNext) {
         const level = Math.random() < 0.45 ? 0 : 0.35 + 0.65 * Math.random();
-        E.crackleGate.gain.setTargetAtTime(level, now, 0.008);
+        glide(E.crackleGate.gain, level, now, 0.008);
         this._crackleNext = now + 0.03 + Math.random() * 0.07;
       }
     } else this._crackleNext = 0;
     this._abOn = ab;
     // wind: low-passed whoosh with slow gusts; never more than a soft bed under the engine
     if (now >= this._gustNext) { this._gust = 0.75 + 0.5 * Math.random(); this._gustNext = now + 0.4 + 0.6 * Math.random(); }
-    E.windBP.frequency.setTargetAtTime(280 + 650 * spd, now, 0.3);
-    E.windGain.gain.setTargetAtTime((0.01 + 0.05 * spd * spd) * this._gust, now, 0.35);
-    N.engineBus.gain.setTargetAtTime(alive ? ENGINE_LEVEL : 0, now, alive ? 0.15 : 0.3); // dead: ~1 s fade-out
+    glide(E.windBP.frequency, 280 + 650 * spd, now, 0.3);
+    glide(E.windGain.gain, (0.01 + 0.05 * spd * spd) * this._gust, now, 0.35);
+    glide(N.engineBus.gain, alive ? ENGINE_LEVEL : 0, now, alive ? 0.15 : 0.3); // dead: ~1 s fade-out
   }
 
   // ---------------------------------------------------------------------------------------------------------------
@@ -528,9 +551,16 @@ export class AudioFX {
    */
   gunLoop(on) {
     on = !!on && !this._paused;
-    if (on === this._gunOn || !this.ready || !this._nodes) return;
+    if (!this.ready || !this._nodes) return;
+    const G = this._nodes.gun, now = this.ctx.currentTime;
+    if (on === this._gunOn) {
+      // idle well past the release tail: stop the loop (no buzz chain running between bursts)
+      if (!on && G.src && now - G.offAt > GUN_IDLE_STOP) { try { G.src.stop(); } catch (e) { /* ignore */ } try { G.src.disconnect(); } catch (e) { /* ignore */ } G.src = null; }
+      return;
+    }
     this._gunOn = on;
-    const G = this._nodes.gun, now = this.ctx.currentTime, r = G.src.playbackRate, g = G.gain.gain;
+    if (!on) G.offAt = now;
+    const r = (on ? this._gunSource() : G.src || this._gunSource()).playbackRate, g = G.gain.gain;
     for (const p of [r, g]) { try { p.cancelScheduledValues(now); } catch (e) { /* ignore */ } p.setValueAtTime(p.value, now); }
     if (on) { r.setTargetAtTime(1, now, 0.05); g.setTargetAtTime(GUN_LEVEL, now, 0.012); }
     else { r.setTargetAtTime(GUN_IDLE_RATE, now, 0.1); g.setTargetAtTime(0, now + 0.015, 0.06); }

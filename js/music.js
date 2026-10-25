@@ -236,6 +236,17 @@ export class Music {
     glide(this._nodes.lp.frequency, ctx, on ? MUFFLE_HZ : OPEN_HZ, on ? 0.35 : 0.5, true);
   }
 
+  /** Drop the decoded buffer (a 2.5-minute stereo track is ~55-60 MB of PCM) if nothing needs it now: not playing (a
+   *  voice still fading out keeps its own reference until it ends), not waiting to play, not decoding. The next
+   *  preload() / play() decodes it again (embedded data from its base64, a streamed file re-fetched, normally from the
+   *  HTTP cache); loop points come from the track data, so a re-decoded track loops exactly as before.
+   *  @returns true when released */
+  release() {
+    if (!this.buffer || this._voice || this._wantPlay || this._decoding || this._disposed) return false;
+    this.buffer = null; this.format = null;
+    return true;
+  }
+
   /** Stop immediately and release everything (does not close AudioFX's context). */
   dispose() {
     if (this._disposed) return;
@@ -277,6 +288,7 @@ export class MusicDirector {
     this.wanted = null;          // resolved track name we are switching to (may still be loading)
     this.cut = false;            // a cue silenced the music (Glassfall)
     this.log = [];               // recent switches { t, what } for tests and tools (capped)
+    this._keep = null;           // keepOnly(): resolved track names whose decoded audio stays in memory (null = all)
     this._disposed = false;
   }
   /** Track names with data that has not failed to load. */
@@ -295,7 +307,20 @@ export class MusicDirector {
     return m || null;
   }
   _note(what) { this.log.push({ t: Math.round(performance.now()), what }); if (this.log.length > 40) this.log.shift(); }
-  prefetch(names) { for (const n of names || []) { const r = this.resolve(n), m = this._player(r); if (m) m.fetchBytes('opus'); } }
+  prefetch(names) { for (const n of names || []) { const r = this.resolve(n), m = this._player(r); if (m && !m.ready) m.fetchBytes('opus'); } }
+  /** Memory: keep decoded audio only for these tracks (the mission's, its phases' and cues' tracks) plus whatever is
+   *  playing or being switched to; every other decoded track is released now, and a track switched away from later is
+   *  released once it stops (unless kept). A released track decodes again when next played (the current one keeps
+   *  playing meanwhile, then crossfades). keepOnly(null) keeps everything again. */
+  keepOnly(names) {
+    this._keep = names ? new Set(names.filter(Boolean).map((n) => this.resolve(n))) : null;
+    for (const k in this._players) this._trim(k);
+  }
+  _trim(name) {
+    if (!this._keep || this._keep.has(name) || name === this.current || name === this.wanted) return;
+    const m = this._players[name];
+    if (m && m.release()) this._note('release ' + name);
+  }
 
   /** No name: keep (or start) what should play. A name: crossfade to that track (see the class comment). */
   play(name, opts = {}) {
@@ -333,14 +358,16 @@ export class MusicDirector {
     const go = () => {
       if (this._disposed || this.wanted !== r || this.cut) return;
       const old = this.current && this.current !== r ? this._players[this.current] : null;
+      const oldName = old ? this.current : null;
       if (old) old.stop({ fade: Math.max(0.05, fade) });
       this.current = r; this.wanted = null;
+      if (oldName) this._trim(oldName);       // (its fading voice holds the buffer until it ends)
       if (!m.playing) m.play({ fadeIn: Math.max(0.03, fade), skipIntro: !!opts.skipIntro });
       this._note('now ' + r);
     };
     if (m.ready || !this.audioFX || !this.audioFX.ctx) { go(); return; }        // decoded (or no context yet: play() defers)
     m.preload().then((ok) => {
-      if (ok) go();
+      if (ok) { go(); this._trim(r); }        // (no longer wanted by the time it decoded: release it again)
       else if (this.wanted === r) { this.wanted = null; if (r !== FALLBACK) this._switch(FALLBACK, fade, opts); }   // failed: fall back
     });
   }

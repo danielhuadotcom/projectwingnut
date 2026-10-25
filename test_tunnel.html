@@ -21,6 +21,8 @@ import { Tunnel } from './js/tunnel.js';
 //   portal=0|1      which portal the approach view looks at (0 = south, 1 = north)
 //   t=<s>           freeze the clock (camera path + world animation) for deterministic screenshots
 //   q=low|medium|high|ultra   world.setQuality(q) (default high)
+//   cam=x,y,z,lx,ly,lz   fixed camera position and look-at point (overrides view; A/B screenshots at any distance)
+//   lod=0|1|2       pin the ridge's distance LOD (A/B against lod=0)
 //   jet=0           no jet mesh (scale reference) in the approach / inside views
 //   hide=tunnel     hide the tunnel meshes (A/B screenshots)
 //   prof=1          GPU timer queries: scene pass with the tunnel vs. without it, and per tunnel mesh; logs TUNNEL_PROF.
@@ -64,6 +66,7 @@ try {
   const tunnelMs = performance.now() - t0;
   const post = new PostFX(renderer, GW, GH, 1, { samples: 4 });
   console.log(`world ${worldMs.toFixed(0)} ms, tunnel ${tunnelMs.toFixed(1)} ms (phases ${JSON.stringify(Object.fromEntries(Object.entries(tunnel.buildTimes || {}).map(([k, v]) => [k, +v.toFixed(1)])))}), length ${tunnel.length.toFixed(0)} m, floor ${tunnel.floorRange.map((v) => v.toFixed(1)).join('..')} m ASL, bore ${tunnel.boreWidth}x${tunnel.boreHeight} m, tris ${tunnel.triangles}`);
+  if (params.has('lod')) tunnel.forceLod = Number(params.get('lod'));   // lod=0|1|2 pins the ridge's distance LOD
   if (params.get('hide') === 'tunnel') for (const m of tunnel.meshes) m.visible = false;
 
   // jet for scale (optional module; the page works without it)
@@ -98,7 +101,7 @@ try {
   let tCalls = 0, tTris = 0;
   for (const m of tunnel.meshes) {
     const prev = m.onAfterRender;
-    m.onAfterRender = function (...a) { tCalls++; tTris += m.geometry.index.count / 3; prev.apply(this, a); };
+    m.onAfterRender = function (...a) { const n = Math.min(m.geometry.index.count - m.geometry.drawRange.start, m.geometry.drawRange.count) / 3; if (n > 0) { tCalls++; tTris += n; } prev.apply(this, a); };   // (drawRange count 0: no draw)
   }
 
   // ---- GPU profiler (EXT_disjoint_timer_query_webgl2): frame % 3 == 0 scene pass with the tunnel, == 1 without it,
@@ -157,8 +160,10 @@ try {
   const c = tunnel.center;
   const _look = new THREE.Vector3(), _a = new THREE.Vector3(), _b = new THREE.Vector3(), _q = new THREE.Quaternion(), _m = new THREE.Matrix4();
   const UP = new THREE.Vector3(0, 1, 0);
+  const CAM = params.has('cam') ? params.get('cam').split(',').map(Number) : null;
   function place(view, t) {
     if (jet) jet.visible = view === 'inside' || view === 'approach';
+    if (CAM) { if (jet) jet.visible = false; camera.position.set(CAM[0], CAM[1], CAM[2]); camera.up.copy(UP); camera.lookAt(CAM[3], CAM[4], CAM[5]); return; }
     if (view === 'inside') {
       // fly through at 200 m/s, chase camera 30 m behind and 6 m above a jet on the bore axis
       const L = tunnel.length, sj = 60 + ((t * 200) % (L - 120));

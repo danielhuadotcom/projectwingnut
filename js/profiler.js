@@ -6,7 +6,8 @@
 // three pairs a frame = 3 ms of "render" on Iris Xe/ANGLE), so 'pass' mode has a plan (setPassPlan):
 //   'all'    — every pass every sampled frame (benchmarks: per-pass numbers, the old behaviour)
 //   'rr'     — one pass per frame, round-robin (perf overlay: the per-pass breakdown at a flat ~1 pair a frame)
-//   'single' — one query spanning the whole frame on every passEvery-th frame (normal play: dynamic resolution's input)
+//   'single' — one query spanning the whole frame on every passEvery-th frame (normal play: dynamic resolution's input;
+//              the game uses every 4th frame while the controller gathers samples, every 14th once it has settled)
 // gpuSeq counts completed GPU frames, so a consumer can tell a fresh total from a repeated one.
 // CPU timings: main loop sections via cpuBegin/cpuEnd (performance.now()), recorded only while `cpuOn` is set (the game
 // sets it while the perf overlay is visible or in benchmark mode: nothing else reads them).

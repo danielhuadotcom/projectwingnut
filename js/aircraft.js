@@ -13,8 +13,9 @@ import { PK, PK_CLASS, SID, N_SURF, Part, loftRings, capStart, capEnd, autoSmoot
 // page and shared by every jet; per color scheme only the vertex-color attribute differs. Materials are per jet
 // (own uniforms) but share GL programs. Every part is frustum culled, so off-screen jets cost no draw calls.
 // Everything renders in LINEAR HDR (custom shaders output linear radiance; bright emitters > 1 for bloom).
-// AI aircraft use buildJetMesh({ airframe }) with a low-fidelity js/airframes.js family instead (same hull material and
-// GL program, 1 hull draw + optional rotor halo + AfterburnerFX); the player and the squadmates keep this F-22.
+// AI aircraft use buildJetMesh({ airframe }) with a low-fidelity js/airframes.js family instead (same hull shader and
+// GL program, 1 hull draw + optional rotor halo + AfterburnerFX; one hull material per family + scheme,
+// shared by its jets, since they never deflect surfaces); the player and the squadmates keep this F-22.
 
 export const AIRCRAFT_RADIUS = 7;            // collision sphere radius (m)
 // Enemies are drawn larger than life so they read at range (the player and squadmates stay life size): ENEMY_SCALE up
@@ -98,8 +99,9 @@ const INTAKE = { ui: [0.80, 0.03, -3.63], u: [0.62, -0.12, 0.62 * TAN42], v: [-0
 const intakeTopY = (x) => INTAKE.ui[1] + (x - INTAKE.ui[0]) * (INTAKE.u[1] / INTAKE.u[0]);
 
 // chord-fraction stations for lifting surfaces (biconvex section: sharp leading and trailing edges)
-const SS_FULL = [0, 0.04, 0.12, 0.24, 0.38, 0.52, 0.66, 0.78, 0.89, 1];
-const ssMain = (h) => [0, 0.04, 0.12, 0.24, 0.38, 0.52, 0.66].filter((s) => s < h - 0.04).concat([h]);
+// (6 stations: the 4-6 % thick sections read the same as with 10, at about half the triangles)
+const SS_FULL = [0, 0.1, 0.3, 0.55, 0.8, 1];
+const ssMain = (h) => [0, 0.1, 0.3, 0.55].filter((s) => s < h - 0.04).concat([h]);
 const ssSurf = (h) => [h, (h + 1) / 2, 1];
 const biconvex = (s) => 4 * s * (1 - s);
 const edgeKind = (sec, s) => (s < 0.05 ? PK.EDGE : PK.CAMO);
@@ -172,14 +174,27 @@ function bodyUpperY(x, z) {
 const BODY_Z = [-7.95, -7.84, -7.65, -7.40, -7.10, -6.75, -6.35, -5.95, -5.55, -5.15, -4.75, -4.35, -3.95, -3.55, -3.15, -2.75, -2.40, -2.05,
   -1.70, -1.35, -1.00, -0.65, -0.30, 0.15, 0.70, 1.30, 1.90, 2.50, 3.00, 3.40, 3.80, 4.20, 4.60, 5.00, 5.40, 5.80, 6.05, 6.22, 6.32, 6.38];
 
+/** Drops interior rings that the straight blend of their kept neighbours already matches within `tol` m at every point
+ *  (greedy, ends kept): fewer rings where the profiles run straight, all of them through the curves. */
+function thinRings(rings, tol) {
+  const out = rings.slice();
+  for (let i = 1; i < out.length - 1;) {
+    const a = out[i - 1], b = out[i], c = out[i + 1], t = (b[0][2] - a[0][2]) / (c[0][2] - a[0][2]);
+    let ok = true;
+    for (let k = 0; k < b.length && ok; k++) for (let j = 0; j < 3 && ok; j++) if (Math.abs(a[k][j] + (c[k][j] - a[k][j]) * t - b[k][j]) > tol) ok = false;
+    if (ok) out.splice(i, 1); else i++;
+  }
+  return out;
+}
+
 function buildBody() {
   const part = new Part(38);
-  const rings = BODY_Z.map((z) => {
+  const rings = thinRings(BODY_Z.map((z) => {
     const h = bodyHalf(z), ring = [];
     for (let k = 0; k < 8; k++) ring.push([h[k][0], h[k][1], z]);
     for (let k = 6; k >= 1; k--) ring.push([-h[k][0], h[k][1], z]);
     return ring;   // 14 points: top center, right side down to the keel, left side back up
-  });
+  }), 0.012);
   loftRings(part, rings, (i, k, x, y, z) => {
     if (z <= CAN.zF + 0.1 || z >= CAN.zA - 0.05 || !(k <= 1 || k >= 13)) return PK.CAMO;
     return Math.abs(x) < canopyW((z - CAN.zF) / (CAN.zA - CAN.zF)) - 0.03 ? PK.COCKPIT : PK.CAMO;   // deck inside the canopy only
@@ -209,6 +224,7 @@ function wingSec(x) {
 }
 function buildWingR(parts, hR) {
   const W = WING, S = (xs) => xs.map(wingSec);
+  // (the shape is linear in span; the inner sections stay only to carry the per-vertex camouflage across the big wing)
   const fl = S([W.flapIn, 2.20, 2.78, W.flapOut]), al = S([W.flapOut, 3.92, 4.48, W.ailOut]);
   parts.push(panel(S([W.x0, W.flapIn]), SS_FULL, edgeKind));
   parts.push(panel(fl, ssMain(W.flapH), edgeKind), panel(fl, ssSurf(W.flapH), surfKind, SID.FLAP_R));
@@ -224,7 +240,7 @@ function stabSec(x) {
   return { x, y: S.y, z: le, c: te - le, t: (te - le) * S.tc };
 }
 function buildStabR(parts, hR) {
-  parts.push(panel([STAB.x0, 1.65, STAB.xKink, 2.83, STAB.xTip].map(stabSec), SS_FULL, edgeKind, SID.STAB_R));
+  parts.push(panel([STAB.x0, STAB.xKink, STAB.xTip].map(stabSec), SS_FULL, edgeKind, SID.STAB_R));   // (sections are linear in span either side of the kink: the same ruled surface)
   const p = new THREE.Vector3(STAB.x0, STAB.y, STAB.pivotZ);
   hR.stab = { p, q: p.clone().add(X_AXIS) };
 }
@@ -238,16 +254,16 @@ function finMatrix() {   // build frame (span +X) -> canted 28 deg outboard, roo
 }
 function buildFinR(parts, hR) {
   const F = FIN, M = finMatrix(), S = (us) => us.map(finSec);
-  const main = S([F.rud0, 0.85, 1.40, F.rud1]);
+  const main = S([F.rud0, F.rud1]);   // (linear in span, like the wing panels)
   const list = [
     panel(S([0, F.rud0]), SS_FULL, edgeKind),
     panel(main, ssMain(F.rudH), edgeKind),
     panel(main, ssSurf(F.rudH), surfKind, SID.RUD_R),
     panel(S([F.rud1, F.band]), SS_FULL, edgeKind),
-    panel(S([F.band, 2.30, F.span]), SS_FULL, () => PK.ACCENT),     // squadron tail band (accent color)
+    panel(S([F.band, F.span]), SS_FULL, () => PK.ACCENT),     // squadron tail band (accent color)
   ];
   for (const p of list) parts.push(p.applyMatrix4(M));
-  hR.rud = { p: hingeAt(main[0], F.rudH).applyMatrix4(M), q: hingeAt(main[3], F.rudH).applyMatrix4(M) };
+  hR.rud = { p: hingeAt(main[0], F.rudH).applyMatrix4(M), q: hingeAt(main[1], F.rudH).applyMatrix4(M) };
 }
 
 /** 24-point rounded rectangle, starting at top center, clockwise seen from behind. */
@@ -282,8 +298,7 @@ function buildEngineR(parts) {
   const ring3 = (z, w, h, r, zFn) => rrRing(ENG.x, ENG.y, w, h, r).map((p, k) => [p[0], p[1], zFn ? zFn(k) : z]);
   const exitZ = (k) => (NOTCH.has(k) ? NOZ.zNotch : NOZ.zTip);
   const nac = new Part(35);
-  loftRings(nac, [ring3(0.60, 0.46, 0.46, 0.22), ring3(1.60, 0.49, 0.49, 0.22), ring3(3.00, 0.50, 0.50, 0.22),
-    ring3(4.20, 0.50, 0.495, 0.21), ring3(5.25, 0.49, 0.46, 0.19)], () => PK.CAMO);
+  loftRings(nac, [ring3(0.60, 0.46, 0.46, 0.22), ring3(3.00, 0.50, 0.50, 0.22), ring3(5.25, 0.49, 0.46, 0.19)], () => PK.CAMO);   // (front half buried in the fuselage)
   parts.push(nac.orient(true));
   // 2D thrust-vectoring nozzle: flat flaps converge to a wide, short exit with sawtooth trailing edges
   const noz = new Part(35), exitOuter = ring3(0, NOZ.w, NOZ.h, 0.04, exitZ);
@@ -350,7 +365,7 @@ function buildIntakeR(parts) {
 
 function buildCockpit(parts) {
   const B = bodyCurves(), zc = -3.75, yd = B.yT(zc);
-  const helmet = new THREE.SphereGeometry(0.135, 10, 7); helmet.translate(0, yd + 0.33, zc - 0.03);
+  const helmet = new THREE.SphereGeometry(0.135, 8, 6); helmet.translate(0, yd + 0.33, zc - 0.03);
   const torso = new THREE.BoxGeometry(0.44, 0.24, 0.28); torso.translate(0, yd + 0.10, zc + 0.08);
   const seat = new THREE.BoxGeometry(0.38, 0.46, 0.12); seat.rotateX(-0.17); seat.translate(0, yd + 0.18, zc + 0.31);
   const zp = -4.62, coaming = new THREE.BoxGeometry(0.60, 0.11, 0.36); coaming.translate(0, B.yT(zp) + 0.03, zp);
@@ -360,7 +375,7 @@ function buildCockpit(parts) {
 
 /** One-piece frameless bubble canopy (separate mesh: gold-tinted physical material). */
 function buildCanopyGeometry() {
-  const K = 20, J = 16, P = 2.4, pos = [], idx = [];
+  const K = 14, J = 12, P = 2.4, pos = [], idx = [];
   const y0 = bodyCurves().yT(CAN.zF);
   for (let i = 0; i < K; i++) {
     const t = i / (K - 1), z = lerp(CAN.zF, CAN.zA, t), w = Math.max(canopyW(t), 0.012);
@@ -528,7 +543,7 @@ function acquireScheme(o, family = 'f22') {
       });
       canopyMaterial.name = 'jetCanopy';
     }
-    s = { key, refs: 0, geometry: g, canopyMaterial };
+    s = { key, refs: 0, geometry: g, canopyMaterial, hullMaterial: null };   // hullMaterial: shared by AI airframes (buildAirframeMesh)
     _schemes.set(key, s);
   }
   s.refs++;
@@ -660,7 +675,8 @@ function buildAirframeMesh(id, o) {
   const group = new THREE.Group();
   group.name = 'jet-' + id;
   const fixed = (x) => { x.matrixAutoUpdate = false; x.updateMatrix(); return x; };
-  const hullMat = makeHullMaterial(topo);
+  // no control-surface animation, so every jet of this family and scheme shares one hull material (no per-jet uniforms)
+  const hullMat = scheme.hullMaterial || (scheme.hullMaterial = makeHullMaterial(topo));
   const hull = fixed(new THREE.Mesh(scheme.geometry, hullMat));
   hull.name = 'hull';
   group.add(hull);
@@ -680,7 +696,7 @@ function buildAirframeMesh(id, o) {
   mk('gunL', L.gunL); mk('gunR', L.gunR); mk('tipL', L.tipL); mk('tipR', L.tipR);
   L.rails.forEach((p, i) => mk('rail' + i, p));
   const ud = group.userData;
-  ud.engineFX = fx; ud.hullMaterial = hullMat; ud.surfaceUniforms = null; ud.schemeKey = scheme.key; ud.local = L;
+  ud.engineFX = fx; ud.hullMaterial = hullMat; ud.sharedHull = true; ud.surfaceUniforms = null; ud.schemeKey = scheme.key; ud.local = L;
   ud.airframe = id; ud.radius = topo.radius; ud.topology = topo;
   return group;
 }
@@ -708,14 +724,14 @@ export function disposeJetMesh(group) {
   if (!ud || ud.disposed) return;
   ud.disposed = true;
   if (ud.engineFX) ud.engineFX.dispose();
-  if (ud.hullMaterial) ud.hullMaterial.dispose();
+  if (ud.hullMaterial && !ud.sharedHull) ud.hullMaterial.dispose();   // (shared ones go with the scheme cache)
   releaseScheme(ud.schemeKey);
   group.removeFromParent();
 }
 
 /** Full teardown of the shared jet geometry cache. Only call when no jet built by buildJetMesh is alive. */
 export function disposeJetCache() {
-  for (const s of _schemes.values()) { s.geometry.dispose(); if (s.canopyMaterial) s.canopyMaterial.dispose(); }
+  for (const s of _schemes.values()) { s.geometry.dispose(); if (s.canopyMaterial) s.canopyMaterial.dispose(); if (s.hullMaterial) s.hullMaterial.dispose(); }
   _schemes.clear();
   if (_topo) { _topo.canopyGeometry.dispose(); _topo = null; }
   disposeAirframeCache();

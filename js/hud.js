@@ -121,7 +121,8 @@ export class HUD {
     //   spriteText every label is a cached pre-rendered sprite (outline + fill drawn once per string/font/colour/align),
     //              so a steady frame blits images instead of rasterising glyph outlines (strokeText is never cached)
     //   prof       null, or an object that receives per-group times in ms (EMA) for the perf overlay
-    this.res = 1; this.k = 1; this.spriteText = false; this.cacheLayers = false; this.prof = null;
+    //   maxScale   cap on the device-pixel ratio used for the backing store (per graphics tier: 1 on VERY LOW ... 2)
+    this.res = 1; this.k = 1; this.spriteText = false; this.cacheLayers = false; this.prof = null; this.maxScale = 2;
     this._sprites = new Map(); this._fontPx = new Map();
     this.alpha = 1;            // base alpha (0.35 when dimmed for paused/dead/victory)
     this.time = 0;
@@ -154,7 +155,7 @@ export class HUD {
     this.resize();
   }
 
-  /** Read the container size and (re)allocate the backing store (DPR capped at 2). */
+  /** Read the container size and (re)allocate the backing store (DPR capped at maxScale, at most 2). */
   resize() {
     const el = this.container;
     let w = el.clientWidth, h = el.clientHeight;
@@ -163,7 +164,7 @@ export class HUD {
   }
 
   _setSize(w, h, force = false) {
-    const dpr = Math.min(2, window.devicePixelRatio || 1);
+    const dpr = Math.min(this.maxScale, window.devicePixelRatio || 1);
     if (!force && w === this.w && h === this.h && dpr === this.dpr) return;
     this.w = w; this.h = h; this.dpr = dpr; this.k = dpr * this.res;
     if (!(w > 0 && h > 0)) return;
@@ -172,11 +173,15 @@ export class HUD {
     this._sprites.clear(); this._radarBg = null; this._ladderStrip = null;
     this._layout();
   }
-  /** Backing-store scale (0.5..1) and sprite text on/off (see the constructor). Cheap when nothing changes. */
-  setBudget(res = 1, spriteText = false, cacheLayers = false) {
+  /** Backing-store scale (0.5..1), sprite text, cached layers and the DPR cap (1..2; see the constructor). Cheap when
+   *  nothing changes. */
+  setBudget(res = 1, spriteText = false, cacheLayers = false, maxScale = 2) {
     res = clamp(Number(res) || 1, 0.5, 1);
-    this.spriteText = !!spriteText; this.cacheLayers = !!cacheLayers;
-    if (res !== this.res) { this.res = res; this._setSize(this.w, this.h, true); }
+    maxScale = clamp(Number(maxScale) || 2, 1, 2);
+    const cache = !!cacheLayers;
+    if (cache !== this.cacheLayers) { this._radarBg = null; this._ladderStrip = null; }   // rebuilt on demand
+    this.spriteText = !!spriteText; this.cacheLayers = cache;
+    if (res !== this.res || maxScale !== this.maxScale) { this.res = res; this.maxScale = maxScale; this._setSize(this.w, this.h, true); }
   }
 
   dispose() {
@@ -329,7 +334,7 @@ export class HUD {
   render(frame) {
     if (!frame || !this.ctx) return;
     const fw = frame.w > 0 ? frame.w : this.w, fh = frame.h > 0 ? frame.h : this.h;
-    const dpr = Math.min(2, window.devicePixelRatio || 1);
+    const dpr = Math.min(this.maxScale, window.devicePixelRatio || 1);
     if (fw !== this.w || fh !== this.h || dpr !== this.dpr) this._setSize(fw, fh);
     if (!(this.w > 0 && this.h > 0)) return;
     const ctx = this.ctx;

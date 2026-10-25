@@ -414,6 +414,7 @@ export class PostFX {
     this.sharpness = null;          // RCAS strength 0..1 when upscaling; null = automatic (stronger at lower scales)
     this.fxaa = true;               // edge AA folded into the composite whenever MSAA is off (activeSamples === 0)
     this.samples = samples;         // requested MSAA samples (setSamples() applies immediately; setSize() also re-reads it)
+    this.invalidate = true;         // tell tile GPUs what need not be loaded/stored (see _discard); false = off (A/B)
 
     // ---- internal state ----
     this._flash = 0;
@@ -446,6 +447,36 @@ export class PostFX {
     this._fsScene = new THREE.Scene();
     this._fsScene.add(this._tri);
     this._fsCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+
+    // ---- framebuffer invalidation (WebGL2) ----
+    // three.js only invalidates on Oculus Browser. On tile-based GPUs (Mali, Adreno, PowerVR, Apple) an attachment that
+    // is not invalidated gets loaded into tile memory at the start of a pass (autoClear = false) and written back at the
+    // end, so: the scene's depth is discarded once the scene is drawn (nothing reads it), and every post pass discards
+    // its target's old colour before it overwrites it (every sampler is clamped to the written sub-rectangle).
+    const gl = this._gl = renderer.getContext();
+    this._canInvalidate = !!caps.isWebGL2 && typeof gl.invalidateFramebuffer === 'function';
+    if (this._canInvalidate) {
+      this._invColor = [gl.COLOR_ATTACHMENT0]; this._invDepth = [gl.DEPTH_ATTACHMENT]; this._invCanvas = [gl.COLOR];
+    }
+    // With MSAA the depth must go before three resolves the multisampled colour (inside renderer.render()), so an empty
+    // marker drawn last in the scene does it from onAfterRender: a Group with the highest renderOrder puts it at the end
+    // of the transparent list, and a negative draw range makes three return before issuing a draw call.
+    this._msDepthArmed = false;
+    const mg = new THREE.BufferGeometry();
+    mg.setAttribute('position', new THREE.BufferAttribute(new Float32Array(9), 3));
+    mg.setDrawRange(0, -1);
+    const mm = new THREE.ShaderMaterial({ vertexShader: 'void main() { gl_Position = vec4(0.0); }', fragmentShader: 'void main() { gl_FragColor = vec4(0.0); }',
+      transparent: true, depthTest: false, depthWrite: false, colorWrite: false, fog: false, lights: false, toneMapped: false });
+    const marker = new THREE.Mesh(mg, mm);
+    marker.name = 'PostFX.depthDiscard'; marker.frustumCulled = false; marker.renderOrder = Number.MAX_SAFE_INTEGER;
+    marker.onAfterRender = () => {
+      if (!this._msDepthArmed) return;
+      this._msDepthArmed = false;
+      this._gl.invalidateFramebuffer(this._gl.FRAMEBUFFER, this._invDepth);   // bound: the multisampled scene framebuffer
+    };
+    this._marker = new THREE.Group();
+    this._marker.name = 'PostFX.depthDiscard'; this._marker.renderOrder = Number.MAX_SAFE_INTEGER;
+    this._marker.add(marker);
 
     // ---- per-resolution uniform data (preallocated, updated by _applyScale) ----
     this._sceneSrc = new THREE.Vector4(1, 1, 1, 1);     // xy: uv extent of the scene sub-rect, zw: texel
@@ -618,8 +649,22 @@ export class PostFX {
     const allocW = rt.width, allocH = rt.height;
     const shrink = rt.samples > 0 && (this.renderWidth !== allocW || this.renderHeight !== allocH);
     if (shrink) { rt.width = this.renderWidth; rt.height = this.renderHeight; }
+    const inv = this.invalidate && this._canInvalidate;
+    const ms = rt.samples > 0;
+    if (inv && ms) {
+      if (this._marker.parent !== scene) scene.add(this._marker);
+      this._msDepthArmed = true;
+    }
     try { r.render(scene, camera); }
-    finally { if (shrink) { rt.width = allocW; rt.height = allocH; } }
+    finally { if (shrink) { rt.width = allocW; rt.height = allocH; } this._msDepthArmed = false; }
+    if (inv) {
+      const gl = this._gl;
+      if (!ms) gl.invalidateFramebuffer(gl.FRAMEBUFFER, this._invDepth);   // still bound: the scene framebuffer
+      else if (prevAutoClear && !r.extensions.has('WEBGL_multisampled_render_to_texture')) {
+        // resolved: three left the multisampled framebuffer bound for drawing, and its colour is cleared next frame
+        gl.invalidateFramebuffer(gl.DRAW_FRAMEBUFFER, this._invColor);
+      }
+    }
     if (prof) { prof.endPass(); prof.beginPass('bloom'); }
 
     r.autoClear = false;    // every post pass fully overwrites its (sub-rect) target
@@ -639,6 +684,7 @@ export class PostFX {
       du.uWide.value = q.bright === 13 ? 1 : 0;
       tri.material = this._brightMat;
       r.setRenderTarget(L[0].down);
+      if (inv) this._discard();
       r.render(fsScene, cam);
 
       // 3. progressive downsample
@@ -647,6 +693,7 @@ export class PostFX {
       for (let i = 1; i < n; i++) {
         du.tSrc.value = L[i - 1].down.texture; du.uSrc.value = L[i - 1].src; du.uSrcMax.value = L[i - 1].max;
         r.setRenderTarget(L[i].down);
+        if (inv) this._discard();
         r.render(fsScene, cam);
       }
 
@@ -664,6 +711,7 @@ export class PostFX {
         uu.tLow.value = low.texture; uu.uLow.value = lowLv.src; uu.uLowMax.value = lowLv.max;
         uu.tHigh.value = L[i].down.texture; uu.uHigh.value = L[i].src;
         r.setRenderTarget(L[i].up);
+        if (inv) this._discard();
         r.render(fsScene, cam);
         low = L[i].up; lowLv = L[i];
       }
@@ -689,9 +737,10 @@ export class PostFX {
     const fx = this.fxaa && this.activeSamples === 0 ? 1 : 0;
     cu.uFxaa.value = fx;
     const full = !q.lean && (upscaled || sharp > 0 || fx === 1);
+    r.setRenderTarget(null);
+    if (inv) this._gl.invalidateFramebuffer(this._gl.FRAMEBUFFER, this._invCanvas);   // the composite covers the canvas
     if (!this._warmed) this._warmComposite(full ? this._compLean : this._compFull);
     tri.material = full ? this._compFull : this._compLean;
-    r.setRenderTarget(null);
     r.render(fsScene, cam);
     if (prof) prof.endPass();
 
@@ -706,10 +755,15 @@ export class PostFX {
     this._mats.length = 0;
     this._black.dispose();
     this._fsGeo.dispose();
+    if (this._marker.parent) this._marker.parent.remove(this._marker);
+    for (const c of this._marker.children) { c.geometry.dispose(); c.material.dispose(); }
     this._tri.material = null;
   }
 
   /* ------------------------------------------------------------------ internals */
+
+  /** Old colour of the bound post target is not needed: the pass overwrites everything that is ever sampled. */
+  _discard() { this._gl.invalidateFramebuffer(this._gl.FRAMEBUFFER, this._invColor); }
 
   _effectiveSamples() {
     if (!this.isWebGL2) return 0;

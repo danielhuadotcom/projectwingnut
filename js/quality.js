@@ -6,12 +6,16 @@
 // version for budget tablets: render scale 0.45-0.6 at pixel ratio 1, no MSAA, tone map only (no bloom / flare / film
 // effects / sharpening / FXAA; the canvas itself is 0.6x, so even the composite skips the full-resolution pass), the cheapest sea (one wave layer, no reflected terrain or foam), no cloud puffs or
 // terrain shadow bakes, flat-lit terrain with one detail layer, smaller particles and no wing vapor. Gameplay is identical.
+// LOW's drawing buffer is 0.8x too (canvasScale): its scene never renders above 0.8x anyway, so the composite pass runs
+// at that size and the browser stretches the result. hudScale caps the HUD canvas's backing store (x CSS px, still
+// capped by devicePixelRatio); hudCache turns on the HUD's cached layers (pitch ladder / radar scope blits).
+// MEDIUM on a mobile GPU drops MSAA for the composite's FXAA (presetSamples).
 export const PRESETS = {
-  verylow: { label: 'VERY LOW', samples: 0, scaleMin: 0.45, scaleMax: 0.6, dprCap: 1.0, canvasScale: 0.6, sub: 'verylow' },
-  low:     { label: 'LOW',      samples: 0, scaleMin: 0.5,  scaleMax: 0.8, dprCap: 1.0,  sub: 'low' },
-  medium:  { label: 'MEDIUM',   samples: 2, scaleMin: 0.6,  scaleMax: 0.9, dprCap: 1.25, sub: 'medium' },
-  high:    { label: 'HIGH',     samples: 4, scaleMin: 0.7,  scaleMax: 1.0, dprCap: 1.5,  sub: 'high' },
-  ultra:   { label: 'ULTRA',    samples: 4, scaleMin: 0.9,  scaleMax: 1.0, dprCap: 2.0,  sub: 'ultra' },
+  verylow: { label: 'VERY LOW', samples: 0, scaleMin: 0.45, scaleMax: 0.6, dprCap: 1.0, canvasScale: 0.6, hudScale: 1.0, hudCache: true, sub: 'verylow' },
+  low:     { label: 'LOW',      samples: 0, scaleMin: 0.5,  scaleMax: 0.8, dprCap: 1.0, canvasScale: 0.8, hudScale: 1.25, hudCache: true, sub: 'low' },
+  medium:  { label: 'MEDIUM',   samples: 2, scaleMin: 0.6,  scaleMax: 0.9, dprCap: 1.25, hudScale: 1.5, sub: 'medium' },
+  high:    { label: 'HIGH',     samples: 4, scaleMin: 0.7,  scaleMax: 1.0, dprCap: 1.5,  hudScale: 2, sub: 'high' },
+  ultra:   { label: 'ULTRA',    samples: 4, scaleMin: 0.9,  scaleMax: 1.0, dprCap: 2.0,  hudScale: 2, sub: 'ultra' },
 };
 export const TIERS = ['verylow', 'low', 'medium', 'high', 'ultra'];
 export const CHOICES = ['auto', ...TIERS];
@@ -63,16 +67,32 @@ export function guessTier(rendererName = '') {
   return 'high';
 }
 
+/** A tile-based mobile GPU (Mali / Immortalis, Adreno, PowerVR, Apple on an iPhone / iPad). Safari reports every Apple
+ *  GPU as "Apple GPU", Macs included, so that one counts only with a touch screen (iPadOS reports a Mac user agent). */
+export function isMobileGpu(rendererName = '', touchPoints = 0) {
+  const n = String(rendererName || '').toLowerCase();
+  if (/mali|immortalis|adreno|powervr|imagination|\bimg\b/.test(n)) return true;
+  return /apple gpu/.test(n) && touchPoints > 1;
+}
+
+/** MSAA samples for a tier on this GPU: MEDIUM on a mobile GPU uses none (the composite's FXAA instead: a multisampled
+ *  HDR target plus its resolve costs mobile GPUs far more bandwidth than the FXAA taps). */
+export function presetSamples(tier, rendererName = '', touchPoints = 0) {
+  const p = PRESETS[tier] || PRESETS.high;
+  return tier === 'medium' && isMobileGpu(rendererName, touchPoints) ? 0 : p.samples;
+}
+
 export class DynamicResolution {
   constructor({ targetMs = 12.5 } = {}) {
     this.targetMs = targetMs;
     this.samples = new Float32Array(48); this.n = 0; this.i = 0; this._sort = new Float32Array(48);
+    this.window = 48;   // median over the newest `window` samples (the game shortens it when GPU samples arrive sparsely)
     this.reset();
   }
   reset() { this.n = 0; this.i = 0; this.warm = 2.0; this.cool = 0; this.cost = 0; this.useGpu = false; }
   _median() {
-    const m = this.n; const a = this._sort;
-    for (let j = 0; j < m; j++) a[j] = this.samples[j];
+    const L = this.samples.length, m = Math.min(this.n, Math.max(1, this.window | 0)); const a = this._sort;
+    for (let j = 0; j < m; j++) a[j] = this.samples[(this.i - 1 - j + L) % L];
     const v = a.subarray(0, m); v.sort();
     return v[m >> 1];
   }

@@ -105,6 +105,15 @@ function randDir(out) {
 // =================================================================================================
 // GLSL
 // =================================================================================================
+// Fragment precision for the particle shaders (smoke, glow, spark, tracer, flare, ring). three's prefix declares highp;
+// this restates mediump for the rest of the fragment source (fp16 on mobile GPUs, usually ignored by desktop ANGLE).
+// Every fragment value here is bounded and small (point/quad coordinates in -1..1, colours, factors), with two guards:
+// noise lookups wrap their per-particle offset to [-0.5, 0.5) first (the noise repeats every 1.0, so the lookup is
+// unchanged but the coordinate stays below ~1.1, where fp16 still resolves ~1/8 texel of the 128 px texture), and the
+// smoke ellipse divides by a clamped minor/major ratio after an early discard (no fp16 denormal / overflow -> NaN).
+// Vertex shaders (world positions, depth, trajectories) stay highp, as does the missile flame (pow of interpolants).
+const FRAG_MEDIUMP = 'precision mediump float;\n';
+
 const GLSL_FOG_VERT = /* glsl */`
 #ifdef USE_FOG
   #ifdef FOG_EXP2
@@ -208,7 +217,7 @@ void main() {
 }
 `;
 
-const SMOKE_FRAG = /* glsl */`
+const SMOKE_FRAG = /* glsl */`${FRAG_MEDIUMP}
 uniform sampler2D uNoise;
 uniform vec3 uSunColor;
 uniform vec3 uAmbient;
@@ -229,15 +238,19 @@ void main() {
   vec2 pc = gl_PointCoord * 2.0 - 1.0;
   pc.y = -pc.y;
   vec2 perp = vec2(-vEll.y, vEll.x);
-  vec2 uv = vec2(dot(pc, vEll.xy), dot(pc, perp) / vEll.z);       // ellipse-normalised coordinates
+  float py = dot(pc, perp), ez = max(vEll.z, 1e-3);             // ratio < 1e-3 is a sub-pixel line either way
+  if (abs(py) >= ez) discard;
+  vec2 uv = vec2(dot(pc, vEll.xy), py / ez);                    // ellipse-normalised coordinates
   float r2 = dot(uv, uv);
   if (r2 >= 1.0) discard;
   float seed = vInfo.w;
   float ang = seed * 6.2832 + vInfo.x * (seed - 0.5) * 3.0;     // slow churn over the life
   float cs = cos(ang), sn = sin(ang);
   vec2 ruv = vec2(cs * uv.x - sn * uv.y, sn * uv.x + cs * uv.y);
-  vec4 n1 = texture2D(uNoise, ruv * 0.30 + vec2(seed * 7.31, seed * 3.17));
-  vec4 n2 = texture2D(uNoise, ruv * 0.55 + vec2(seed * 1.93, seed * 5.71) + 0.37);
+  vec2 o1 = vec2(seed * 7.31, seed * 3.17), o2 = vec2(seed * 1.93, seed * 5.71) + 0.37;
+  o1 -= floor(o1 + 0.5); o2 -= floor(o2 + 0.5);                 // whole-period shifts of a repeating texture
+  vec4 n1 = texture2D(uNoise, ruv * 0.30 + o1);
+  vec4 n2 = texture2D(uNoise, ruv * 0.55 + o2);
   float lumps = n1.b * 0.55 + n2.a * 0.45;                      // cellular "cauliflower" lumps
   float fbm = n1.r * 0.6 + n2.g * 0.4;
   float n = mix(0.5, lumps * 0.65 + fbm * 0.35, vInfo.z);
@@ -301,7 +314,7 @@ void main() {
 }
 `;
 
-const GLOW_FRAG = /* glsl */`
+const GLOW_FRAG = /* glsl */`${FRAG_MEDIUMP}
 uniform sampler2D uNoise;
 varying vec3 vColor;
 varying vec4 vInfo;
@@ -314,7 +327,8 @@ void main() {
   float ang = seed * 6.2832 + vInfo.x * 2.0;
   float cs = cos(ang), sn = sin(ang);
   vec2 ruv = vec2(cs * uv.x - sn * uv.y, sn * uv.x + cs * uv.y);
-  float n = texture2D(uNoise, ruv * 0.4 + vec2(seed * 5.3, seed * 2.1)).b;
+  vec2 o = vec2(seed * 5.3, seed * 2.1); o -= floor(o + 0.5);    // whole-period shift: same lookup, small coordinate
+  float n = texture2D(uNoise, ruv * 0.4 + o).b;
   float soft = 1.0 - r2;
   soft *= soft;
   float core = exp(-r2 * 9.0);
@@ -367,7 +381,7 @@ void main() {
 }
 `;
 
-const SPARK_FRAG = /* glsl */`
+const SPARK_FRAG = /* glsl */`${FRAG_MEDIUMP}
 varying vec3 vColor;
 varying vec2 vQuad;
 varying float vFog;
@@ -403,7 +417,7 @@ void main() {
 }
 `;
 
-const TRACER_FRAG = /* glsl */`
+const TRACER_FRAG = /* glsl */`${FRAG_MEDIUMP}
 uniform vec3 uHead;
 uniform vec3 uTail;
 varying float vT;
@@ -500,7 +514,7 @@ void main() {
 }
 `;
 
-const FLARE_FRAG = /* glsl */`
+const FLARE_FRAG = /* glsl */`${FRAG_MEDIUMP}
 varying vec3 vColor;
 varying float vCore;
 varying float vFog;
@@ -543,7 +557,7 @@ void main() {
 }
 `;
 
-const RING_FRAG = /* glsl */`
+const RING_FRAG = /* glsl */`${FRAG_MEDIUMP}
 varying vec2 vLocal;
 varying float vX;
 varying float vI;
@@ -1072,6 +1086,7 @@ export class Weapons {
     sg.boundingSphere = new THREE.Sphere(new THREE.Vector3(), 1e7);
     this._sparkMat = fxMaterial({ uTime: U.uTime, uScreenH: U.uScreenH, uMinPx: { value: 1.5 } }, SPARK_VERT, SPARK_FRAG, true,
       THREE.DoubleSide);
+    this._sparkMat.forceSinglePass = true;   // additive: one draw (three otherwise draws back then front, recompiling state twice)
     this._sparkMesh = this._add(new THREE.Mesh(sg, this._sparkMat), 24);
   }
 
@@ -1132,6 +1147,7 @@ export class Weapons {
     g.boundingSphere = new THREE.Sphere(new THREE.Vector3(), 1e7);
     this._ringGeoSrc = rg;
     this._ringMat = fxMaterial({ uTime: this._u.uTime }, RING_VERT, RING_FRAG, true, THREE.DoubleSide);
+    this._ringMat.forceSinglePass = true;    // additive: order-independent, one draw
     this._ringMesh = this._add(new THREE.Mesh(g, this._ringMat), 21);
   }
 
