@@ -175,6 +175,7 @@ export class AudioFX {
     this._lastGun = -1;
     this._gunOn = false;
     this._lastWilhelm = -1e9;
+    this._lastBlast = null;    // outputs of the newest explosion voice, for spareLastBlast()
     this._lockState = 'none';
     this._missileWarnOn = false;
     this._mslSide = 1;         // hardpoint side of the next player launch (+1 right / -1 left), alternates
@@ -739,11 +740,13 @@ export class AudioFX {
       const idx = Math.min(S.length - 1, d < 250 ? 0 : d < 900 ? 1 : 2);
       const lp = Math.max(450, Math.min(16000, 20000 / (1 + d / 140)));
       const r = this._sample(S[idx], t0, 0.9 + Math.random() * 0.14, atten, S2, lp, atten < 0.3);
+      if (r) this._lastBlast = { outs: [r.g], at: this.ctx.currentTime };
       if (r && atten > 0.45) {
         const o = this._osc(r.v, 'sine', 50, t0, t0 + 0.8);
         o.frequency.exponentialRampToValueAtTime(28, t0 + 0.7);
         const og = this._gain(r.v, 0); chain(o, og, S2);
         env(og.gain, t0, 0.55 * atten, 0.012, 0.65);
+        this._lastBlast.outs.push(og);
       }
       return;
     }
@@ -761,13 +764,22 @@ export class AudioFX {
     lp2.frequency.setValueAtTime(f2, t0); lp2.frequency.exponentialRampToValueAtTime(200, t0 + 0.5);
     const g2 = this._gain(v, 0); chain(n2, lp2, g2, atten > 0.5 ? this._nodes.crunch : S2);
     env(g2.gain, t0, 0.7 * atten, 0.005, 0.45);
+    this._lastBlast = { outs: [g, g2], at: this.ctx.currentTime };
     if (atten > 0.45) {
       const o = this._osc(v, 'sine', 48, t0, t0 + 0.7);
       o.frequency.exponentialRampToValueAtTime(26, t0 + 0.6);
       const og = this._gain(v, 0); chain(o, og, S2);
       env(og.gain, t0, 0.9 * atten, 0.01, 0.6);
+      this._lastBlast.outs.push(og);
     }
     this._finish(v, n);
+  }
+  /** Let the explosion started this instant (the player's own, just before setPaused(true) on death) play out: its
+   *  outputs move from the gated sfx bus to the effects volume after the pause gate. */
+  spareLastBlast() {
+    const b = this._lastBlast; this._lastBlast = null;
+    if (!b || !this.ready || this.ctx.currentTime - b.at > 0.1) return;
+    for (const o of b.outs) { try { o.disconnect(); o.connect(this._nodes.fxVol); } catch (e) { /* ignore */ } }
   }
 
   /** Countermeasure flares: a quick string of pops over a hiss (one burst ~0.6-0.9 s). */

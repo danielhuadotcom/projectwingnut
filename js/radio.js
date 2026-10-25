@@ -92,7 +92,7 @@ export class Radio {
     this.phase = 0;
     this.done = {}; this.dropped = {}; this.started = {};
     this.wsoSilent = false; this.awacsSilent = false; this.noAwacs = !!(M && M.noAwacs);
-    this.firstKillSaid = false; this.completed = false;
+    this.firstKillSaid = false; this.completed = false; this.down = false;
     this.bossMarks = {};
     if (M) this.load(this.script.filter((e) => e.dur).map((e) => e.id).concat(this.globalIds()));
     else this.load(this.globalIds());
@@ -138,14 +138,13 @@ export class Radio {
   get speaking() { return !!this.cur; }
   /** The player is down. mainspring: she is in the fight ("Typical." replaces the AWACS call). */
   playerDown(mainspring) {
-    for (const q of this.queue) if (q.pri !== 'plot' && q.kind !== 'cue') this._drop(q, 'player down');
+    for (const q of this.queue) if (q.kind !== 'cue') this._drop(q, 'player down');
     this.queue = this.queue.filter((q) => !q._gone);
-    if (mainspring && this.typical) {
-      if (this.cur && this.cur.pri !== 'plot') this._cut('player down');
-      this._enqueue(this._story(this.typical, 'plot', 0), true);
-      return;
-    }
-    this.say('playerDown');
+    this._cut('player down');
+    this.down = false;
+    if (mainspring && this.typical) this._enqueue(this._story(this.typical, 'plot', 0), true);
+    else this.say('playerDown');
+    this.down = true;          // the call above is the last line of the sortie: _enqueue refuses voices until resetMission
   }
 
   // ---------------------------------------------------------------------------------------------------------------
@@ -312,6 +311,7 @@ export class Radio {
   }
   _enqueue(it, front = false) {
     if (it.kind === 'voice') {
+      if (this.down) return false;
       if (it.speaker === 'WSO' && ((this.wsoSilent && !it.exempt) || !this.wsoOn)) return false;
       if (it.speaker === 'AWACS' && (this.noAwacs || this.awacsSilent)) return false;
     }

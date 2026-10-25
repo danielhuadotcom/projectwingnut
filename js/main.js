@@ -1495,9 +1495,10 @@ class Game {
     this.player.kill();
     this.chase.addShake(1.2);
     this.post.flash(0.8); this.post.damage(1);
-    this.audio.ui('dead');
+    if (this.audio.spareLastBlast) this.audio.spareLastBlast();   // the player's own explosion plays out...
+    if (this.audio.setPaused) this.audio.setPaused(true);   // ...every other game sound stops; the music and the radio's call play on
     this.deadTimer = 0; this.deadReason = reason;
-    this.comms.playerDown(this.mainspringInFight());   // "Typical." while Mainspring is in the fight, else AWACS
+    this.comms.playerDown(this.mainspringInFight());   // "Typical." while Mainspring is in the fight, else AWACS; nothing after it
     this.audio.lockTone('none'); this.audio.missileWarning(false); this.audio.pullUpWarning(false); this.audio.gunLoop(false);
   }
   message(text, big = false, duration = 2.5) {
@@ -2196,10 +2197,10 @@ class Game {
     this.missileIncoming = false; this.pullUp = false; this.stall = false;
   }
   /** Hidden tab: the loop stops, so game audio goes quiet the way pause silences it, and the music with it. Back in
-   *  view both return, except that game audio stays paused while the game is paused. */
+   *  view both return, except that game audio stays paused while the game is paused or the player is down. */
   tabHidden(hidden) {
     if (hidden) this.silenceGameAudio();
-    else if (this.state !== 'paused' && this.audio.setPaused) this.audio.setPaused(false);
+    else if (this.state !== 'paused' && this.player.alive && this.audio.setPaused) this.audio.setPaused(false);
     if (this.music.setVolume) this.music.setVolume(hidden ? 0 : Number(this.settings.music ?? 0.7));
   }
   // ---------- War Thunder-style mouse aim ----------
