@@ -1,0 +1,146 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>WINGNUT — airframe gallery</title>
+<style>html,body{margin:0;height:100%;background:#000;overflow:hidden}canvas{display:block;position:absolute;left:0;top:0}</style>
+</head>
+<body>
+<script type="module">
+// Airframe gallery: every AI airframe family (js/airframes.js) plus the player's F-22, in the paint of the first aircraft
+// type that flies it. Each cell: top view (left), side view (top right, nose right), front view (bottom right), all
+// orthographic and fitted to the airframe's radius, so relative sizes differ per cell (see the label's span / length).
+// URL params:
+//   page=0|1|2     nine cells per page (default 0)          ids=a,b,c   explicit family list instead of pages
+//   far=1          instead: each family as the game draws it (enlargement applied) through a 70 deg / 720 px camera at
+//                  600 m, 1.2 km and 2.5 km, oblique, magnified 4x with nearest-neighbour sampling (silhouette check)
+// Labels are drawn on a 2D canvas (tools/check.mjs composites canvases only). Logs AIRFRAMES_OK + per-family stats.
+import * as THREE from 'https://cdnjs.cloudflare.com/ajax/libs/three.js/0.170.0/three.module.min.js';
+import { buildJetMesh, getAirframeStats, ENEMY_SCALE, ENEMY_SCALE_FAR, ENEMY_SCALE_NEAR_M, ENEMY_SCALE_FAR_M } from './js/aircraft.js';
+import { AIRFRAME_IDS, airframeForType, getAirframeTopology } from './js/airframes.js';
+import { AIRCRAFT_TYPES } from './js/missions.js';
+
+const params = new URLSearchParams(location.search);
+const FAR = params.get('far') === '1';
+const W = innerWidth, H = innerHeight;
+
+// family -> [label, body, accent] from the first type that flies it
+const fams = [['f22', 'F-22 (player)', 0x8d9aa6, 0xff6a1a]];
+const seen = new Set(['f22']);
+for (const [name, t] of Object.entries(AIRCRAFT_TYPES)) {
+  const id = airframeForType(name, t);
+  if (seen.has(id)) continue;
+  seen.add(id); fams.push([id, name, t.color ?? 0x4a4f58, t.accent ?? 0xd8232a]);
+}
+for (const id of AIRFRAME_IDS) if (!seen.has(id)) fams.push([id, '(no type)', 0x5d6670, 0xd8232a]);
+let list = fams;
+if (params.get('ids')) { const want = params.get('ids').split(','); list = want.map((id) => fams.find((f) => f[0] === id)).filter(Boolean); }
+else if (!FAR) { const pg = Number(params.get('page') || 0); list = fams.slice(pg * 9, pg * 9 + 9); }
+
+const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false, preserveDrawingBuffer: true });
+renderer.setPixelRatio(1); renderer.setSize(W, H);
+renderer.toneMapping = THREE.ACESFilmicToneMapping; renderer.toneMappingExposure = 1.0;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.autoClear = false;
+document.body.appendChild(renderer.domElement);
+const label = document.createElement('canvas'); label.width = W; label.height = H; document.body.appendChild(label);
+const ctx = label.getContext('2d');
+
+const scene = new THREE.Scene();
+const sunDir = new THREE.Vector3(-0.45, 0.75, -0.5).normalize();
+const sun = new THREE.DirectionalLight(0xffe2c0, 2.6); sun.position.copy(sunDir).multiplyScalar(100); scene.add(sun);
+scene.add(new THREE.HemisphereLight(0x9cc0ea, 0x6f5e46, 0.8));
+{
+  const SKY_VERT = 'varying vec3 vD; void main(){ vD = position; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }';
+  const SKY_FRAG = 'varying vec3 vD; void main(){ float h = normalize(vD).y; vec3 c = h > 0.0 ? mix(vec3(0.78,0.86,1.0), vec3(0.16,0.34,0.78), pow(h,0.55)) : vec3(0.3,0.31,0.3); gl_FragColor = vec4(c,1.0); }';
+  const env = new THREE.Scene();
+  env.add(new THREE.Mesh(new THREE.SphereGeometry(50, 32, 16), new THREE.ShaderMaterial({ vertexShader: SKY_VERT, fragmentShader: SKY_FRAG, side: THREE.BackSide })));
+  const pm = new THREE.PMREMGenerator(renderer); scene.environment = pm.fromScene(env, 0.02).texture; pm.dispose();
+}
+
+const jets = list.map(([id, name, body, accent]) => {
+  const m = buildJetMesh({ airframe: id, bodyColor: body, accentColor: accent, fxQuality: 'low' });
+  m.visible = false; scene.add(m);
+  const st = getAirframeStats(id);
+  const box = new THREE.Box3().setFromObject(m.getObjectByName('hull'));
+  return { id, name, m, st, box };
+});
+
+const ortho = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.1, 500);
+const persp = new THREE.PerspectiveCamera(70, 1, 1, 20000);
+function view(x, y, w, h, bg) {
+  renderer.setViewport(x, H - y - h, w, h); renderer.setScissor(x, H - y - h, w, h); renderer.setScissorTest(true);
+  renderer.setClearColor(bg); renderer.clear();
+}
+function drawOrtho(j, mode, x, y, w, h) {
+  const R = j.st.radius * 1.04, a = w / h, c = j.box.getCenter(new THREE.Vector3());
+  const hx = a >= 1 ? R * a : R, hy = a >= 1 ? R : R / a;
+  Object.assign(ortho, { left: -hx, right: hx, top: hy, bottom: -hy }); ortho.updateProjectionMatrix();
+  if (mode === 'top') { ortho.position.set(c.x, 200, c.z); ortho.up.set(0, 0, -1); }
+  else if (mode === 'side') { ortho.position.set(200, c.y, c.z); ortho.up.set(0, 1, 0); }
+  else { ortho.position.set(c.x, c.y, -200); ortho.up.set(0, 1, 0); }
+  ortho.lookAt(mode === 'top' ? new THREE.Vector3(c.x, 0, c.z) : mode === 'side' ? new THREE.Vector3(0, c.y, c.z) : new THREE.Vector3(c.x, c.y, 0));
+  view(x, y, w, h, mode === 'top' ? 0x8fa9c2 : 0x9bb4cc);
+  renderer.render(scene, ortho);
+}
+
+function frame() {
+  renderer.setScissorTest(false); renderer.setClearColor(0x101418); renderer.clear();
+  ctx.clearRect(0, 0, W, H);
+  ctx.font = 'bold 15px monospace'; ctx.textBaseline = 'top';
+  if (!FAR) {
+    const cw = Math.floor(W / 3), ch = Math.floor(H / 3);
+    jets.forEach((j, i) => {
+      const x0 = (i % 3) * cw, y0 = Math.floor(i / 3) * ch, half = Math.floor(cw * 0.55);
+      j.m.visible = true;
+      drawOrtho(j, 'top', x0 + 2, y0 + 2, half - 4, ch - 4);
+      drawOrtho(j, 'side', x0 + half, y0 + 2, cw - half - 2, Math.floor(ch / 2) - 3);
+      drawOrtho(j, 'front', x0 + half, y0 + Math.floor(ch / 2) + 1, cw - half - 2, Math.floor(ch / 2) - 3);
+      j.m.visible = false;
+      const sz = j.box.getSize(new THREE.Vector3());
+      ctx.fillStyle = '#000a'; ctx.fillRect(x0 + 2, y0 + 2, half - 4, 38);
+      ctx.fillStyle = '#ffe680'; ctx.fillText(`${j.name}  [${j.id}]`, x0 + 8, y0 + 5);
+      ctx.fillStyle = '#cfe'; ctx.font = '12px monospace';
+      ctx.fillText(`${j.st.hullTriangles}+${j.st.haloTriangles || 0} tris  ${j.st.draws} draws  L${sz.z.toFixed(1)} S${sz.x.toFixed(1)} R${j.st.radius.toFixed(1)}`, x0 + 8, y0 + 23);
+      ctx.font = 'bold 15px monospace';
+    });
+  } else {
+    // each family at 600 m / 1200 m / 2500 m through the game camera (70 deg vfov over 720 px), oblique from above-behind
+    const dists = [600, 1200, 2500], MAG = 4, n = jets.length, cols = 3 * dists.length > 0 ? 3 : 1;
+    const rows = Math.ceil(n / cols), cw = Math.floor(W / cols), ch = Math.floor(H / rows);
+    const small = new THREE.WebGLRenderTarget(64, 64, { samples: 0 }); small.texture.colorSpace = THREE.SRGBColorSpace;
+    jets.forEach((j, i) => {
+      const x0 = (i % cols) * cw, y0 = Math.floor(i / cols) * ch;
+      j.m.visible = true;
+      dists.forEach((d, k) => {
+        const e = ENEMY_SCALE + (ENEMY_SCALE_FAR - ENEMY_SCALE) * THREE.MathUtils.smoothstep(d, ENEMY_SCALE_NEAR_M, ENEMY_SCALE_FAR_M);
+        const en = j.id === 'f22' ? 1 : getAirframeTopology(j.id).enlarge;
+        j.m.scale.setScalar(1 + (e - 1) * en);
+        const px = Math.floor((cw / dists.length) / MAG), py = Math.floor((ch - 20) / MAG);
+        persp.aspect = px / py; persp.fov = 70 * py / 720; persp.updateProjectionMatrix();
+        const dir = new THREE.Vector3(0.55, 0.45, 0.7).normalize();
+        persp.position.copy(dir).multiplyScalar(d); persp.up.set(0, 1, 0); persp.lookAt(0, 0, 0);
+        small.setSize(px, py);
+        renderer.setScissorTest(false); renderer.setRenderTarget(small); renderer.setClearColor(0x9bb4cc); renderer.clear(); renderer.render(scene, persp);
+        renderer.setRenderTarget(null);
+        const buf = new Uint8Array(px * py * 4); renderer.readRenderTargetPixels(small, 0, 0, px, py, buf);
+        const img = ctx.createImageData(px, py);
+        for (let yy = 0; yy < py; yy++) img.data.set(buf.subarray((py - 1 - yy) * px * 4, (py - yy) * px * 4), yy * px * 4);
+        const tmp = document.createElement('canvas'); tmp.width = px; tmp.height = py; tmp.getContext('2d').putImageData(img, 0, 0);
+        ctx.imageSmoothingEnabled = false;
+        ctx.drawImage(tmp, x0 + k * (cw / dists.length), y0 + 20, px * MAG, py * MAG);
+        ctx.fillStyle = '#fff'; ctx.font = '11px monospace'; ctx.fillText(`${d} m`, x0 + k * (cw / dists.length) + 4, y0 + 22);
+      });
+      j.m.scale.setScalar(1); j.m.visible = false;
+      ctx.fillStyle = '#ffe680'; ctx.font = 'bold 13px monospace'; ctx.fillText(`${j.name} [${j.id}]`, x0 + 4, y0 + 3);
+    });
+    small.dispose();
+  }
+}
+frame();
+console.log('AIRFRAMES_OK ' + jets.map((j) => `${j.id}:${j.st.hullTriangles}t/${j.st.haloTriangles || 0}h/${j.st.draws}d/r${j.st.radius.toFixed(1)}`).join(' '));
+function loop() { requestAnimationFrame(loop); if (!FAR) frame(); }
+loop();
+</script>
+</body>
+</html>

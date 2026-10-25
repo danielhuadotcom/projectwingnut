@@ -13,6 +13,9 @@ import { SFX } from './sfx_data.js';
 
 const MAX_VOICES = 24;           // simultaneous one-shot voices (gun, explosions, ui cues ...)
 const GUN_MIN_INTERVAL = 0.035;  // s between gun voices
+const GUN_LEVEL = 0.55;          // player cannon buzz level (sfx bus)
+const GUN_RPS = 100;             // M61 Vulcan, 6000 rounds/min: the buzz's fundamental
+const GUN_IDLE_RATE = 0.55;      // buzz playback rate while spun down (spin-up / spin-down glide between)
 const WILHELM_COOLDOWN = 6;      // s between easter-egg screams
 const NOISE_SECONDS = 2;         // length of the looped noise buffers
 const SCHED_INTERVAL_MS = 80;    // JS timer for the beep scheduler
@@ -51,6 +54,27 @@ function glideTo(param, now, v, dt = 0.01) {
   let cur = param.value; if (!Number.isFinite(cur)) cur = 0;
   param.setValueAtTime(cur, now);
   param.linearRampToValueAtTime(v, now + dt);
+}
+
+/**
+ * One second of M61 Vulcan fire, seamlessly loopable: GUN_RPS shots, each a short dark crack plus a damped low thump,
+ * with slight timing and level jitter so it rips instead of humming. Tails past the end wrap into the head.
+ */
+function makeGunBuzz(ctx) {
+  const sr = ctx.sampleRate, n = Math.floor(sr), per = n / GUN_RPS, len = Math.floor(sr * 0.03), raw = new Float32Array(n);
+  for (let k = 0; k < GUN_RPS; k++) {
+    const t0 = Math.round(k * per + (Math.random() - 0.5) * per * 0.12), a = 0.85 + Math.random() * 0.3;
+    let lp = 0;
+    for (let i = 0; i < len; i++) {
+      const t = i / sr;
+      lp += (Math.random() * 2 - 1 - lp) * 0.35;
+      raw[(t0 + i + n) % n] += a * (lp * Math.exp(-t / 0.0018) + 0.8 * Math.sin(2 * Math.PI * 170 * t) * Math.exp(-t / 0.006));
+    }
+  }
+  let peak = 0; for (let i = 0; i < n; i++) peak = Math.max(peak, Math.abs(raw[i]));
+  const buf = ctx.createBuffer(1, n, sr), d = buf.getChannelData(0);
+  for (let i = 0; i < n; i++) d[i] = raw[i] * 0.9 / (peak || 1);
+  return buf;
 }
 
 function makeNoise(ctx, kind) {
@@ -132,6 +156,7 @@ export class AudioFX {
     this._paused = false;
     this._voices = [];         // one-shot voice records { end, nodes[] }
     this._lastGun = -1;
+    this._gunOn = false;
     this._lastWilhelm = -1e9;
     this._lockState = 'none';
     this._missileWarnOn = false;
@@ -230,6 +255,19 @@ export class AudioFX {
     this._buffers = { white: makeNoise(ctx, 'white'), pink: makeNoise(ctx, 'pink'), brown: makeNoise(ctx, 'brown') };
     this._buildEngine();
     this._buildWarnings();
+    this._buildGun();
+  }
+
+  /** Player cannon: a looped Vulcan buzz, always running, gated by gunLoop(). Spin-up / spin-down glide its rate. */
+  _buildGun() {
+    const ctx = this.ctx, G = this._nodes.gun = {};
+    G.src = ctx.createBufferSource(); G.src.buffer = makeGunBuzz(ctx); G.src.loop = true; G.src.playbackRate.value = GUN_IDLE_RATE;
+    G.body = ctx.createBiquadFilter(); G.body.type = 'peaking'; G.body.frequency.value = 160; G.body.Q.value = 0.8; G.body.gain.value = 5;
+    G.tone = ctx.createBiquadFilter(); G.tone.type = 'lowpass'; G.tone.frequency.value = 3200; G.tone.Q.value = 0.6;
+    G.shape = ctx.createWaveShaper(); G.shape.curve = makeSoftClipCurve();
+    G.gain = ctx.createGain(); G.gain.gain.value = 0;
+    chain(G.src, G.body, G.tone, G.shape, G.gain, this._nodes.sfxBus);
+    G.src.start();
   }
 
   _buildEngine() {
@@ -382,6 +420,7 @@ export class AudioFX {
     on = !!on;
     if (on === this._paused) return;
     this._paused = on;
+    if (on) this.gunLoop(false);
     if (!this.ready || !this._nodes) return;
     glideTo(this._nodes.pauseGate.gain, this.ctx.currentTime, on ? 0 : 1, on ? 0.08 : 0.12);
   }
@@ -483,6 +522,20 @@ export class AudioFX {
   // ---------------------------------------------------------------------------------------------------------------
   // One-shots (sample when decoded, synthesized fallback otherwise). Ignored while paused.
   // ---------------------------------------------------------------------------------------------------------------
+  /**
+   * Player cannon trigger state, called every frame: true while rounds are going out. Spins the Vulcan buzz up
+   * (~60 ms to full rate) and back down with a short tail on release. Idempotent.
+   */
+  gunLoop(on) {
+    on = !!on && !this._paused;
+    if (on === this._gunOn || !this.ready || !this._nodes) return;
+    this._gunOn = on;
+    const G = this._nodes.gun, now = this.ctx.currentTime, r = G.src.playbackRate, g = G.gain.gain;
+    for (const p of [r, g]) { try { p.cancelScheduledValues(now); } catch (e) { /* ignore */ } p.setValueAtTime(p.value, now); }
+    if (on) { r.setTargetAtTime(1, now, 0.05); g.setTargetAtTime(GUN_LEVEL, now, 0.012); }
+    else { r.setTargetAtTime(GUN_IDLE_RATE, now, 0.1); g.setTargetAtTime(0, now + 0.015, 0.06); }
+  }
+
   /** Per round fired. Rate-limited to one voice per 35 ms; slight random pitch so bursts don't sound robotic. */
   gunFire() {
     if (!this.ready || this._paused) return;
@@ -843,6 +896,7 @@ export class AudioFX {
       const E = this._nodes.engine, W = this._nodes.warn, srcs = [];
       if (E) srcs.push(E.whineOsc1, E.whineOsc2, E.whistle, E.roarSrc, E.abSrc, E.crackleSrc, E.subSrc, E.windSrc, E.sRoarSrc, E.sTurbSrc, E.sAbSrc);
       if (W) srcs.push(W.lockOsc, W.lfo, W.rwrOsc, W.puOsc);
+      if (this._nodes.gun) srcs.push(this._nodes.gun.src);
       for (const s of srcs) { if (s) { try { s.stop(); } catch (e) { /* ignore */ } } }
       try { this._nodes.master.disconnect(); } catch (e) { /* ignore */ }
     }
@@ -850,7 +904,7 @@ export class AudioFX {
     this._voices.length = 0;
     this._nodes = null; this._buffers = null; this.ctx = null; this._sfx = null; this._engineSamples = false;
     if (this._sfxState === 'none') this._sfxResolve({ decoded: 0, failed: 0 });
-    this._lockState = 'none'; this._missileWarnOn = false; this._pullUpOn = false;
+    this._lockState = 'none'; this._missileWarnOn = false; this._pullUpOn = false; this._gunOn = false;
     if (ctx) { try { const p = ctx.close(); if (p && typeof p.catch === 'function') p.catch(() => {}); } catch (e) { /* ignore */ } }
   }
 }

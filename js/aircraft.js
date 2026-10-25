@@ -1,5 +1,7 @@
 import * as THREE from 'https://cdnjs.cloudflare.com/ajax/libs/three.js/0.170.0/three.module.min.js';
 import { AfterburnerFX } from './engine_fx.js';
+import { PK, PK_CLASS, SID, N_SURF, Part, loftRings, capStart, capEnd, autoSmooth, curve, partFromGeometry,
+  hasAirframe, getAirframeTopology, getAirframeNozzles, getHaloMaterial, disposeAirframeCache } from './airframes.js';
 // PROJECT WINGNUT — js/aircraft.js
 // Procedural F-22 Raptor likeness (buildJetMesh) + arcade flight model, wingtip contrails and the
 // afterburner hookup (Aircraft). Local frame: nose = -Z, up = +Y, right wing = +X; origin = center of mass.
@@ -11,6 +13,8 @@ import { AfterburnerFX } from './engine_fx.js';
 // page and shared by every jet; per color scheme only the vertex-color attribute differs. Materials are per jet
 // (own uniforms) but share GL programs. Every part is frustum culled, so off-screen jets cost no draw calls.
 // Everything renders in LINEAR HDR (custom shaders output linear radiance; bright emitters > 1 for bloom).
+// AI aircraft use buildJetMesh({ airframe }) with a low-fidelity js/airframes.js family instead (same hull material and
+// GL program, 1 hull draw + optional rotor halo + AfterburnerFX); the player and the squadmates keep this F-22.
 
 export const AIRCRAFT_RADIUS = 7;            // collision sphere radius (m)
 // Enemies are drawn larger than life so they read at range (the player and squadmates stay life size): ENEMY_SCALE up
@@ -74,169 +78,7 @@ const finite = (v, d = 0) => (Number.isFinite(v) ? v : d);
 const DEG = Math.PI / 180;
 const TAN42 = Math.tan(42 * DEG), TAN17 = Math.tan(17 * DEG);   // F-22 planform alignment angles
 
-// =============================================================================================
-// Mesh-part toolkit. A Part collects positions + per-vertex paint kind + control-surface id + triangles.
-// Normals come from autoSmooth() (hard crease above the part's angle threshold, smooth below), and all
-// parts are finally concatenated into ONE indexed BufferGeometry.
-
-// Paint kinds (resolved to colors per color scheme) and their material class, which the hull shader maps
-// to roughness/metalness: 0 = satin paint (material defaults), 1 = metal, 2 = matte dark, 3 = glossy.
-const PK = { CAMO: 0, EDGE: 1, ACCENT: 2, METAL: 3, DARK: 4, COCKPIT: 5, HELMET: 6, SEAT: 7, NOZZLE_IN: 8, LIP: 9, SLOT: 10, PANEL: 11 };
-const PK_CLASS = [0, 0, 0, 1, 2, 2, 3, 2, 2, 0, 2, 0];
-
-// Control-surface ids (0 = rigid). Uniform slot = id - 1.
-const SID = { AIL_L: 1, AIL_R: 2, FLAP_L: 3, FLAP_R: 4, STAB_L: 5, STAB_R: 6, RUD_L: 7, RUD_R: 8 };
-const SID_MIRROR = [0, 2, 1, 4, 3, 6, 5, 8, 7];
-const N_SURF = 8;
-
-class Part {
-  constructor(smoothDeg = 35) {
-    this.P = []; this.K = []; this.S = []; this.I = [];
-    this.cosT = Math.cos(smoothDeg * DEG);
-  }
-  get count() { return this.K.length; }
-  v(x, y, z, kind = PK.CAMO, sid = 0) { this.P.push(x, y, z); this.K.push(kind); this.S.push(sid); return this.K.length - 1; }
-  tri(a, b, c) { this.I.push(a, b, c); }
-  quad(a, b, c, d) { this.I.push(a, b, c, a, c, d); }
-  flipAll() { const I = this.I; for (let i = 0; i < I.length; i += 3) { const t = I[i + 1]; I[i + 1] = I[i + 2]; I[i + 2] = t; } return this; }
-  /** Orients every triangle outward (or inward) relative to the vertex centroid via the signed volume. */
-  orient(outward = true) {
-    const P = this.P, I = this.I, n = this.K.length;
-    let cx = 0, cy = 0, cz = 0;
-    for (let i = 0; i < n; i++) { cx += P[3 * i]; cy += P[3 * i + 1]; cz += P[3 * i + 2]; }
-    cx /= n; cy /= n; cz /= n;
-    let vol = 0;
-    for (let i = 0; i < I.length; i += 3) {
-      const a = 3 * I[i], b = 3 * I[i + 1], c = 3 * I[i + 2];
-      const ax = P[a] - cx, ay = P[a + 1] - cy, az = P[a + 2] - cz;
-      const bx = P[b] - cx, by = P[b + 1] - cy, bz = P[b + 2] - cz;
-      const qx = P[c] - cx, qy = P[c + 1] - cy, qz = P[c + 2] - cz;
-      vol += ax * (by * qz - bz * qy) - ay * (bx * qz - bz * qx) + az * (bx * qy - by * qx);
-    }
-    if ((vol < 0) === outward) this.flipAll();
-    return this;
-  }
-  /** Adds a planar quad (a,b,c,d around its edge) whose front face points along (dx,dy,dz). */
-  quadFacing(a, b, c, d, dx, dy, dz) {
-    const P = this.P;
-    const ux = P[3 * b] - P[3 * a], uy = P[3 * b + 1] - P[3 * a + 1], uz = P[3 * b + 2] - P[3 * a + 2];
-    const wx = P[3 * c] - P[3 * a], wy = P[3 * c + 1] - P[3 * a + 1], wz = P[3 * c + 2] - P[3 * a + 2];
-    const nx = uy * wz - uz * wy, ny = uz * wx - ux * wz, nz = ux * wy - uy * wx;
-    if (nx * dx + ny * dy + nz * dz >= 0) this.quad(a, b, c, d); else this.quad(a, d, c, b);
-  }
-  applyMatrix4(m) {
-    const e = m.elements, P = this.P;
-    for (let i = 0; i < P.length; i += 3) {
-      const x = P[i], y = P[i + 1], z = P[i + 2];
-      P[i] = e[0] * x + e[4] * y + e[8] * z + e[12];
-      P[i + 1] = e[1] * x + e[5] * y + e[9] * z + e[13];
-      P[i + 2] = e[2] * x + e[6] * y + e[10] * z + e[14];
-    }
-    return this;
-  }
-  /** Mirror copy across the YZ plane (x -> -x) with winding restored and surface ids swapped L<->R. */
-  mirrored() {
-    const m = new Part(0); m.cosT = this.cosT;
-    for (let i = 0; i < this.P.length; i += 3) m.P.push(-this.P[i], this.P[i + 1], this.P[i + 2]);
-    m.K = this.K.slice(); m.S = this.S.map((s) => SID_MIRROR[s] || 0); m.I = this.I.slice();
-    return m.flipAll();
-  }
-}
-
-/** Loft through rings (arrays of [x,y,z], all the same length). kindFn(i, k, x, y, z) -> paint kind. */
-function loftRings(part, rings, kindFn, sid = 0, closed = true) {
-  const S = rings.length, M = rings[0].length, base = part.count;
-  for (let i = 0; i < S; i++) for (let k = 0; k < M; k++) {
-    const q = rings[i][k];
-    part.v(q[0], q[1], q[2], kindFn(i, k, q[0], q[1], q[2]), sid);
-  }
-  const K = closed ? M : M - 1;
-  for (let i = 0; i < S - 1; i++) for (let k = 0; k < K; k++) {
-    const k2 = (k + 1) % M, a = base + i * M + k, b = base + i * M + k2, c = base + (i + 1) * M + k2, d = base + (i + 1) * M + k;
-    part.quad(a, b, c, d);
-  }
-  return base;
-}
-/** Fan caps for the first/last ring of a loft (winding consistent with loftRings walls). */
-function capStart(part, base, M) { for (let k = 1; k < M - 1; k++) part.tri(base, base + k + 1, base + k); }
-function capEnd(part, base, M) { for (let k = 1; k < M - 1; k++) part.tri(base, base + k, base + k + 1); }
-
-/** Splits vertices along creases (adjacent face normals > threshold apart) and computes area-weighted normals. */
-function autoSmooth(part) {
-  const P = part.P, I0 = part.I, cosT = part.cosT, n = part.count;
-  const I = [], F = [];
-  for (let i = 0; i < I0.length; i += 3) {
-    const a = I0[i], b = I0[i + 1], c = I0[i + 2];
-    if (a === b || b === c || a === c) continue;
-    const ux = P[3 * b] - P[3 * a], uy = P[3 * b + 1] - P[3 * a + 1], uz = P[3 * b + 2] - P[3 * a + 2];
-    const wx = P[3 * c] - P[3 * a], wy = P[3 * c + 1] - P[3 * a + 1], wz = P[3 * c + 2] - P[3 * a + 2];
-    const nx = uy * wz - uz * wy, ny = uz * wx - ux * wz, nz = ux * wy - uy * wx;
-    const l = Math.hypot(nx, ny, nz);
-    if (l < 1e-10) continue;                       // degenerate: never rasterized, drop it
-    I.push(a, b, c); F.push(nx, ny, nz, l);
-  }
-  const m = I.length / 3;
-  const start = new Int32Array(n + 1);
-  for (let i = 0; i < I.length; i++) start[I[i] + 1]++;
-  for (let i = 0; i < n; i++) start[i + 1] += start[i];
-  const fill = start.slice(0, n), vf = new Int32Array(I.length);
-  for (let f = 0; f < m; f++) for (let k = 0; k < 3; k++) { const v = I[3 * f + k]; vf[fill[v]++] = f; }
-  const out = { P: [], N: [], K: [], S: [], I: new Array(I.length) };
-  const splits = new Array(n);
-  for (let f = 0; f < m; f++) {
-    const fl = F[4 * f + 3], ux = F[4 * f] / fl, uy = F[4 * f + 1] / fl, uz = F[4 * f + 2] / fl;
-    for (let k = 0; k < 3; k++) {
-      const v = I[3 * f + k];
-      let sx = 0, sy = 0, sz = 0;
-      for (let j = start[v]; j < start[v + 1]; j++) {
-        const g = vf[j], gl = F[4 * g + 3];
-        if ((ux * F[4 * g] + uy * F[4 * g + 1] + uz * F[4 * g + 2]) / gl >= cosT) { sx += F[4 * g]; sy += F[4 * g + 1]; sz += F[4 * g + 2]; }
-      }
-      const sl = Math.hypot(sx, sy, sz) || 1; sx /= sl; sy /= sl; sz /= sl;
-      let list = splits[v]; if (!list) list = splits[v] = [];
-      let idx = -1;
-      for (let e = 0; e < list.length; e++) { const q = list[e]; if (q[1] * sx + q[2] * sy + q[3] * sz > 0.9995) { idx = q[0]; break; } }
-      if (idx < 0) {
-        idx = out.K.length;
-        out.P.push(P[3 * v], P[3 * v + 1], P[3 * v + 2]); out.N.push(sx, sy, sz); out.K.push(part.K[v]); out.S.push(part.S[v]);
-        list.push([idx, sx, sy, sz]);
-      }
-      out.I[3 * f + k] = idx;
-    }
-  }
-  return out;
-}
-
-/** Monotone cubic (Fritsch-Carlson) through [[x, y], ...] sorted by x; clamped outside the range. */
-function curve(pts) {
-  const n = pts.length, xs = pts.map((p) => p[0]), ys = pts.map((p) => p[1]);
-  const d = [], m = new Array(n);
-  for (let i = 0; i < n - 1; i++) d.push((ys[i + 1] - ys[i]) / (xs[i + 1] - xs[i]));
-  m[0] = d[0]; m[n - 1] = d[n - 2];
-  for (let i = 1; i < n - 1; i++) m[i] = d[i - 1] * d[i] <= 0 ? 0 : (d[i - 1] + d[i]) / 2;
-  for (let i = 0; i < n - 1; i++) {
-    if (d[i] === 0) { m[i] = 0; m[i + 1] = 0; continue; }
-    const a = m[i] / d[i], b = m[i + 1] / d[i], s = a * a + b * b;
-    if (s > 9) { const t = 3 / Math.sqrt(s); m[i] = t * a * d[i]; m[i + 1] = t * b * d[i]; }
-  }
-  return (x) => {
-    if (x <= xs[0]) return ys[0];
-    if (x >= xs[n - 1]) return ys[n - 1];
-    let i = 0; while (x > xs[i + 1]) i++;
-    const h = xs[i + 1] - xs[i], t = (x - xs[i]) / h, t2 = t * t, t3 = t2 * t;
-    return (2 * t3 - 3 * t2 + 1) * ys[i] + (t3 - 2 * t2 + t) * h * m[i] + (-2 * t3 + 3 * t2) * ys[i + 1] + (t3 - t2) * h * m[i + 1];
-  };
-}
-
-/** Converts a core BufferGeometry (Box/Sphere...) into a Part with one paint kind. */
-function partFromGeometry(geom, kind, smoothDeg = 30, sid = 0) {
-  const part = new Part(smoothDeg), pos = geom.attributes.position;
-  for (let i = 0; i < pos.count; i++) part.v(pos.getX(i), pos.getY(i), pos.getZ(i), kind, sid);
-  if (geom.index) { const a = geom.index.array; for (let i = 0; i < a.length; i++) part.I.push(a[i]); }
-  else for (let i = 0; i < pos.count; i++) part.I.push(i);
-  geom.dispose();
-  return part;
-}
+// Mesh-part toolkit (Part, autoSmooth, paint kinds, surface ids): js/airframes.js.
 
 // =============================================================================================
 // F-22 layout (meters, 0.8 scale). Model z: nose tip at -7.95, aft-most point (stabilator notch corner) +7.03.
@@ -643,8 +485,9 @@ function paintColor(kind, x, y, z, sc, out) {
     case PK.SEAT: return out.setRGB(0.028, 0.030, 0.026);
     case PK.NOZZLE_IN: return out.setRGB(0.022, 0.019, 0.017);
     case PK.SLOT: return out.copy(sc.dark).multiplyScalar(0.35);
+    case PK.GLASS: return out.setRGB(0.016, 0.019, 0.024);
     default:
-      out.copy(sc.dark).lerp(sc.light, camoMask(x, y, z));
+      out.copy(sc.dark).lerp(sc.light, sc.flat ? 0.55 : camoMask(x, y, z));
       if (kind === PK.EDGE) out.multiplyScalar(0.70);         // darker leading edges
       else if (kind === PK.LIP) out.multiplyScalar(0.55);     // intake lips
       else if (kind === PK.PANEL) out.multiplyScalar(0.86);   // control surfaces
@@ -653,15 +496,17 @@ function paintColor(kind, x, y, z, sc, out) {
 }
 
 const _schemes = new Map();
-function acquireScheme(o) {
-  const key = [o.bodyColor, o.accentColor, o.canopyColor, o.camoDark, o.camoLight].join('|');
+/** Vertex colors of one color scheme on one airframe family ('f22' = the detailed F-22), cached and ref-counted. */
+function acquireScheme(o, family = 'f22') {
+  const key = family + '|' + [o.bodyColor, o.accentColor, o.canopyColor, o.camoDark, o.camoLight].join('|');
   let s = _schemes.get(key);
   if (!s) {
-    const topo = getTopology();
+    const f22 = family === 'f22', topo = f22 ? getTopology() : getAirframeTopology(family);
     const sc = {
       dark: o.camoDark != null ? new THREE.Color(o.camoDark) : schemeTone(REF_DARK, o.bodyColor),
       light: o.camoLight != null ? new THREE.Color(o.camoLight) : schemeTone(REF_LIGHT, o.bodyColor),
       accent: new THREE.Color(o.accentColor).multiplyScalar(0.7),
+      flat: !f22 && !topo.camo,
     };
     const n = topo.vertexCount, P = topo.position, col = new Float32Array(n * 3);
     for (let i = 0; i < n; i++) {
@@ -675,11 +520,14 @@ function acquireScheme(o) {
     g.setAttribute('aSurf', topo.surfAttr);
     g.setAttribute('color', new THREE.BufferAttribute(col, 3));
     g.boundingSphere = topo.sphere.clone(); g.boundingBox = topo.box.clone();
-    const canopyMaterial = new THREE.MeshPhysicalMaterial({   // NO transmission (it would add a full extra scene pass in r170)
-      color: o.canopyColor, metalness: 0.7, roughness: 0.08, clearcoat: 1.0, clearcoatRoughness: 0.04,
-      transparent: true, opacity: 0.86, envMapIntensity: 1.5,
-    });
-    canopyMaterial.name = 'jetCanopy';
+    let canopyMaterial = null;
+    if (f22) {
+      canopyMaterial = new THREE.MeshPhysicalMaterial({   // NO transmission (it would add a full extra scene pass in r170)
+        color: o.canopyColor, metalness: 0.7, roughness: 0.08, clearcoat: 1.0, clearcoatRoughness: 0.04,
+        transparent: true, opacity: 0.86, envMapIntensity: 1.5,
+      });
+      canopyMaterial.name = 'jetCanopy';
+    }
     s = { key, refs: 0, geometry: g, canopyMaterial };
     _schemes.set(key, s);
   }
@@ -756,7 +604,8 @@ export function getJetStats() {
  * Control surfaces deflect in the vertex shader: write angles with setJetSurfaces(group, ...) (Aircraft does this).
  */
 export function buildJetMesh({ bodyColor = 0x8d9aa6, accentColor = 0xff5a1f, canopyColor = 0x6e5422, camoDark = null, camoLight = null,
-  fxQuality = 'high' } = {}) {
+  fxQuality = 'high', airframe = 'f22' } = {}) {
+  if (airframe && airframe !== 'f22' && hasAirframe(airframe)) return buildAirframeMesh(airframe, { bodyColor, accentColor, canopyColor, camoDark, camoLight, fxQuality });
   const topo = getTopology();
   const scheme = acquireScheme({ bodyColor, accentColor, canopyColor, camoDark, camoLight });
   const group = new THREE.Group();
@@ -794,7 +643,54 @@ export function buildJetMesh({ bodyColor = 0x8d9aa6, accentColor = 0xff5a1f, can
   group.userData.surfaceUniforms = hullMat.userData.uSurf.value;   // Float32Array(64): [px,py,pz,cos, ax,ay,az,sin] x 8
   group.userData.schemeKey = scheme.key;
   group.userData.local = L;
+  group.userData.airframe = 'f22';
+  group.userData.radius = topo.radius;
   return group;
+}
+
+/**
+ * Low-fidelity AI airframe (js/airframes.js family `id`) with the same hull material as the F-22 (one GL program): hull
+ * 1 draw call, plus one translucent rotor / propeller halo mesh (shared material) for the helicopter and the floatplane,
+ * plus AfterburnerFX unless the family has no jet exhaust (fx 'none'). No control-surface animation (surfaceUniforms
+ * stays null, so setJetSurfaces no-ops). Same named empties as the F-22 for guns, wingtips and rails.
+ */
+function buildAirframeMesh(id, o) {
+  const topo = getAirframeTopology(id);
+  const scheme = acquireScheme(o, id);
+  const group = new THREE.Group();
+  group.name = 'jet-' + id;
+  const fixed = (x) => { x.matrixAutoUpdate = false; x.updateMatrix(); return x; };
+  const hullMat = makeHullMaterial(topo);
+  const hull = fixed(new THREE.Mesh(scheme.geometry, hullMat));
+  hull.name = 'hull';
+  group.add(hull);
+  if (topo.haloGeometry) {
+    const halo = fixed(new THREE.Mesh(topo.haloGeometry, getHaloMaterial()));
+    halo.name = 'halo'; halo.renderOrder = 2;
+    group.add(halo);
+  }
+  let fx = null;
+  if (topo.fx !== 'none' && topo.nozzles.length) {
+    try {
+      fx = new AfterburnerFX({ nozzles: getAirframeNozzles(id), quality: o.fxQuality });
+      group.add(fx.object3d);
+    } catch (e) { console.warn('aircraft: AfterburnerFX unavailable', e); fx = null; }
+  }
+  const L = topo.local, mk = (name, p) => { const e = new THREE.Object3D(); e.name = name; e.position.copy(p); group.add(fixed(e)); return e; };
+  mk('gunL', L.gunL); mk('gunR', L.gunR); mk('tipL', L.tipL); mk('tipR', L.tipR);
+  L.rails.forEach((p, i) => mk('rail' + i, p));
+  const ud = group.userData;
+  ud.engineFX = fx; ud.hullMaterial = hullMat; ud.surfaceUniforms = null; ud.schemeKey = scheme.key; ud.local = L;
+  ud.airframe = id; ud.radius = topo.radius; ud.topology = topo;
+  return group;
+}
+
+/** Geometry statistics of one airframe family ('f22' or a js/airframes.js id): hull triangles, halo triangles, draw calls. */
+export function getAirframeStats(id) {
+  if (!id || id === 'f22' || !hasAirframe(id)) { const t = getTopology(); return { id: 'f22', hullTriangles: t.triangleCount, haloTriangles: 0, canopyTriangles: t.canopyGeometry.index.count / 3, radius: t.radius, draws: 3, fx: 'full' }; }
+  const t = getAirframeTopology(id);
+  return { id, hullTriangles: t.triangleCount, haloTriangles: t.haloTriangles, radius: t.radius, enlarge: t.enlarge, fx: t.fx,
+    draws: 1 + (t.haloGeometry ? 1 : 0) + (t.fx !== 'none' && t.nozzles.length ? 1 : 0) };
 }
 
 /** Writes control-surface deflections (radians; + = trailing edge down for wing/stab surfaces, right for rudders). */
@@ -819,9 +715,10 @@ export function disposeJetMesh(group) {
 
 /** Full teardown of the shared jet geometry cache. Only call when no jet built by buildJetMesh is alive. */
 export function disposeJetCache() {
-  for (const s of _schemes.values()) { s.geometry.dispose(); s.canopyMaterial.dispose(); }
+  for (const s of _schemes.values()) { s.geometry.dispose(); if (s.canopyMaterial) s.canopyMaterial.dispose(); }
   _schemes.clear();
   if (_topo) { _topo.canopyGeometry.dispose(); _topo = null; }
+  disposeAirframeCache();
 }
 
 // =============================================================================================
@@ -1090,16 +987,24 @@ function makeVapor() {
 }
 
 export class Aircraft {
-  constructor(scene, { team = 'enemy', bodyColor, accentColor, position = new THREE.Vector3(), heading = 0, fxQuality = 'high' } = {}) {
+  /** airframe: 'f22' (the detailed jet: player, squadmates, default) or a js/airframes.js family id (airframeForType). */
+  constructor(scene, { team = 'enemy', bodyColor, accentColor, position = new THREE.Vector3(), heading = 0, fxQuality = 'high', airframe = 'f22' } = {}) {
     this.scene = scene;
     this.team = team;
     const isPlayer = team === 'player';
     this.mesh = buildJetMesh({
       bodyColor: bodyColor !== undefined ? bodyColor : (isPlayer ? 0x8d9aa6 : 0x5b6168),
       accentColor: accentColor !== undefined ? accentColor : (isPlayer ? 0xff5a1f : 0xd21f2d),
-      fxQuality,
+      fxQuality, airframe,
     });
     this.mesh.name = 'aircraft-' + team;
+    const af = this.mesh.userData.topology || null;     // airframe topology (null for the F-22)
+    this.airframe = this.mesh.userData.airframe;         // family id actually built ('f22' for unknown ids)
+    this.modelRadius = this.mesh.userData.radius;        // life-size airframe radius (m): farthest point from the origin
+    this.enlarge = af ? af.enlarge : 1;                  // fraction of the enemy larger-than-life enlargement it gets
+    this.deathScale = Math.max(1, Math.sqrt(this.modelRadius / 8));   // big airframes blow up bigger (Weapons.aircraftDeath)
+    this._fxMil = !!af && af.fx === 'mil';               // exhaust glow only, never the afterburner plume
+    this._contrails = !af || af.contrails;
     this.mesh.userData.aircraft = this;
     this.position = this.mesh.position;
     this.quaternion = this.mesh.quaternion;
@@ -1132,7 +1037,11 @@ export class Aircraft {
     this._tipL = new THREE.Vector3(); this._tipR = new THREE.Vector3();
 
     this.contrails = new ContrailRibbons(scene);
-    this.vapor = makeVapor(); this.mesh.add(this.vapor); this._vaporS = 0;
+    this.vapor = !af || af.vapor ? makeVapor() : null; this._vaporS = 0;   // wing vapor shell: fighters only
+    if (this.vapor) {
+      if (af) { const k = af.vapor.hs / 5.425, r = Math.sqrt(k); this.vapor.scale.set(4.6 * k, 1.15 * r, 3.4 * k); this.vapor.position.set(0, 0.45 * r, af.vapor.z); }
+      this.mesh.add(this.vapor);
+    }
     // post-stall maneuver state (startPostStall); fx = 0..1 vapor / contrail envelope while it runs
     this._psm = { active: false, t: 0, dur: 2, pitch: 2, spins: 1, dir: 1, abort: -1, fx: 0, up: new THREE.Vector3(), q0: new THREE.Quaternion() };
     scene.add(this.mesh);
@@ -1160,12 +1069,13 @@ export class Aircraft {
 
   /**
    * Airframe size: the type's life-size scale and whether it is drawn larger than life (enemies; the player and the
-   * squadmates are not). A larger aircraft's round hit sphere is its drawn airframe at the constant ENEMY_SCALE (Weapons
+   * squadmates are not). A larger aircraft's round hit sphere is its drawn airframe (modelRadius) at the constant ENEMY_SCALE,
+   * reduced to the airframe's `enlarge` share of it like the drawn scale (Weapons
    * tests max(that, the shooter's gun radius)), so a round that visibly hits it registers.
    */
   setSize(sizeScale = 1, larger = false) {
     this.sizeScale = sizeScale; this.larger = larger;
-    this.hitRadius = larger ? getTopology().radius * sizeScale * ENEMY_SCALE : 0;
+    this.hitRadius = larger ? this.modelRadius * sizeScale * (1 + (ENEMY_SCALE - 1) * this.enlarge) : 0;
     this.updateDrawScale(null);
   }
   /**
@@ -1175,7 +1085,10 @@ export class Aircraft {
    */
   updateDrawScale(cam) {
     let s = this.sizeScale;
-    if (this.larger) s *= cam ? ENEMY_SCALE + (ENEMY_SCALE_FAR - ENEMY_SCALE) * smoothstep(ENEMY_SCALE_NEAR_M, ENEMY_SCALE_FAR_M, this.position.distanceTo(cam)) : ENEMY_SCALE;
+    if (this.larger) {   // big airframes (transports, bombers) get only `enlarge` of the enlargement
+      const e = cam ? ENEMY_SCALE + (ENEMY_SCALE_FAR - ENEMY_SCALE) * smoothstep(ENEMY_SCALE_NEAR_M, ENEMY_SCALE_FAR_M, this.position.distanceTo(cam)) : ENEMY_SCALE;
+      s *= 1 + (e - 1) * this.enlarge;
+    }
     if (s === this.visualScale) return;
     this.visualScale = s;
     this.mesh.scale.setScalar(s);
@@ -1398,12 +1311,12 @@ export class Aircraft {
     setJetSurfaces(this.mesh, a);
     // exhaust (AfterburnerFX)
     const fp = this._fxParams;
-    fp.throttle = this.alive ? this.throttle : 0; fp.afterburner = this.alive && this.afterburner;
+    fp.throttle = this.alive ? this.throttle : 0; fp.afterburner = this.alive && this.afterburner && !this._fxMil;
     fp.speed = this.speed; fp.time = this.time;
     if (this.engineFX) this.engineFX.update(dt, fp);
     // contrails: condensation from high-g wingtip vortices or the humid altitude band (free when not condensing)
     let strength = 0;
-    if (this.alive) {
+    if (this.alive && this._contrails) {
       const alt = this.position.y, F = FLIGHT;
       const gPart = smoothstep(F.CONTRAIL_G, F.CONTRAIL_G + 2.5, Math.abs(this.gLoad));
       const hum = smoothstep(F.CONTRAIL_ALT_MIN, F.CONTRAIL_ALT_MIN + 300, alt) * (1 - smoothstep(F.CONTRAIL_ALT_MAX - 300, F.CONTRAIL_ALT_MAX, alt));
@@ -1411,10 +1324,10 @@ export class Aircraft {
       strength = Math.max(strength, this._psm.fx);   // post-stall maneuver: full wingtip vortices whatever the speed
     }
     // wing vapor fades in with hard pulls at speed (and blankets the wings through a post-stall maneuver)
-    const vT = this.alive && !this.fxLite ? Math.max(smoothstep(4.6, 7.6, this.gLoad) * smoothstep(110, 190, this.speed), this._psm.fx) : 0;
+    const vT = this.alive && !this.fxLite && this.vapor ? Math.max(smoothstep(4.6, 7.6, this.gLoad) * smoothstep(110, 190, this.speed), this._psm.fx) : 0;
     if (dt > 0) this._vaporS += (vT - this._vaporS) * (1 - Math.exp(-dt / (vT > this._vaporS ? 0.12 : 0.35)));
     const vOn = this._vaporS > 0.01;
-    this.vapor.visible = vOn;
+    if (this.vapor) this.vapor.visible = vOn;
     if (vOn) { const vu = this.vapor.material.uniforms; vu.uStrength.value = this._vaporS; vu.uTime.value = this.time % 1000; }
     if (dt > 0 && (strength > 0.01 || this.contrails.active)) {
       this.localToWorld(this._local.tipL, this._tipL); this.localToWorld(this._local.tipR, this._tipR);

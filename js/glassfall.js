@@ -94,7 +94,7 @@ export class Glassfall {
       this.blasts.push({ dome, ring, t: -1 });
     }
     // Q12 MAINSPRING: one pooled airframe, parked (hidden) until M20's ending
-    const q = this.q12 = new Aircraft(scene, { team: 'glass', bodyColor: 0x7d1212, accentColor: 0xe0a020, fxQuality });
+    const q = this.q12 = new Aircraft(scene, { team: 'glass', bodyColor: 0x7d1212, accentColor: 0xe0a020, fxQuality, airframe: 'q12' });
     q.mesh.name = 'aircraft-q12';
     q.name = 'Q12 MAINSPRING'; q.immortal = true; q.untargetable = true; q.applyDamage = () => false; q.missiles = 999; q.ammo = 0;
     q.setSize(1, true);

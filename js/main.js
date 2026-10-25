@@ -5,6 +5,7 @@ import { Input } from './input.js';
 import { HUD } from './hud.js';
 import { AudioFX } from './audio.js';
 import { Aircraft, AIRCRAFT_RADIUS, FLIGHT } from './aircraft.js';
+import { airframeForType } from './airframes.js';
 import { Weapons } from './weapons.js';
 import { ChaseCamera } from './camera.js';
 import { EnemyBrain } from './ai.js';
@@ -130,10 +131,10 @@ const cruiseScale = (type) => {
 const _site = new THREE.Vector3(), _st = new THREE.Vector3();   // air group placement scratch (spawnGroup, spawnAirGroup)
 // A hostile's class (INFINITY's kill tally), and its model radius (m) at its drawn size, which sizes its hud.js marker
 // so the brackets frame the model from any angle: ground units and ships by the bounding sphere of their drawn box
-// (GroundTarget.size), aircraft by the airframe (nose tip ~7.95 m from its centre) times this frame's drawn scale
+// (GroundTarget.size), aircraft by the airframe (Aircraft.modelRadius: its farthest point from the centre, ~7.95 m for the F-22) times this frame's drawn scale
 // (Aircraft.visualScale, updated before buildFrame)
 const hudKind = (e) => (e.isGround ? (e.naval ? 'naval' : 'ground') : 'air');
-const hudRadius = (e) => { if (!e.isGround) return 8 * (e.visualScale || 1); const S = e.size || e.def.size; return 0.5 * Math.hypot(S[0], S[1], S[2]); };
+const hudRadius = (e) => { if (!e.isGround) return (e.modelRadius || 8) * (e.visualScale || 1); const S = e.size || e.def.size; return 0.5 * Math.hypot(S[0], S[1], S[2]); };
 // HUD contact slots (screen markers and radar blips): the largest phase (66 hostiles, M6 phase 1 on Mercenary) plus
 // missiles in flight; buildFrame fills them in priority order should a phase ever outgrow them
 const HUD_CONTACTS = 96;
@@ -1178,10 +1179,11 @@ class Game {
     return placed;
   }
   spawnAircraft(typeName, type, pos, heading, idx) {
-    const colorKey = (type.color ?? 0x4a4f58) + ':' + (type.accent ?? 0xd8232a);
+    const airframe = airframeForType(typeName, type);   // js/airframes.js family: the pool key includes it (no wrong model)
+    const colorKey = (type.color ?? 0x4a4f58) + ':' + (type.accent ?? 0xd8232a) + ':' + airframe;
     let ac = this.enemies.find((e) => !e.alive && !e._pending && e._colorKey === colorKey);
     if (!ac) {
-      ac = new Aircraft(this.scene, { team: 'enemy', bodyColor: type.color ?? 0x4a4f58, accentColor: type.accent ?? 0xd8232a, position: pos, heading, fxQuality: PRESETS[this.quality].sub });
+      ac = new Aircraft(this.scene, { team: 'enemy', bodyColor: type.color ?? 0x4a4f58, accentColor: type.accent ?? 0xd8232a, position: pos, heading, fxQuality: PRESETS[this.quality].sub, airframe });
       ac._colorKey = colorKey;
       ac.brain = new EnemyBrain(ac, { skill: 0.5, worldHalf: WORLD_HALF });
       if (this.tunnel) { const tn = this.tunnel; ac.brain.obstacle = (pt) => tn.collide(pt, 40) === 'wall'; }
@@ -1195,7 +1197,8 @@ class Game {
     ac.reset({ position: pos, heading, health: hp });
     ac.optional = !!this._spawnOptional;
     ac.speedScale = cruiseScale(type);   // per-type speed (helicopters slow, cruise missiles fast)
-    ac.setSize(/missile/i.test(type.role || '') ? 0.45 : 1, true);   // cruise missiles are small; drawn larger than life (loop)
+    // drawn larger than life (loop); every airframe is modeled at its own size (an F-22 stand-in for a missile is shrunk)
+    ac.setSize(ac.airframe === 'f22' && /missile/i.test(type.role || '') ? 0.45 : 1, true);
     ac.health = hp; ac.maxHealth = hp;
     ac.quaternion.setFromAxisAngle(WORLD_UP, heading);
     ac.handling.pitch = THREE.MathUtils.clamp((type.pitch || 85) / 90 * 0.85, 0.55, 1);
@@ -1462,7 +1465,7 @@ class Game {
     this.audio.ui('dead');
     this.deadTimer = 0; this.deadReason = reason;
     this.comms.playerDown(this.mainspringInFight());   // "Typical." while Mainspring is in the fight, else AWACS
-    this.audio.lockTone('none'); this.audio.missileWarning(false); this.audio.pullUpWarning(false);
+    this.audio.lockTone('none'); this.audio.missileWarning(false); this.audio.pullUpWarning(false); this.audio.gunLoop(false);
   }
   message(text, big = false, duration = 2.5) {
     // a repeat of a message still on screen refreshes it and shows a count instead of stacking another line
@@ -1761,9 +1764,10 @@ class Game {
     }
     // Weapons (ignored briefly after launch so the start button doesn't fire)
     if (this.fireGrace > 0) this.fireGrace -= dt;
+    let gunning = false;
     if (p.alive && !(this.fireGrace > 0)) {
       if (input.gun) {
-        if (p.ammo > 0) { const rounds = weapons.fireGun(p); for (let i = 0; i < rounds; i++) this.audio.gunFire(); }
+        if (p.ammo > 0) { weapons.fireGun(p); gunning = true; }
         else if (input.gunPressed) this.message('GUNS EMPTY', false, 1.2);
       }
       if (input.missilePressed) {
@@ -1783,6 +1787,7 @@ class Game {
         if (this.audio.flare) this.audio.flare();
       }
     }
+    this.audio.gunLoop(gunning);   // Vulcan buzz while rounds are going out (spin-up / spin-down in js/audio.js)
     if (this.missileDecoyed) { this.missileDecoyed = false; if (!(this._decoyMsgT > this.time)) { this._decoyMsgT = this.time + 2; this.message('MISSILE DEFEATED', false, 1.6); this.say('missileDefeated', 2); } }
     for (let i = 0; i < this.hardpoints.length; i++) if (this.hardpoints[i] > 0) this.hardpoints[i] = Math.max(0, this.hardpoints[i] - dt);
     if (this.flareT > 0) this.flareT = Math.max(0, this.flareT - dt);
@@ -2136,12 +2141,12 @@ class Game {
     const a = this.audio;
     if (a.setPaused) { a.setPaused(true); return; }
     a.setEngine({ throttle: 0, speedFrac: 0, afterburner: false, alive: false });
-    a.lockTone('none'); a.missileWarning(false); a.pullUpWarning(false);
+    a.lockTone('none'); a.missileWarning(false); a.pullUpWarning(false); a.gunLoop(false);
   }
   /** Warning and lock tones (and the HUD warnings) off: leaving the flight loop for the title or the debrief. */
   stopWarnings() {
     const a = this.audio;
-    a.lockTone('none'); a.missileWarning(false); a.pullUpWarning(false);
+    a.lockTone('none'); a.missileWarning(false); a.pullUpWarning(false); a.gunLoop(false);
     this.missileIncoming = false; this.pullUp = false; this.stall = false;
   }
   /** Hidden tab: the loop stops, so game audio goes quiet the way pause silences it, and the music with it. Back in

@@ -57,9 +57,9 @@ try {
 
 // 2) dispose semantics on a throwaway instance (unlock -> use -> dispose -> use again must not throw)
 try {
-  const tmp = new AudioFX(); tmp.unlock(); tmp.setEngine({ throttle: 1, speedFrac: 1, afterburner: true, alive: true }); tmp.gunFire(); tmp.lockTone('seeking'); tmp.missileWarning(true);
+  const tmp = new AudioFX(); tmp.unlock(); tmp.setEngine({ throttle: 1, speedFrac: 1, afterburner: true, alive: true }); tmp.gunFire(); tmp.gunLoop(true); tmp.lockTone('seeking'); tmp.missileWarning(true);
   const wasReady = tmp.ready; tmp.dispose();
-  tmp.gunFire(); tmp.unlock(); tmp.setEngine({}); tmp.lockTone('locked'); tmp.ui('kill'); tmp.dispose();
+  tmp.gunFire(); tmp.gunLoop(true); tmp.unlock(); tmp.setEngine({}); tmp.gunLoop(true); tmp.gunLoop(false); tmp.lockTone('locked'); tmp.ui('kill'); tmp.dispose();
   check('dispose: ready false, ctx null', tmp.ready === false && tmp.ctx === null, { wasReady });
   log('AUDIO_DISPOSE_OK (was ready: ' + wasReady + ')', 'ok');
 } catch (e) { fails++; console.error('AUDIO_DISPOSE_FAIL ' + (e && e.stack || e)); }
@@ -130,7 +130,7 @@ for (const b of document.querySelectorAll('button[data-fx]')) {
   b.addEventListener('click', () => {
     audio.unlock();
     const k = b.dataset.fx;
-    if (k === 'gun') { let n = 0; const iv = setInterval(() => { audio.gunFire(); if (++n >= 15) clearInterval(iv); }, 40); }
+    if (k === 'gun') { audio.gunLoop(true); setTimeout(() => audio.gunLoop(false), 700); }
     else if (k === 'missile') audio.missileLaunch();
     else if (k === 'boom') audio.explosion(200);
     else if (k === 'boomfar') audio.explosion(2500);

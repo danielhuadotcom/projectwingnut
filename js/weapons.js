@@ -2311,7 +2311,7 @@ export class Weapons {
    *  airframe as drawn (its visualScale: enemies are drawn larger than life; never below life size). */
   aircraftDeath(aircraft) {
     if (!aircraft || !aircraft.position) return;
-    const p = aircraft.position, v = aircraft.velocity || _zero, k = aircraft.visualScale > 1 ? aircraft.visualScale : 1;
+    const p = aircraft.position, v = aircraft.velocity || _zero, k = (aircraft.visualScale > 1 ? aircraft.visualScale : 1) * (aircraft.deathScale > 1 ? aircraft.deathScale : 1);
     this._death(p.x, p.y, p.z, v.x, v.y, v.z, k);
   }
 
