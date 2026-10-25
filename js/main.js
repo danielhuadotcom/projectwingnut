@@ -306,11 +306,15 @@ class Game {
     W.missileLife = 8.5; W.missileMaxSpeed = 760; W.missileBoostTime = 2.6;
     this.weapons.missileCooldown = 0.2;          // hardpoints pace the player; this only stops double-taps in one frame
     this.applyQuality(this.quality);
-    window.addEventListener('resize', () => this.resize());
     // Fullscreen (js/fullscreen.js; Settings › Graphics, key U): entering and leaving fire resize. Check the size on the
     // change event too, and a frame later, for browsers that report the change before the new size applies (only on a
     // real change: renderer.setSize clears the canvas even at the same size)
     const refit = () => { if (this.glHost.clientWidth !== this.post.width || this.glHost.clientHeight !== this.post.height) this.resize(); };
+    // Mobile rotation: resize / orientationchange can fire before the new layout applies (the old size would stick, and
+    // with it a stretched camera aspect), so check again a frame and a moment later, and whenever the game view resizes
+    window.addEventListener('resize', () => { this.resize(); requestAnimationFrame(refit); });
+    window.addEventListener('orientationchange', () => { requestAnimationFrame(refit); setTimeout(refit, 300); });
+    try { if (typeof ResizeObserver === 'function') (this._glRO = new ResizeObserver(refit)).observe(this.glHost); } catch (e) { /* the events above remain */ }
     onFullscreenChange(() => { refit(); requestAnimationFrame(refit); });
     document.addEventListener('visibilitychange', () => { this.last = performance.now(); this.tabHidden(document.hidden); });
     const gesture = () => { this.audio.unlock(); this.awacs.preload(); this.music.play({ fadeIn: 1.5 }); };
