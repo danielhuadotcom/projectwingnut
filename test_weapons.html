@@ -356,24 +356,33 @@ function runSelfTests() {
     { // tunable defaults
       const W = new Weapons(scene, world);
       ok('defaults', W.missileBoostTime === 2.2 && W.missileMaxSpeed === 620 && W.missileLife === 6 && W.missileDropTime === 0.15
-        && W.flareDecoyRange === 4000 && W.flareProtectTime === 1 && W.gunHitRadius.player === 16 && W.gunHitRadius.enemy === 6
+        && W.flareDecoyRange === 4000 && W.flareProtectTime === 1 && W.gunHitRadius.player === 24 && W.gunHitRadius.enemy === 6 && W.gunHitScale.player === 1.5
+        && W.bulletLife === 2.4 && W.bulletFalloffStart === 1.2 && W.bulletFalloffMin === 0.25 && Math.abs(W.bulletGravity - 9.81 * 0.6) < 0.05
         && W.bulletDamage === 4 && typeof W.deployFlares === 'function');
       W.dispose();
     }
     { // gun hit sphere radius by shooter team (+ target.hitRadius for big ground targets)
-      const gun = (team, off, extra) => {
+      const gun = (team, off, extra, dist = 400, secs = 1.0) => {
         let hits = 0, dmg = 0;
         const W = new Weapons(scene, world, { onHit: (t, d, sh, k) => { if (k === 'gun') { hits++; dmg = d; } } });
         W.gunSpread = 0;
-        const sh = dummy('sh', team, 0, 1000, 0), tg = dummy('tg', team === 'player' ? 'enemy' : 'player', off, 1000, -400, extra);
-        run(W, [sh, tg], 1.0, (t) => { if (t < 0.2) W.fireGun(sh); });
+        const sh = dummy('sh', team, 0, 1000, 0), tg = dummy('tg', team === 'player' ? 'enemy' : 'player', off, 1000, -dist, extra);
+        run(W, [sh, tg], secs, (t) => { if (t < 0.2) W.fireGun(sh); });
         W.dispose();
         return { hits, dmg };
       };
-      const p12 = gun('player', 12), e12 = gun('enemy', 12), p20 = gun('player', 20), e5 = gun('enemy', 5);
+      const p12 = gun('player', 12), e12 = gun('enemy', 12), p20 = gun('player', 20), p28 = gun('player', 28), e5 = gun('enemy', 5);
       const ship = gun('enemy', 25, { isGround: true, hitRadius: 30 });
-      ok('gunRadius', p12.hits > 0 && e12.hits === 0 && p20.hits === 0 && e5.hits > 0 && ship.hits > 0 && p12.dmg === 4,
-        `player@12m=${p12.hits} enemy@12m=${e12.hits} player@20m=${p20.hits} enemy@5m=${e5.hits} enemy>ship(r30)@25m=${ship.hits} dmg=${p12.dmg}`);
+      ok('gunRadius', p12.hits > 0 && e12.hits === 0 && p20.hits > 0 && p28.hits === 0 && e5.hits > 0 && ship.hits > 0 && p12.dmg === 4,
+        `player@12m=${p12.hits} enemy@12m=${e12.hits} player@20m=${p20.hits} player@28m=${p28.hits} enemy@5m=${e5.hits} enemy>ship(r30)@25m=${ship.hits} dmg=${p12.dmg}`);
+      // the player's rounds scale a big AIRCRAFT's hitRadius (x1.5), not a ground target's; enemy rounds don't
+      const pBig = gun('player', 28, { hitRadius: 20 }), eBig = gun('enemy', 28, { hitRadius: 20 }), pGnd = gun('player', 28, { hitRadius: 20, isGround: true });
+      ok('gunHitScale', pBig.hits > 0 && eBig.hits === 0 && pGnd.hits === 0, `player>bigAc(r20)@28m=${pBig.hits} enemy=${eBig.hits} player>ground(r20)@28m=${pGnd.hits}`);
+      // range falloff: full damage close in, weak (but landing) at 2 km despite the drop, nothing past the rounds' reach
+      const far = gun('player', 0, undefined, 2000, 2.8), gone = gun('player', 0, undefined, 3000, 3.4);
+      const W = new Weapons(scene, world), ds = [0, 1.2, 1.8, 2.4].map((a) => W.bulletDamageScale(a)); W.dispose();
+      ok('gunFalloff', far.hits > 0 && far.dmg < 2 && far.dmg > 1 && gone.hits === 0 && ds[0] === 1 && ds[1] === 1 && Math.abs(ds[2] - 0.625) < 1e-9 && Math.abs(ds[3] - 0.25) < 1e-9,
+        `@2km hits=${far.hits} dmg=${far.dmg.toFixed(2)} @3km=${gone.hits} scale=${ds.map((d) => d.toFixed(3))}`);
     }
     { // a missile fired without a target flies straight for its whole life, then self-destructs
       const W = new Weapons(scene, world);

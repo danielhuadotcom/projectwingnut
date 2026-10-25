@@ -886,7 +886,7 @@ export class Weapons {
    *                          onMissileLaunch(missile), smokeCapacity, fireCapacity, sparkCapacity, maxBullets }
    */
   constructor(scene, world, { onHit = null, onKill = null, onExplosion = null, onMissileLaunch = null, onDecoy = null,
-    smokeCapacity = 4096, fireCapacity = 1024, sparkCapacity = 512, maxBullets = 600 } = {}) {
+    smokeCapacity = 4096, fireCapacity = 1024, sparkCapacity = 512, maxBullets = 900 } = {}) {
     this.scene = scene;
     this.world = world || null;
     if (RAND_TABLE[0] === 0) for (let i = 0; i < RAND_SIZE; i++) RAND_TABLE[i] = Math.random();   // one-time fill
@@ -900,11 +900,21 @@ export class Weapons {
     // ---- tunables -------------------------------------------------------------------------------
     this.gunRate = 25;                       // rounds/s total (alternating muzzles)
     this.bulletSpeed = 950;                  // m/s, added to shooter velocity
-    this.bulletLife = 1.4;                   // s (~1.6 km incl. shooter speed; despawns before long flights look odd)
-    this.bulletGravity = G * 0.3;            // m/s^2 (slight drop)
+    // Range: rounds live bulletLife s (~2.3 km relative to the shooter, ~2.8 km over the ground at cruise). Up to
+    // bulletFalloffStart s (~1.1 km, about the old hard range) a hit does full damage; past it damage and tracer
+    // brightness ease (smoothstep) down to bulletFalloffMin / bulletTracerMin at end of life, so long shots land but weak.
+    this.bulletLife = 2.4;                   // s (was 1.4: a hard ~1.3 km cliff)
+    this.bulletFalloffStart = 1.2;           // s of flight at full damage
+    this.bulletFalloffMin = 0.25;            // damage fraction at end of life
+    this.bulletTracerMin = 0.3;              // tracer brightness fraction at end of life (before the last 0.25 s fade-out)
+    // Drop: ~0.75 m at 600 m (inside every hit sphere), ~5 m at 1.2 km, ~12 m at 2 km. main.js reads this for the lead.
+    this.bulletGravity = G * 0.6;            // m/s^2 (arcade: 0.6 g, was 0.3 g)
     this.bulletDamage = 4;
     this.bulletRadius = AIRCRAFT_RADIUS;     // hit sphere radius (m) for shooters whose team is not in gunHitRadius
-    this.gunHitRadius = { player: 16, enemy: 6 };   // m, hit sphere radius by SHOOTER team (arcade-generous for the player)
+    this.gunHitRadius = { player: 24, enemy: 6 };   // m, hit sphere radius by SHOOTER team (arcade-generous for the player; was 16)
+    // x target.hitRadius for big (drawn-larger) AIRCRAFT, by shooter team, so the player's rounds are as forgiving on
+    // bombers / gunships as on fighters (ground targets keep their hull sphere). Per-aircraft gunHitRadius = x1.
+    this.gunHitScale = { player: 1.5 };
     this.gunConvergence = 600;               // m — the two muzzle streams converge at this range
     this.gunSpread = 0.0012;                 // rad, random dispersion per round
     this.tracerLength = 12;                  // m
@@ -1099,6 +1109,7 @@ export class Weapons {
     this._bSeed = new Float32Array(cap);
     this._bGround = new Float32Array(cap);       // next time a ground query is needed (clearance-based)
     this._bRad = new Float32Array(cap);          // hit sphere radius (m), from the shooter's team at firing time
+    this._bScl = new Float32Array(cap);          // x big aircraft targets' hitRadius (gunHitScale), likewise
     this._bOwner = new Array(cap).fill(null);
     this._nb = 0;
     const geo = new THREE.BoxGeometry(1, 1, 1);
@@ -1395,6 +1406,7 @@ export class Weapons {
     this._bSeed[i] = rnd();
     this._bGround[i] = 0;
     this._bRad[i] = this._gunRadius(a);
+    this._bScl[i] = this._gunScale(a);
     this._bOwner[i] = a;
   }
 
@@ -1406,6 +1418,21 @@ export class Weapons {
     return typeof r === 'number' && r > 0 ? r : this.bulletRadius;
   }
 
+  /** Effective hit-sphere radius (m) of `shooter`'s rounds against `target` (the HUD's gun-solution test uses it). */
+  gunHitRadiusFor(shooter, target) {
+    const rB = this._gunRadius(shooter);
+    let tr = target && typeof target.hitRadius === 'number' ? target.hitRadius : 0;
+    if (target && target.isGround !== true) tr *= this._gunScale(shooter);
+    return tr > rB ? tr : rB;
+  }
+
+  /** Multiplier on big aircraft targets' hitRadius for rounds fired by `a` (gunHitScale[a.team]; 1 with its own gunHitRadius). */
+  _gunScale(a) {
+    if (!a || (typeof a.gunHitRadius === 'number' && a.gunHitRadius > 0)) return 1;
+    const tbl = this.gunHitScale, r = tbl && a.team !== undefined && a.team !== null ? tbl[a.team] : undefined;
+    return typeof r === 'number' && r > 0 ? r : 1;
+  }
+
   _removeBullet(i) {
     const last = --this._nb;
     if (i !== last) {
@@ -1413,7 +1440,7 @@ export class Weapons {
       this._bPos[i3] = this._bPos[l3]; this._bPos[i3 + 1] = this._bPos[l3 + 1]; this._bPos[i3 + 2] = this._bPos[l3 + 2];
       this._bVel[i3] = this._bVel[l3]; this._bVel[i3 + 1] = this._bVel[l3 + 1]; this._bVel[i3 + 2] = this._bVel[l3 + 2];
       this._bAge[i] = this._bAge[last]; this._bSeed[i] = this._bSeed[last]; this._bOwner[i] = this._bOwner[last];
-      this._bGround[i] = this._bGround[last]; this._bRad[i] = this._bRad[last];
+      this._bGround[i] = this._bGround[last]; this._bRad[i] = this._bRad[last]; this._bScl[i] = this._bScl[last];
     }
     this._bOwner[last] = null;
   }
@@ -1428,7 +1455,8 @@ export class Weapons {
   _updateBullets(dt, list) {
     const P = this._bPos, V = this._bVel, A = this._bAge;
     const mat = this._tracerMesh.instanceMatrix.array, ta = this._tracerAttr.array;
-    const life = this.bulletLife, gdt = this.bulletGravity * dt, BR = this._bRad;
+    const life = this.bulletLife, gdt = this.bulletGravity * dt, BR = this._bRad, BS = this._bScl;
+    const fs = Math.min(this.bulletFalloffStart, life * 0.999), fInv = 1 / (life - fs), tMin = this.bulletTracerMin;
     const L = this.tracerLength, w = this.tracerWidth, ceil = this.terrainCeiling;
     for (let i = 0; i < this._nb;) {
       const i3 = i * 3;
@@ -1440,15 +1468,17 @@ export class Weapons {
       const bx = ax + vx * dt, by = ay + vy * dt, bz = az + vz * dt;
       P[i3] = bx; P[i3 + 1] = by; P[i3 + 2] = bz;
       // ---- hit test: segment travelled this frame vs. each target sphere, in the target's moving frame. Radius =
-      //      max(shooter team's gunHitRadius, target.hitRadius if any); the earliest crossing along the segment wins
-      //      Only the owner team's target list is tested (see update).
-      const owner = this._bOwner[i], rB = BR[i];
+      //      max(shooter team's gunHitRadius, target.hitRadius x gunHitScale (aircraft) if any); the earliest crossing
+      //      along the segment wins (swept: fast rounds can't tunnel between frames). Only the owner team's list is tested.
+      const owner = this._bOwner[i], rB = BR[i], sB = BS[i];
       const tl = this._listFor(owner, list), nl = tl.length;
       let hit = null, hx = 0, hy = 0, hz = 0, bestU = 2;
       for (let j = 0; j < nl; j++) {
         const T = tl[j];
         if (T === owner || Weapons._isDead(T)) continue;
-        const tr = T.hitRadius, big = typeof tr === 'number' && tr > rB, RR = big ? tr : rB;
+        let tr = T.hitRadius;
+        if (sB !== 1 && T.isGround !== true && typeof tr === 'number') tr *= sB;
+        const big = typeof tr === 'number' && tr > rB, RR = big ? tr : rB;
         const tp = T.position, tv = T.velocity || _zero;
         const sx = ax - (tp.x - tv.x * dt), sy = ay - (tp.y - tv.y * dt), sz = az - (tp.z - tv.z * dt);
         const ex = bx - tp.x, ey = by - tp.y, ez = bz - tp.z;
@@ -1468,8 +1498,9 @@ export class Weapons {
       }
       if (hit) {
         const inv = 1 / Math.max(1e-6, Math.sqrt(vx * vx + vy * vy + vz * vz));
+        const age = A[i];
         this._removeBullet(i);
-        this._gunHit(hit, owner, hx, hy, hz, vx * inv, vy * inv, vz * inv);
+        this._gunHit(hit, owner, hx, hy, hz, vx * inv, vy * inv, vz * inv, this.bulletDamageScale(age));
         continue;
       }
       // ---- ground / water. Re-query only when the bullet could have reached the surface: with terrain slopes
@@ -1498,7 +1529,11 @@ export class Weapons {
       mat[o + 4] = Yx * w; mat[o + 5] = Yy * w; mat[o + 6] = Yz * w; mat[o + 7] = 0;
       mat[o + 8] = Zx * len; mat[o + 9] = Zy * len; mat[o + 10] = Zz * len; mat[o + 11] = 0;
       mat[o + 12] = bx - Dx * len * 0.5; mat[o + 13] = by - Dy * len * 0.5; mat[o + 14] = bz - Dz * len * 0.5; mat[o + 15] = 1;
-      ta[i * 2] = (1 - 0.5 * (A[i] / life)) * Math.min(1, (life - A[i]) * 4);   // dims with age, last 0.25 s fades out
+      // dims slightly with age, then eases to bulletTracerMin over the falloff span (as the damage); last 0.25 s fades out
+      const ag = A[i];
+      let tb = ag < fs ? 1 - 0.3 * ag / fs : 0.7;
+      if (ag > fs) { const x = (ag - fs) * fInv; tb *= 1 - (1 - tMin) * x * x * (3 - 2 * x); }
+      ta[i * 2] = tb * Math.min(1, (life - ag) * 4);
       ta[i * 2 + 1] = this._bSeed[i];
       i++;
     }
@@ -1517,10 +1552,19 @@ export class Weapons {
     }
   }
 
-  _gunHit(target, shooter, x, y, z, dx, dy, dz) {
+  /** Damage fraction for a round `age` s into its flight: 1 up to bulletFalloffStart, smoothstep down to bulletFalloffMin at bulletLife. */
+  bulletDamageScale(age) {
+    const life = this.bulletLife, fs = Math.min(this.bulletFalloffStart, life);
+    if (!(age > fs) || life <= fs) return 1;
+    const x = Math.min(1, (age - fs) / (life - fs));
+    return 1 - (1 - this.bulletFalloffMin) * x * x * (3 - 2 * x);
+  }
+
+  _gunHit(target, shooter, x, y, z, dx, dy, dz, dmgScale = 1) {
     const immortal = target.immortal === true;     // (squadmates, in the enemy team's list) a visible hit, never damage
     const vs = target.visualScale > 1 ? target.visualScale : 1;   // flash and smoke sized to the airframe as drawn
-    const dmg = immortal ? 0 : this.damageFilter ? this.damageFilter(target, this.bulletDamage, shooter, 'gun', null) : this.bulletDamage;
+    const base = this.bulletDamage * dmgScale;
+    const dmg = immortal ? 0 : this.damageFilter ? this.damageFilter(target, base, shooter, 'gun', null) : base;
     if (!immortal && this.onHit) this.onHit(target, dmg, shooter, 'gun');
     if (!this._far(x, y, z)) {
       const tv = target.velocity || _zero, t = this.time;

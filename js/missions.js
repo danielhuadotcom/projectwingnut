@@ -92,7 +92,8 @@
 //     required surface targets (or the same anchor when it had none), with 'ahead' = the starting heading (north).
 //     Placement never follows the player and its random jitter is seeded by mission, phase and group, so every attempt
 //     looks the same. Distances keep time to engagement short (behavior makes the variety): inbound waves within 7 km
-//     and fast, holding flights within 4.5 km of the anchor, scrambles within 5 km, surface groups about 3.5-5.5 km.
+//     and fast, holding flights within 4.5 km of the anchor, scrambles within 5 km, surface groups about 3.5-5.5 km
+//     (missile shooters farther where needed: none may reach the start, see startKeepOut).
 //       position = 'ahead' | 'left' | 'right' | 'behind' | 'high' | 'low' ('ahead' at +900 m / -350 m) or a bearing in
 //         degrees (0 = ahead, clockwise); distance = m from the anchor (air: 1500-7500; aces 1500-9500), or from the near site.
 //       near = a surface type (this phase's, else the latest earlier phase's): the site is where those units stand and
@@ -369,7 +370,7 @@ export const MISSIONS = [
         { kind: 'air', type: 'NV-16', count: 3, formation: 'vee', position: 340, distance: 3500, task: 'patrol' },
         { kind: 'air', type: 'NV-14', count: 6, formation: 'vee', position: 20, distance: 3500, task: 'patrol' },
         { kind: 'ground', type: 'aa', count: 10, area: 'scattered', distance: 4000, optional: true },
-        { kind: 'ground', type: 'l-sam', count: 4, area: 'base', distance: 4800, optional: true },
+        { kind: 'ground', type: 'l-sam', count: 4, area: 'base', distance: 6500, optional: true },   // 6500: out of reach of the start (startThreatProblems)
         { kind: 'naval', type: 'cruiser', count: 2, area: 'fleet', distance: 5500, optional: true },
         { kind: 'naval', type: 'frigate', count: 1, area: 'fleet', distance: 5500, optional: true },
         { kind: 'naval', type: 'railgun frigate', count: 2, area: 'fleet', distance: 5500, optional: true, difficulty: 'mercenary' },
@@ -414,7 +415,7 @@ export const MISSIONS = [
         { kind: 'air', type: 'NV-16', count: 6, formation: 'vee', position: 'ahead', distance: 5500, after: 8, task: 'engage' },
         { kind: 'air', type: 'NV-4', count: 6, formation: 'vee', position: 'left', distance: 5000, after: 40, task: 'engage' },
         { kind: 'ground', type: 'c-ram', count: 6, area: 'base', distance: 4400, difficulty: 'mercenary' },  // extras split across phases 1-2 like the SAMs and AA
-        { kind: 'ground', type: 'l-sam', count: 1, area: 'ridge', distance: 4800, difficulty: 'mercenary' },
+        { kind: 'ground', type: 'l-sam', count: 1, area: 'ridge', distance: 5400, difficulty: 'mercenary' },   // 5400: out of reach of the start
         { kind: 'air', type: 'NV-4', count: 1, formation: 'pair', position: 'right', distance: 5000, after: 40, task: 'engage', difficulty: 'mercenary' },
         { kind: 'air', type: 'Q09', count: 1, formation: 'pair', position: 'right', distance: 5000, after: 50, task: 'engage', difficulty: 'mercenary' },
         { kind: 'air', type: 'FLURRY-29', count: 1, formation: 'pair', position: 'high', distance: 5000, after: 50, task: 'engage', difficulty: 'mercenary' },
@@ -520,7 +521,7 @@ export const MISSIONS = [
     //   scrambles, a late hive.
     phases: [
       { label: 'Sites Hammer and Tongs', groups: [
-        { kind: 'ground', type: 'l-sam', count: 3, area: 'ridge', distance: 5100 },
+        { kind: 'ground', type: 'l-sam', count: 3, area: 'ridge', distance: 7200 },   // 7200: out of reach of the start (startThreatProblems)
         { kind: 'ground', type: 'c-ram', count: 5, area: 'ridge', distance: 4400 },
         { kind: 'ground', type: 'aa', count: 7, area: 'ridge', distance: 4400 },
         { kind: 'ground', type: 'radar', count: 1, area: 'ridge', distance: 4800 },
@@ -569,7 +570,7 @@ export const MISSIONS = [
       { label: 'Landing zone', groups: [
         { kind: 'ground', type: 'aa', count: 6, area: 'scattered', distance: 4400 },
         { kind: 'ground', type: 'c-ram', count: 3, area: 'base', distance: 4800 },
-        { kind: 'ground', type: 'l-sam', count: 3, area: 'base', distance: 5100 },
+        { kind: 'ground', type: 'l-sam', count: 3, area: 'base', distance: 7000 },   // 7000: out of reach of the start (startThreatProblems)
         { kind: 'ground', type: 'comm tower', count: 1, area: 'base', distance: 5100, optional: true },
         { kind: 'air', type: 'NV-18E', count: 4, formation: 'vee', position: 'ahead', distance: 6200, task: 'engage' },
         { kind: 'air', type: 'NV-18E', count: 3, formation: 'vee', position: 'left', distance: 4500, after: 40, task: 'engage' },
@@ -656,7 +657,7 @@ export const MISSIONS = [
         { kind: 'ground', type: 'railgun', count: 8, area: 'scattered', distance: 4800 },
         { kind: 'ground', type: 'sam', count: 5, area: 'base', distance: 4400 },
         { kind: 'ground', type: 'c-ram', count: 6, area: 'base', distance: 4400 },
-        { kind: 'ground', type: 'l-sam', count: 3, area: 'scattered', distance: 5100 },
+        { kind: 'ground', type: 'l-sam', count: 3, area: 'scattered', distance: 6800 },   // 6800: out of reach of the start (startThreatProblems)
         { kind: 'ground', type: 'aa', count: 2, area: 'base', distance: 4400 },
         { kind: 'ground', type: 'radar', count: 3, area: 'base', distance: 4800, optional: true },
         { kind: 'ground', type: 'container', count: 2, area: 'base', distance: 4400, optional: true },
@@ -755,7 +756,7 @@ export const MISSIONS = [
         { kind: 'air', type: 'NV-14', count: 3, formation: 'vee', position: 'left', distance: 5600, task: 'engage' },
         { kind: 'air', type: 'NV-14', count: 3, formation: 'pair', distance: 800, near: 'l-sam', after: 15, task: 'scramble' },      // scrambling from hardened city shelters
         { kind: 'air', type: 'FLURRY-29', count: 4, formation: 'vee', position: 'ahead', distance: 5000, after: 40, task: 'engage' },
-        { kind: 'ground', type: 'l-sam', count: 6, area: 'scattered', distance: 4800 },
+        { kind: 'ground', type: 'l-sam', count: 6, area: 'scattered', distance: 10700 },   // the city's SAM belt: 10.7 km, out of reach of the furball start (startThreatProblems)
       ] },
       { label: 'Thunderheads inbound', glassfall: { impacts: 7 }, groups: [
         { kind: 'air', type: 'THUNDERHEAD', count: 6, formation: 'line', position: 'ahead', distance: 4800, optional: true },
@@ -943,6 +944,67 @@ export function countUnits(missionOrPhase, difficulty = 'normal') {
   return n;
 }
 
+// ---- surface missile shooters vs the start ----
+// No SAM, L-SAM or other missile-shooting surface unit may have the player in range as a sortie (or an INFINITY round)
+// starts: each keeps startKeepOut(type) = its range + START_MARGIN from the start point. Checked here for the authored
+// layouts (startThreatProblems, from validateMissions), enforced by js/main.js spawnSurfaceGroup at placement time (the
+// terrain site search can shift a site by kilometres, which no static check can see) and followed by js/infinity.js.
+export const START_MARGIN = 1500;   // m past a missile shooter's range
+const START_BACK = 2500;            // js/main.js START_BACK: missions[].startBack's default
+/** m a surface unit of `type` keeps from the start point: its range + START_MARGIN if it shoots missiles, else 0. */
+export function startKeepOut(type) {
+  const t = GROUND_TYPES[type];
+  return t && t.shoots === 'missile' ? (t.range || 0) + START_MARGIN : 0;
+}
+/** Worst-case distance of a surface group's units from its site: the formation js/main.js spawnSurfaceGroup lays out
+ *  (convoy 45 m apart, fleet rows 320 m / columns 260 m, 'line' 900 m steps, else a disc: base 320, scattered 1200,
+ *  other areas 600 m). lineGroups = the phase's number of 'line' groups (their units take turns along one line). */
+export function surfaceSpread(g, lineGroups = 1) {
+  const n = Math.max(1, Math.min(g.count || 1, 24)), naval = g.kind === 'naval' || !!(GROUND_TYPES[g.type] || {}).naval;
+  const area = g.area || (naval ? 'fleet' : 'base');
+  if (area === 'convoy') return (n / 2) * 45;
+  if (area === 'fleet') return Math.hypot(Math.floor((n - 1) / 3) * 320, 260);
+  if (area === 'line') return Math.hypot(n * Math.max(1, lineGroups) * 900, 250);
+  return area === 'scattered' ? 1200 : area === 'base' ? 320 : 600;
+}
+function mulberry32(seed) {   // js/flights.js mulberry32 (that module needs Three.js)
+  let a = seed | 0;
+  return () => {
+    a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+const SIDE_RAD = { ahead: 0, high: 0, low: 0, left: -Math.PI / 2, right: Math.PI / 2, behind: Math.PI };
+/**
+ * Missile shooters that would have the start point in range: mission m at index mi of its list (the index seeds the
+ * placement). Reproduces js/main.js placement in the sortie frame (origin = where the frame starts, 'ahead' = -z): the
+ * player starts startBack m behind the origin; a surface group's site is `distance` (default 7000) m from the phase's
+ * anchor along the frame bearing plus its position (a side or bearing, else a seeded random +-46 deg), plus the seeded
+ * +-10 deg jitter, from the same mulberry32 stream as placementSeed / spawnGroup. Its units then spread up to
+ * surfaceSpread(g). Every difficulty's groups count (Mercenary spawns them all). Checked: phase 1 and any later phase
+ * still anchored at the origin (no earlier phase with required surface targets at every difficulty); other phases are
+ * laid out around where the previous phase's targets stood, kilometres from the start, with the player there.
+ */
+export function startThreatProblems(m, mi) {
+  const out = [], back = m.startBack ?? START_BACK;
+  for (let pi = 0; pi < m.phases.length; pi++) {
+    const P = m.phases[pi], lineGroups = P.groups.filter((g) => g.area === 'line').length;
+    P.groups.forEach((g, gi) => {
+      const keep = g.kind === 'air' ? 0 : startKeepOut(g.type);
+      if (!keep) return;
+      const rand = mulberry32(Math.imul(mi + 1, 73856093) ^ Math.imul(pi + 1, 19349663) ^ Math.imul(gi + 101, 83492791));
+      const rel = typeof g.position === 'number' ? g.position * Math.PI / 180 : SIDE_RAD[g.position];
+      const b = (rel !== undefined ? rel : (rand() - 0.5) * 1.6) + (rand() - 0.5) * 0.35, d = g.distance || 7000;
+      const near = Math.hypot(Math.sin(b) * d, -Math.cos(b) * d - back) - surfaceSpread(g, lineGroups);
+      if (near < keep) out.push(`M${m.id} phase ${pi + 1} ${g.type}: units as close as ${Math.round(near)} m to the start (need ${keep}: range ${keep - START_MARGIN} + ${START_MARGIN})`);
+    });
+    if (P.groups.some((g) => g.kind !== 'air' && !g.optional && !(g.after > 0) && !g.difficulty)) break;   // later phases: anchored elsewhere
+  }
+  return out;
+}
+
 /** Lighting presets a mission may name in `time` (js/timeofday.js TIME_PRESETS keys; default 'day'). */
 export const TIMES = ['day', 'golden', 'dusk', 'overcast', 'evening', 'night'];
 /** Soundtrack tracks a mission or phase may name in `music` (js/music.js TRACKS). */
@@ -975,6 +1037,7 @@ function airPlacementProblems(m, i, g) {
  *  Mercenary total). Returns a list of problems (empty = clean). */
 export function validateMissions(missions = MISSIONS) {
   const out = [];
+  missions.forEach((m, mi) => out.push(...startThreatProblems(m, mi)));   // missile shooters clear of the start
   for (const m of missions) {
     if ('time' in m && !TIMES.includes(m.time)) out.push(`M${m.id}: time must be one of ${TIMES.join(', ')}`);
     if ('glassfall' in m && m.glassfall !== 'mainspring') out.push(`M${m.id}: glassfall must be 'mainspring'`);

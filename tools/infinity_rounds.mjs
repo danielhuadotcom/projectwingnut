@@ -25,6 +25,7 @@ const [r0, r1] = String(opt('--rounds', '1-30')).split('-').map((v) => Math.max(
 const runSeed = Number(opt('--seed', '1')) >>> 0;
 
 const I = await import('../js/infinity.js');
+const M = await import('../js/missions.js');
 const { FLIGHT } = await import('../js/aircraft.js');
 const THREE = await import('three');
 const { Weapons } = await import('../js/weapons.js');
@@ -122,6 +123,7 @@ function check() {
         ok(!types.has(g.kind + '|' + g.type), `${tag}: two ${g.type} groups`);
         types.add(g.kind + '|' + g.type);
         ok(g.kind === 'air' ? !!(g.formation && g.position && g.distance) : !!(g.area && g.position && g.distance), `${tag}: ${g.type} placement fields`);
+        if (g.kind !== 'air') { const need = M.startKeepOut(g.type) && M.startKeepOut(g.type) + M.surfaceSpread(g); ok(g.distance >= need, `${tag}: ${g.type} at ${g.distance} m reaches the round start (needs ${need})`); }
       }
       if (seed === 1 && r <= 30) ok(JSON.stringify(R) === JSON.stringify(I.generateRound(r, { ...runOpts, seed })), `${tag}: not deterministic`);
     }

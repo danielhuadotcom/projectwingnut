@@ -23,7 +23,7 @@ Gamepad (standard mapping, Mode 2 layout; Ace Combat / Custom: Settings › Cont
   <pre id="out">loading…</pre>
 </div>
 <script type="module">
-import { Input, shapeAxis, expoCurve, STICK_EXPO, EXPO_MAX } from './js/input.js';
+import { Input, shapeAxis, expoCurve, STICK_EXPO, EXPO_MAX, GUN_PRECISION, GUN_PRECISION_MAX, MOUSE_PRECISION_SHARE } from './js/input.js';
 import { PAD_PRESETS, PAD_IDS, DEFAULT_KEYS, PadWizard, padValue, bindingKey, sanitizePadMap, sanitizeKeys, rebindKey, keyOwner, validKey,
   loadBindings, saveBindings, BINDINGS_KEY, BINDINGS_VERSION } from './js/bindings.js';
 // Stored bindings would change what the keys do: run on defaults, restore afterwards
@@ -216,6 +216,23 @@ function selfTest() {
     check('expo: default raised to 0.9, curve monotonic', STICK_EXPO === 0.9 && [0.1, 0.3, 0.5, 0.7, 0.9].every((x, i, a) => !i || expoCurve(x) > expoCurve(a[i - 1])));
     t.setExpo('pitch', 0); t.update(DT); check('expo: pitch full pull still 1 at expo 0', t.pitch === (originalInvert ? -1 : 1), t.pitch); t.setExpo('pitch', STICK_EXPO);
     check('expo: throttle keeps 0.8 curve', t.throttleDelta === 1 && near(-shapeAxis(-0.5, 0.8), 0.1508, 1e-3));
+    // expo past 1 (up to EXPO_MAX 1.5): cubic blending into m^5 — continuous at 1, wider soft center, full stick still 1
+    check('expo > 1: continuous at 1, quintic at EXPO_MAX, full = 1', EXPO_MAX === 1.5 && near(expoCurve(0.5, 1.0001), 0.125, 1e-4) && near(expoCurve(0.5, 1.5), 0.03125, 1e-9)
+      && [1.2, 1.5].every((e) => expoCurve(1, e) === 1 && expoCurve(0.4, e) < expoCurve(0.4, 1) && [0.1, 0.3, 0.5, 0.7, 0.9].every((x, i, A) => !i || expoCurve(x, e) > expoCurve(A[i - 1], e))));
+    { // gun precision: RT held ramps a gain cut near center (s * (1 - p (1 - |s|))); full deflection untouched; ramps back out
+      const sR = shapeAxis(0.5), pr = GUN_PRECISION;
+      fake.buttons[7] = { pressed: true, touched: true, value: 1 }; t.update(DT);
+      check('precision: ramps in (not a step)', t.aimPrecision > 0 && t.aimPrecision < pr, t.aimPrecision);
+      for (let i = 0; i < 30; i++) t.update(DT);
+      check('precision: firing cuts small-stick gain', near(t.aimPrecision, pr, 1e-9) && near(t.roll, sR * (1 - pr * (1 - sR)), 1e-6), [t.roll, sR]);
+      check('precision: full pull still full rate', t.pitch === (originalInvert ? -1 : 1), t.pitch);
+      check('precision: mouse aim scale', near(t.mouseAimScale, 1 - pr * MOUSE_PRECISION_SHARE, 1e-9), t.mouseAimScale);
+      t.setGunPrecision(0); t.update(DT); check('precision: Off -> no cut', t.aimPrecision === 0 && near(t.roll, sR, 1e-6), t.roll);
+      t.setGunPrecision(9); check('precision: clamped to max', t.gunPrecision === GUN_PRECISION_MAX); t.setGunPrecision('x'); check('precision: invalid ignored', t.gunPrecision === GUN_PRECISION_MAX);
+      t.setGunPrecision(pr); for (let i = 0; i < 30; i++) t.update(DT);
+      fake.buttons[7] = { pressed: false, touched: false, value: 0 }; for (let i = 0; i < 30; i++) t.update(DT);
+      check('precision: released -> back to full gain', t.aimPrecision === 0 && near(t.roll, sR, 1e-6) && t.mouseAimScale === 1, t.roll);
+    }
     fake.buttons[9] = { pressed: true, touched: true, value: 1 }; t.update(DT); check('gp: Start -> pausePressed', t.pausePressed === true);
     t.update(DT); check('gp: Start held -> no repeat', t.pausePressed === false);
     fake.buttons[9] = { pressed: false, touched: false, value: 0 };

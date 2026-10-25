@@ -40,18 +40,31 @@ const AXES = ['pitch', 'roll', 'yaw', 'throttle'];
 const PAD_AXES = [['pitch', 'pitchUp', 'pitchDown'], ['roll', 'rollRight', 'rollLeft'], ['yaw', 'yawRight', 'yawLeft'], ['throttle', 'throttleUp', 'throttleDown']];
 const BUTTON_ACTIONS = ['gun', 'missile', 'target', 'lookBack', 'pause', 'invertPitch', 'restart', 'graphics', 'overlay', 'flares'];
 
-/** Default gamepad stick expo for pitch, roll and yaw (Settings > Controls sliders override it per axis). The curve is
- *  e*m^3 + (1-e)*m on the deflection m past the deadzone: 0 = linear, 1 = pure cubic; full deflection is always full rate.
- *  0.9 puts half deflection at ~16% rate (was 0.8: ~20%) for finer gun tracking. */
+/** Default gamepad stick expo for pitch, roll and yaw (Settings > Controls sliders override it per axis). The curve on the
+ *  deflection m past the deadzone: e <= 1: e*m^3 + (1-e)*m (0 = linear, 1 = pure cubic; unchanged, so saved values
+ *  feel the same); 1 < e <= EXPO_MAX: cubic blending into m^5, a wider low-gain zone around center for gun tracking
+ *  (half deflection: 12.5% at 1, ~7.8% at 1.25, ~3.1% at 1.5). Full deflection is always full rate.
+ *  0.9 puts half deflection at ~16% rate (was 0.8: ~20%). */
 export const STICK_EXPO = 0.9;
-export const EXPO_MAX = 1;
+export const EXPO_MAX = 1.5;
+/** Gun precision (default): while the cannon trigger is held, stick gain near center drops by this fraction, easing back
+ *  to full at full deflection (s * (1 - p * (1 - |s|))), so a hard break still gets the full rate. Mouse aim slows the aim
+ *  circle by MOUSE_PRECISION_SHARE of it. Ramped in / out (PRECISION_IN / PRECISION_OUT s) so pulling the trigger
+ *  doesn't jolt the nose. Settings > Controls 'Gun precision' (0 = off .. GUN_PRECISION_MAX). */
+export const GUN_PRECISION = 0.3;
+export const GUN_PRECISION_MAX = 0.6;
+export const MOUSE_PRECISION_SHARE = 0.67;
+const PRECISION_IN = 0.12, PRECISION_OUT = 0.2;
 const THROTTLE_EXPO = 0.8;      // thrust axis (left stick Y) keeps its old curve
 const TOUCH_EXPO = 0.8;         // on-screen touch sticks keep theirs
 /** The expo curve alone on 0..1 (no deadzone): what the Settings graph draws. */
 export function expoCurve(m, expo = STICK_EXPO) {
   const e = Math.min(EXPO_MAX, Math.max(0, Number.isFinite(expo) ? expo : STICK_EXPO));
   m = Math.min(1, Math.max(0, m));
-  return e * m * m * m + (1 - e) * m;
+  const m3 = m * m * m;
+  if (e <= 1) return e * m3 + (1 - e) * m;
+  const k = (e - 1) / (EXPO_MAX - 1);
+  return (1 - k) * m3 + k * m3 * m * m;
 }
 /** Deadzone + rescale to 0..1 past the deadzone + expo curve (fine control near center, full range at the ends). */
 export function shapeAxis(v, expo = STICK_EXPO) {
@@ -149,6 +162,9 @@ export class Input {
     // Gamepad stick expo per axis (0..EXPO_MAX), set from Settings; stickRaw = last raw deflection (for the Settings graph)
     this.expo = { pitch: STICK_EXPO, roll: STICK_EXPO, yaw: STICK_EXPO };
     this.stickRaw = { pitch: 0, roll: 0, yaw: 0 };
+    // Gun precision (GUN_PRECISION): setting, and the ramped reduction in effect now (0..gunPrecision; main.js scales
+    // mouse-aim sensitivity by 1 - aimPrecision * MOUSE_PRECISION_SHARE)
+    this.gunPrecision = GUN_PRECISION; this.aimPrecision = 0; this.mouseAimScale = 1;
     // ---- mouse (War Thunder-style mouse aim when no gamepad is in use) --------------------------------------------
     this._mdx = 0; this._mdy = 0; this._wheel = 0;
     this._mLeft = false; this._mRight = false; this._mLeftPrev = false; this._mRightPrev = false; this._mRightTap = 0;
@@ -448,12 +464,25 @@ export class Input {
     if (gpActive) this.usingGamepad = true;
     this._kbActivity = false;
 
-    // ---- axes (merged, clamped, inverted) ------------------------------------------------------------------------
+    // ---- gun precision: ramp toward the setting while the cannon trigger is held ------------------------------------
+    {
+      const firing = kbGun || gpGunV > GUN_THRESHOLD || this._press.gun > 0, goal = firing ? this.gunPrecision : 0;
+      const ap = this.aimPrecision;
+      if (ap !== goal) {
+        const step = dt * this.gunPrecision / (goal > ap ? PRECISION_IN : PRECISION_OUT);
+        this.aimPrecision = goal > ap ? Math.min(goal, ap + step) : Math.max(goal, ap - (step > 0 ? step : ap));
+      }
+    }
+    const pr = this.aimPrecision;
+    this.mouseAimScale = 1 - pr * MOUSE_PRECISION_SHARE;   // main.js: mouse-aim sensitivity multiplier
+    // ---- axes (merged, clamped, inverted, gun precision) -------------------------------------------------------------
     let pitch = clamp1(gpPitch + kb.pitch);
     if (this.invertPitch) pitch = -pitch;
+    let roll = clamp1(gpRoll + kb.roll), yaw = clamp1(gpYaw + kb.yaw);
+    if (pr > 0) { pitch *= 1 - pr * (1 - Math.abs(pitch)); roll *= 1 - pr * (1 - Math.abs(roll)); yaw *= 1 - pr * (1 - Math.abs(yaw)); }
     this.pitch = pitch;
-    this.roll = clamp1(gpRoll + kb.roll);
-    this.yaw = clamp1(gpYaw + kb.yaw);
+    this.roll = roll;
+    this.yaw = yaw;
     this.throttleDelta = clamp1(gpThr + kb.throttle);
     const P = this._press, prev = this._prev;
     this.gunAnalog = Math.max(gpGunV, (kbGun || P.gun > 0) ? 1 : 0);
@@ -502,6 +531,13 @@ export class Input {
     const n = Number(v);
     if (!this.expo || !(axis in this.expo) || !Number.isFinite(n)) return;
     this.expo[axis] = Math.min(EXPO_MAX, Math.max(0, n));
+  }
+  /** Gun precision 0 (off) .. GUN_PRECISION_MAX: stick gain cut near center while the cannon fires. Invalid values are ignored. */
+  setGunPrecision(v) {
+    const n = Number(v);
+    if (!Number.isFinite(n)) return;
+    this.gunPrecision = Math.min(GUN_PRECISION_MAX, Math.max(0, n));
+    if (this.aimPrecision > this.gunPrecision) this.aimPrecision = this.gunPrecision;
   }
   /** Gamepad layout: 'mode2' (default) | 'ace' | 'custom' (the saved custom map; Mode 2 until one exists). */
   setPadLayout(name) {

@@ -57,7 +57,7 @@
 // Bindings save to 'wingnut.bindings' (versioned) and reach the game as onSetting('bindings', { pad, keys }).
 
 import { countUnits } from './missions.js';
-import { shapeAxis, STICK_EXPO, EXPO_MAX } from './input.js';
+import { shapeAxis, STICK_EXPO, EXPO_MAX, GUN_PRECISION, GUN_PRECISION_MAX } from './input.js';
 import { PAD_ACTIONS, PAD_PRESETS, KEY_ACTIONS, PadWizard, loadBindings, saveBindings, padMapFor, copyPadMap, describeBinding, describePair,
   keyName, keyOwner, rebindKey, validKey, sanitizeKeys, DEFAULT_KEYS, isMouseCode } from './bindings.js';
 import { loadBest } from './infinity.js';
@@ -69,7 +69,7 @@ import { fullscreenSupported, isFullscreen, setFullscreen, onFullscreenChange } 
 export const DEFAULT_SETTINGS = Object.freeze({
   quality: 'auto', perfOverlay: false, invertPitch: false, mouseSens: 1, mouseKeys: 'simple', touch: 'auto', cameraShake: true, screenFlash: false,
   master: 0.8, music: 0.7, sfx: 0.9, voice: 1.0, wso: false, subtitles: true, difficulty: 'normal',
-  expoPitch: STICK_EXPO, expoRoll: STICK_EXPO, expoYaw: STICK_EXPO, padLayout: 'mode2',
+  expoPitch: STICK_EXPO, expoRoll: STICK_EXPO, expoYaw: STICK_EXPO, gunPrecision: GUN_PRECISION, padLayout: 'mode2',
 });
 const STORE_KEY = 'wingnut.settings';
 const pct = (v) => `${Math.round(v * 100)}%`;
@@ -105,11 +105,16 @@ export const SETTING_DEFS = [
     desc: 'Triggered by hits, flak and nearby explosions.' },
   { key: 'screenFlash', tab: 'controls', type: 'toggle', label: 'Screen flash',
     desc: 'White flash on missile hits, flak and nearby explosions.' },
-  // Gamepad stick expo per axis (js/input.js shapeAxis): 0 = linear, max = cubic; full deflection is always full rate
+  // Gamepad stick expo per axis (js/input.js shapeAxis): 0 = linear, 100% = cubic, up to 150% = wider soft center; full
+  // deflection is always full rate
   { key: 'expoPitch', tab: 'controls', type: 'slider', label: 'Stick expo · pitch', min: 0, max: EXPO_MAX, step: 0.02, dragStep: 0.01, format: expoFmt, expo: 'pitch',
-    desc: 'Controller only. Higher values soften small stick movements for finer aim. Full stick is always full rate.' },
+    desc: 'Controller only. Higher values soften small stick movements for finer aim; past 100% the soft center widens. Full stick is always full rate.' },
   { key: 'expoRoll', tab: 'controls', type: 'slider', label: 'Stick expo · roll', min: 0, max: EXPO_MAX, step: 0.02, dragStep: 0.01, format: expoFmt, expo: 'roll' },
   { key: 'expoYaw', tab: 'controls', type: 'slider', label: 'Stick expo · rudder', min: 0, max: EXPO_MAX, step: 0.02, dragStep: 0.01, format: expoFmt, expo: 'yaw' },
+  // js/input.js GUN_PRECISION: gain cut near center while the cannon fires (stick, keyboard and mouse aim)
+  { key: 'gunPrecision', tab: 'controls', type: 'slider', label: 'Gun precision', min: 0, max: GUN_PRECISION_MAX, step: 0.05, dragStep: 0.01,
+    format: (v) => (v > 0 ? `−${pct(v)}` : 'Off'),
+    desc: 'Finer aim while the cannon fires: small stick and mouse movements slow down. Full stick still turns at full rate.' },
   // Gamepad layout (js/bindings.js); the Custom / Keyboard binding link rows follow it (LINK_ROWS)
   { key: 'padLayout', tab: 'controls', type: 'choice', label: 'Controller layout',
     options: [['mode2', 'Mode 2'], ['ace', 'Ace Combat'], ['custom', 'Custom']],

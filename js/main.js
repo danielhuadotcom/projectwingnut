@@ -14,7 +14,7 @@ import { AlliedForces } from './allies.js';
 import { Profiler } from './profiler.js';
 import { PRESETS, TIERS, CHOICES, DynamicResolution, StepDown, loadChoice, saveChoice, guessTier, presetSamples } from './quality.js';
 import { GroundForces, DEFAULT_GROUND_TYPES, unitScale } from './targets.js';
-import { MISSIONS, AIRCRAFT_TYPES, GROUND_TYPES } from './missions.js';
+import { MISSIONS, AIRCRAFT_TYPES, GROUND_TYPES, startKeepOut, surfaceSpread } from './missions.js';
 import { Awacs } from './awacs.js';
 import { Tunnel } from './tunnel.js';
 import { Menu, loadSettings } from './menu.js';
@@ -57,7 +57,8 @@ const HOLD_COS = Math.cos(THREE.MathUtils.degToRad(70)), HOLD_RANGE = 4500;   //
 const LOCK_TIME = 0.5;
 const HARDPOINTS = 4, HARDPOINT_RELOAD = 5;   // four standard-missile hardpoints (stands in for PW special-weapon slots), s per hardpoint
 const FLARE_RELOAD = 7;                         // s (PW: infinite flares, 7 s reload)
-const GUN_LEAD_RANGE = 1200;                    // m (PW shows the lead pipper inside 1200 m of the target)
+const GUN_LEAD_RANGE = 1800;                    // m: lead pipper inside this (rounds reach ~2.3 km, weaker past ~1.1 km)
+const GUN_HOT_RANGE = 1200;                     // m: the red "hot" pipper and the WSO "guns" call only inside this
 const RADAR_RANGE = 8000;
 const TAP_TIME = 0.25;
 const PLAYER_ARMOR = 0.5;      // incoming damage multiplier for the player
@@ -609,7 +610,8 @@ class Game {
       const x = F.x - Math.sin(F.bearing) * back, z = F.z + Math.cos(F.bearing) * back;
       let y = F.y;   // over the terrain along the first 3 km of the heading, and out of the tunnel ridge
       for (let d = 0; d <= 3000; d += 250) y = Math.max(y, w.getHeight(x + Math.sin(F.bearing) * d, z - Math.cos(F.bearing) * d) + 450);
-      p.position.set(x, this.clearSpawnY(x, y, z), z); }
+      p.position.set(x, this.clearSpawnY(x, y, z), z);
+      this._keepOutAt = { x, z }; }        // missile shooters keep out of reach of the start (spawnSurfaceGroup)
     if (this.flights) this.flights.clear();
     (this._pending || (this._pending = [])).length = 0; this._sites = {};
     this.chase.snap(this.player);
@@ -810,6 +812,7 @@ class Game {
     this.infT = -1; this.waveTimer = 0;
     this.wave = plan.round; this.phaseIndex = plan.round - 1;
     this.setSortieFrame();
+    this._keepOutAt = { x: this.player.position.x, z: this.player.position.z };   // the round's start (spawnSurfaceGroup)
     (this._leashHome || (this._leashHome = new THREE.Vector3())).set(this.player.position.x, 0, this.player.position.z);   // (spawnAircraft)
     this.fitSurfaceSpots(plan.groups);
     this._bossPhase = false;
@@ -1334,15 +1337,21 @@ class Game {
     const naval = g.kind === 'naval' || !!def.naval;
     // enemy units keep clear of allied groups (AlliedForces zones; no extra test while there are none)
     const AZ = this.allied && this.allied.nZones > 0 ? this.allied : null;
-    const site = this.findSite(cx, cz, naval, _v3, def, AZ ? (x, z) => AZ.clearOf(x, z, ZONE_SITE_MARGIN) : null);
+    // missile shooters keep js/missions.js startKeepOut (range + margin) from the start point in every INFINITY round and
+    // in a campaign phase still laid out around the sortie start (phase 1, or no surface targets before it): the site
+    // with the group's spread, every unit itself (the site search can move a site kilometres toward the start)
+    const K = this._keepOutAt, keep = K && (this.infinity || this.phaseIndex === 0 || !this._nextAnchor) ? startKeepOut(typeName) : 0;
+    const clearOfStart = (x, z, r) => !keep || (x - K.x) * (x - K.x) + (z - K.z) * (z - K.z) >= (keep + r) * (keep + r);
+    const spread = keep ? surfaceSpread(g, this._lineGroups) : 0;
+    const site = this.findSite(cx, cz, naval, _v3, def, AZ || keep ? (x, z) => clearOfStart(x, z, spread) && (AZ === null || AZ.clearOf(x, z, ZONE_SITE_MARGIN)) : null);
     if (!site) return 0;
     const n = Math.max(1, Math.min(g.count || 1, 24));
     const area = g.area || (naval ? 'fleet' : 'base');
     const dirA = Math.random() * Math.PI * 2;
     // ships need the whole hull afloat in open water, clear of other ships; vehicles need dry land under the whole
     // footprint, clear of other vehicles (all at their drawn size)
-    const fits = naval ? (x, z, hdg) => this.ground.hullClear(def, x, z, hdg) && (AZ === null || AZ.clearOf(x, z, ZONE_UNIT_MARGIN))
-                       : (x, z, hdg) => this.landFits(def, x, z, hdg) && (AZ === null || AZ.clearOf(x, z, ZONE_UNIT_MARGIN));
+    const fits = naval ? (x, z, hdg) => clearOfStart(x, z, 0) && this.ground.hullClear(def, x, z, hdg) && (AZ === null || AZ.clearOf(x, z, ZONE_UNIT_MARGIN))
+                       : (x, z, hdg) => clearOfStart(x, z, 0) && this.landFits(def, x, z, hdg) && (AZ === null || AZ.clearOf(x, z, ZONE_UNIT_MARGIN));
     let placed = 0;
     for (let i = 0; i < n; i++) {
       let x = site.x, z = site.z, ok = false;
@@ -1555,6 +1564,7 @@ class Game {
       m.maxSpeed = P.maxSpeed; m.boostTime = P.boostTime; m.drag = P.drag; m.life = P.life; m.turnScale = P.turnScale; m.fuse = P.fuse; m.blindTime = P.blindTime;
     }
     if (this.flights && m.target && m.target.brain && m.owner && m.owner.team === 'player') this.flights.attacked(m.target, this.time);
+    if (m.owner !== this.player) this.audio.missileLaunchAt(m.position, this.camera);   // others' launches, heard by distance (player's: missileLaunch at the trigger)
     if (this.squad && this.squad.onMissileLaunch(m, this.weapons)) return;   // a squadmate's shot: lethal or a dud
     if (m.owner !== this.player) m.turnScale = ENEMY_MISSILE_TURN;
     if (m.owner !== this.player && m.target === this.player) { this.message('MISSILE LAUNCH', false, 2); this.say('missileIncoming', 3); }
@@ -1602,6 +1612,7 @@ class Game {
     else if (input.lookBack) camMode = 'rear';
     else if (this.padlockEngaged && this.target && this.target.alive) camMode = 'padlock';
     else if (this.isMouseMode() && (this.state === 'playing' || this.state === 'paused')) camMode = 'mouseaim';
+    this.chase.ground = this.world; this.chase.inTunnel = !!(this.tunnel && this.inTunnel);   // terrain clamp (not in the bore)
     this.chase.update(dt, this.player, this.target, camMode, this.time);
     if (this.tunnel && this.inTunnel && this.tunnel.constrain) this.tunnel.constrain(this.camera.position, 4);
     this.camMode = camMode;
@@ -1881,6 +1892,7 @@ class Game {
     this.pullUp = pullUp;
     this.stall = p.alive && p.speed < FLIGHT.MIN_SPEED * 1.12;
     this.audio.missileWarning(this.missileIncoming);
+    this.audio.trackMissiles(ms, p, this.camera);   // pass-by whoosh for missiles crossing close to the player
     this.audio.pullUpWarning(pullUp);
     this.audio.lockTone(!p.alive || !this.target ? 'none' : this.locked ? 'locked' : this.inCone ? 'seeking' : 'none');
     this.audio.setEngine({ throttle: p.throttle, speedFrac: THREE.MathUtils.clamp(p.speed / FLIGHT.AB_SPEED, 0, 1), afterburner: p.afterburner, alive: p.alive });
@@ -2095,6 +2107,7 @@ class Game {
       case 'invertPitch': this.input.setInvertPitch(!!v); if (this.touch && this.touch.setPitchInverted) this.touch.setPitchInverted(!!v); break;
       case 'touch': if (this.touch) this.touch.setMode(v || 'auto'); break;
       case 'expoPitch': case 'expoRoll': case 'expoYaw': if (this.input.setExpo) this.input.setExpo(key.slice(4).toLowerCase(), v); break;
+      case 'gunPrecision': if (this.input.setGunPrecision) this.input.setGunPrecision(v); break;   // stick / mouse fine aim while firing
       case 'padLayout': if (this.input.setPadLayout) this.input.setPadLayout(v); break;               // js/bindings.js layouts
       case 'bindings': if (this.input.setBindings) this.input.setBindings(v); break;                  // { pad, keys } from the binding screens
       case 'cameraShake': this.chase.shakeScale = v === false ? 0 : 1; break;
@@ -2206,7 +2219,7 @@ class Game {
     const i = this.input;
     if (!this.isMouseMode()) { if (this._wasGamepad !== true) this._wasGamepad = true; return; }
     if (this._wasGamepad) { this._wasGamepad = false; this.syncAim(); }
-    const sens = 0.0021 * (this.settings.mouseSens || 1) * (this.camera.fov / 66);
+    const sens = 0.0021 * (this.settings.mouseSens || 1) * (this.camera.fov / 66) * (i.mouseAimScale || 1);   // (gun precision while firing)
     const up = this.aimUp;
     if (i.freeLook) {
       this.lookYaw -= i.mouseMoveX * sens;
@@ -2484,7 +2497,7 @@ class Game {
     {
       const G = f._gunCross || (f._gunCross = { x: 0, y: 0, visible: true, onScreen: true, behind: false });
       const tgt = this.target && this.target.alive ? this.target : null;
-      const range = tgt ? THREE.MathUtils.clamp(tgt.position.distanceTo(p.position), 300, 1500) : 1000;
+      const range = tgt ? THREE.MathUtils.clamp(tgt.position.distanceTo(p.position), 300, GUN_LEAD_RANGE) : 1000;
       p.getForward(_fwd); this.gunOrigin(_v3);
       _v2.copy(_v3).addScaledVector(_fwd, range); this.project(_v2, G);
       G.visible = G.onScreen && this.camMode !== 'rear' && p.alive;
@@ -2501,21 +2514,24 @@ class Game {
       T.lock = this.inCone || this.locked ? this.lockTimer / LOCK_TIME : 0; T.locked = this.locked; T.inSeekerCone = this.inCone;
       _v.subVectors(p.velocity, t.velocity); T.closure = _v.dot(_v2) / Math.max(T.distance, 1e-3);
       T.r = hudRadius(t) * pxm / Math.max(1, t.position.distanceTo(cam.position));
-      // Gun lead (within 1.2 km, target ahead): solve from the gun muzzle. Rounds inherit our velocity and drop
-      // slightly, so the launch direction is toward T + (vT - vP)*tof, lifted by the drop; refine twice.
+      // Gun lead (within GUN_LEAD_RANGE, target ahead): solve from the gun muzzle. Rounds inherit our velocity and drop
+      // (weapons.bulletGravity), so the launch direction is toward T + (vT - vP)*tof, lifted by the drop; refine 3x.
       p.getForward(_fwd);
-      const gun = this.gunOrigin(_v3);
+      const gun = this.gunOrigin(_v3), W = this.weapons, bs = W.bulletSpeed;
       _v2.subVectors(t.position, gun);
       const gd = _v2.length();
+      let tof = gd / bs;
       if (gd < GUN_LEAD_RANGE && _v2.dot(_fwd) > gd * 0.4) {
-        let tof = gd / 950;
-        for (let it = 0; it < 2; it++) {
+        for (let it = 0; it < 3; it++) {
           _v.copy(t.position).addScaledVector(t.velocity, tof).addScaledVector(p.velocity, -tof);
-          tof = _v.distanceTo(gun) / 950;
+          tof = _v.distanceTo(gun) / bs;
         }
-        _v.y += 0.5 * 9.81 * 0.3 * tof * tof;                    // bullet drop (weapons apply 0.3 g)
+      }
+      if (gd < GUN_LEAD_RANGE && _v2.dot(_fwd) > gd * 0.4 && tof < W.bulletLife) {   // (rounds that can't get there show none)
+        _v.y += 0.5 * W.bulletGravity * tof * tof;               // bullet drop
         _v.sub(gun).normalize();
-        T.leadHot = _v.dot(_fwd) > Math.cos(Math.atan2(14, gd));  // gun line within the hit radius of the lead
+        // hot: in range and the gun line within ~85% of the rounds' hit sphere of the lead (gunHitRadiusFor: 24 m+)
+        T.leadHot = gd < GUN_HOT_RANGE && _v.dot(_fwd) > Math.cos(Math.atan2(0.85 * W.gunHitRadiusFor(p, t), gd));
         if (T.leadHot && !this._gunHot && this.state === 'playing' && p.alive && !t.isGround) this.say('gunSolution', 1, undefined, t);   // the WSO: "guns!" (rate-limited)
         this._gunHot = T.leadHot;
         _v.multiplyScalar(gd).add(gun);
@@ -2526,7 +2542,7 @@ class Game {
         sm.x += (T._lead.x - sm.x) * k; sm.y += (T._lead.y - sm.y) * k; sm.t = this.time;
         T._lead.x = sm.x; T._lead.y = sm.y;
         T.lead = T._lead.onScreen ? T._lead : null;
-      } else { T.lead = null; T.leadHot = false; }
+      } else { T.lead = null; T.leadHot = false; this._gunHot = false; }
       f.target = T;
     } else f.target = null;
     // Contacts & radar: a slot (HUD_CONTACTS) per hostile and hostile missile. Should they ever run out, the selected

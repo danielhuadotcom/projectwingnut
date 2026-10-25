@@ -35,12 +35,14 @@ source table is in [assets/sfx/LICENSES.md](assets/sfx/LICENSES.md).
 - "25 CC0 bang / firework SFX" by rubberduck (OpenGameArt.org)
 - "Chunky Explosion" by Joth (OpenGameArt.org)
 - "Battle at sea" by Thimras (OpenGameArt.org)
-- "Sci-Fi Sounds" and "Impact Sounds" by Kenney (kenney.nl)
+- "Impact Sounds" by Kenney (kenney.nl)
 - "Metal Impact Sounds" by Brian MacIntosh / BMacZero (OpenGameArt.org)
 - "Flare ignition" by qubodup (OpenGameArt.org)
 - "Male Grunt/Yelling sounds" by HaelDB (OpenGameArt.org; dual-licensed, used under CC0)
 
 The Wilhelm-style easter egg is made from the HaelDB CC0 scream, not the 1951 Warner Bros. recording.
+The missile launch and missile pass-by sounds (`missile.ogg`, `missile_flyby.ogg`) are synthesized offline by
+`tools/build_sfx.mjs` (no recorded source; CC0).
 Warning tones and fallback sounds are synthesized at runtime with the Web Audio API.
 
 ## Music

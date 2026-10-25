@@ -23,7 +23,7 @@
 <script type="module">
 import { Menu, installKind, loadSettings, saveSettings, DEFAULT_SETTINGS, CREDITS, SETTING_DEFS, DIFFICULTY_PICKS, DIFFICULTY_PICKED_KEY, loadDifficultyPicked, saveDifficultyPicked } from './js/menu.js';
 import { MISSIONS, countUnits } from './js/missions.js';
-import { Input, shapeAxis, STICK_EXPO } from './js/input.js';
+import { Input, shapeAxis, STICK_EXPO, EXPO_MAX, GUN_PRECISION } from './js/input.js';
 import { BINDINGS_KEY, BINDINGS_VERSION, KEY_ACTIONS, DEFAULT_KEYS, loadBindings, sanitizeKeys } from './js/bindings.js';
 import { loadBest, saveBest, BEST_KEY } from './js/infinity.js';
 
@@ -186,7 +186,7 @@ async function runSelfTest() {
   { // touch / mouse drag
     const ysl = exRow('expoYaw').querySelector('.m-slider'), yr = ysl.getBoundingClientRect();
     const ype = (type, fx) => ysl.dispatchEvent(new PointerEvent(type, { bubbles: true, pointerType: 'touch', button: 0, pointerId: 9, clientX: yr.left + yr.width * fx, clientY: yr.top + yr.height / 2 }));
-    ype('pointerdown', 0.2); ype('pointermove', 0.5); ype('pointerup', 0.5);
+    ype('pointerdown', 0.2); ype('pointermove', 0.5 / EXPO_MAX); ype('pointerup', 0.5 / EXPO_MAX);   // (slider spans 0..EXPO_MAX)
     check('dragging the rudder expo slider sets it', near(settings.expoYaw, 0.5, 0.011) && last()[1] === 'expoYaw', settings.expoYaw);
   }
   { // the settings apply to the stick shaping (main.js applySetting -> Input.setExpo)
@@ -194,6 +194,14 @@ async function runSelfTest() {
     for (const [k, a] of [['expoPitch', 'pitch'], ['expoRoll', 'roll'], ['expoYaw', 'yaw']]) inp.setExpo(a, settings[k]);
     check('Input.setExpo takes the setting values', inp.expo.pitch === settings.expoPitch && inp.expo.yaw === settings.expoYaw && inp.expo.roll === settings.expoRoll, inp.expo);
     check('shaping follows the expo (0.5 rudder: half stick ~ 0.27)', near(shapeAxis(0.5, settings.expoYaw), 0.5 * (0.38 / 0.88) ** 3 + 0.5 * (0.38 / 0.88), 1e-9));
+    inp.dispose();
+  }
+  { // Gun precision slider follows the expo rows (and their graph); default on, 'Off' at 0
+    const gp = menu.el.querySelector('.m-row[data-key="gunPrecision"]');
+    check('Gun precision row is a slider after the expo graph, default on', gp && gp.classList.contains('m-row--slider') && DEFAULT_SETTINGS.gunPrecision === GUN_PRECISION &&
+      GUN_PRECISION > 0 && gp.previousElementSibling && gp.previousElementSibling.classList.contains('m-expo'), DEFAULT_SETTINGS.gunPrecision);
+    const inp = new Input(window); inp.setGunPrecision(settings.gunPrecision);
+    check('Input.setGunPrecision takes the setting value', inp.gunPrecision === settings.gunPrecision, inp.gunPrecision);
     inp.dispose();
   }
   const expoSet = { pitch: settings.expoPitch, roll: settings.expoRoll, yaw: settings.expoYaw };

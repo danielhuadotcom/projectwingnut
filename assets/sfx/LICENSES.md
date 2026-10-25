@@ -20,7 +20,8 @@ modified derivatives (trimmed, mixed, pitch-shifted, EQ'd, loudness-normalised, 
 | `assets/sfx/afterburner.ogg` | `SFX.afterburner` | [cf18](#cf18) | 21.8 KB | 3.24 s (loop 0.120–3.120 s) |
 | `assets/sfx/gun_a.ogg` | `SFX.gun` | [rdBang](#rdbang) | 2.4 KB | 0.24 s |
 | `assets/sfx/gun_b.ogg` | `SFX.gun` | [rdBang](#rdbang) | 2.6 KB | 0.24 s |
-| `assets/sfx/missile.ogg` | `SFX.missile` | [rdBang](#rdbang), [kenneyScifi](#kenneyscifi), [battleSea](#battlesea) | 11.7 KB | 1.73 s |
+| `assets/sfx/missile.ogg` | `SFX.missile` | [synth](#synth) | 18.7 KB | 2.40 s |
+| `assets/sfx/missile_flyby.ogg` | `SFX.missile_flyby` | [synth](#synth) | 10.0 KB | 1.35 s |
 | `assets/sfx/explosion_near.ogg` | `SFX.explosion` | [chunky](#chunky) | 25.5 KB | 3.60 s |
 | `assets/sfx/explosion_mid.ogg` | `SFX.explosion` | [rdBang](#rdbang), [battleSea](#battlesea) | 9.9 KB | 1.80 s |
 | `assets/sfx/explosion_far.ogg` | `SFX.explosion` | [battleSea](#battlesea) | 10.7 KB | 2.42 s |
@@ -69,7 +70,7 @@ modified derivatives (trimmed, mixed, pitch-shifted, EQ'd, loudness-normalised, 
 - **License:** CC0 1.0 (public domain dedication) – https://creativecommons.org/publicdomain/zero/1.0/
 - **Source page:** https://opengameart.org/content/25-cc0-bang-firework-sfx
 - **Downloaded from:** https://opengameart.org/sites/default/files/25-CC0-bang-sfx.zip
-- **Used in:** `gun`, `missile`, `explosion`, `flare`
+- **Used in:** `gun`, `explosion`, `flare`
 
 ### chunky
 
@@ -87,16 +88,7 @@ modified derivatives (trimmed, mixed, pitch-shifted, EQ'd, loudness-normalised, 
 - **License:** CC0 1.0 (public domain dedication) – https://creativecommons.org/publicdomain/zero/1.0/
 - **Source page:** https://opengameart.org/content/battle-at-sea
 - **Downloaded from:** https://opengameart.org/sites/default/files/cannon_fire_1.ogg
-- **Used in:** `missile`, `explosion`
-
-### kenneyScifi
-
-- **Title:** Kenney Sci-Fi Sounds 1.0 (file used: thrusterFire_001.ogg)
-- **Author:** Kenney (www.kenney.nl)
-- **License:** CC0 1.0 (public domain dedication) – https://creativecommons.org/publicdomain/zero/1.0/
-- **Source page:** https://kenney.nl/assets/sci-fi-sounds
-- **Downloaded from:** https://kenney.nl/media/pages/assets/sci-fi-sounds/6b296f9ecf-1677589334/kenney_sci-fi-sounds.zip
-- **Used in:** `missile`
+- **Used in:** `explosion`
 
 ### kenneyImpact
 
@@ -133,6 +125,14 @@ modified derivatives (trimmed, mixed, pitch-shifted, EQ'd, loudness-normalised, 
 - **Source page:** https://opengameart.org/content/male-gruntyelling-sounds
 - **Downloaded from:** https://opengameart.org/sites/default/files/yelling%20sounds.zip
 - **Used in:** `wilhelm`
+
+### synth
+
+- **Title:** Procedural synthesis in tools/build_sfx.mjs (SYNTH: ignition crack/thump, crackling rocket motor, coloured noise; no recorded source)
+- **Author:** PROJECT WINGNUT
+- **License:** CC0 1.0 (public domain dedication) – https://creativecommons.org/publicdomain/zero/1.0/
+- **Source page:** tools/build_sfx.mjs
+- **Used in:** `missile`, `missile_flyby`
 
 ## Wilhelm scream
 

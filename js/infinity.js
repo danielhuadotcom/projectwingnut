@@ -33,7 +33,7 @@
 //   run.clearRound();                   // AREA CLEAR: returns INTERMISSION; hull = run.repairedHealth(hull)
 //   const end = run.finish('SHOT DOWN'); // saves a new local best: { round, roundsCleared, kills, score, best, newBest }
 
-import { AIRCRAFT_TYPES, GROUND_TYPES } from './missions.js';
+import { AIRCRAFT_TYPES, GROUND_TYPES, startKeepOut, surfaceSpread } from './missions.js';
 
 // ---- tuning -------------------------------------------------------------------------------------------------------
 export const MERC_ROUND = 18;      // the ramp reaches the Mercenary row here (Normal ~round 8, Hard ~round 12)
@@ -361,7 +361,8 @@ export function generateRound(round, opts) {
 
   // Surface: a land site (air defenses, plus vehicles or structures from 3 targets on, a second kind from 10) and a sea
   // group (patrol boats, plus warships or freighters from 3 targets on). The land groups share a spot, as do the sea
-  // groups, in different directions. Shooters crowd out the soft targets as the rounds go by.
+  // groups, in different directions (missile shooters farther out along it: see below). Shooters crowd out the soft
+  // targets as the rounds go by.
   const surface = [];
   const surfaceCap = restM - cost(air), per = surfaceCap / (nGround + nNaval);
   const sites = SURFACE_SPOTS.slice();
@@ -444,6 +445,13 @@ export function generateRound(round, opts) {
     g = costliest((x) => surface.filter((y) => y.kind === x.kind).length > 1);
     if (!g) break;
     drop(g);
+  }
+  // Missile shooters (SAMs, L-SAMs, missile ships) stand out of reach of the round's start point, formation included:
+  // js/missions.js startKeepOut (range + START_MARGIN) plus surfaceSpread, along their spot's bearing (js/main.js
+  // spawnSurfaceGroup also holds the terrain site search to it)
+  for (const g of surface) {
+    const keep = startKeepOut(g.type);
+    if (keep) g.distance = Math.max(g.distance, Math.ceil((keep + surfaceSpread(g)) / 100) * 100);
   }
   groups.push(...surface);
 

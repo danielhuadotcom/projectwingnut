@@ -29,6 +29,13 @@ const ENGINE_LEVEL = 1.4;        // engine bus gain while alive
 // so the master chain is unity gain below the threshold and only ever turns loud peaks down.
 const COMP_THRESHOLD = -9, COMP_KNEE = 6, COMP_RATIO = 6, COMP_TRIM = 0.6834;
 const EMPTY_OPTS = Object.freeze({});
+// Missiles. Player launches alternate hardpoint sides (stereo start LAUNCH_PAN, drifting to centre as the motor pulls
+// ahead) with a Haas-delayed, darker copy on the far side for width. Other launches within REMOTE_LAUNCH_MAX m are heard
+// distance-attenuated / dulled / delayed. Pass-by: FLYBY_PEAK must match tools/build_sfx.mjs (s from the start of
+// SFX.missile_flyby to its closest-approach peak); a missile predicted to pass within FLYBY_RADIUS m inside the next
+// FLYBY_LEAD s triggers it once, scheduled so the peak lands on the closest approach.
+const LAUNCH_PAN = 0.45, HAAS_DELAY = 0.017, REMOTE_LAUNCH_MAX = 2500, REMOTE_LAUNCH_GAP = 0.15;
+const FLYBY_PEAK = 0.42, FLYBY_RADIUS = 70, FLYBY_LEAD = 0.6, FLYBY_SCAN2 = 700 * 700, FLYBY_GAP = 0.2;
 
 function clamp01(v) { return v > 1 ? 1 : v < 0 ? 0 : (v === v ? v : 0); } // NaN -> 0
 function setP(param, v) { try { param.value = v; } catch (e) { /* ignore */ } }
@@ -170,6 +177,9 @@ export class AudioFX {
     this._lastWilhelm = -1e9;
     this._lockState = 'none';
     this._missileWarnOn = false;
+    this._mslSide = 1;         // hardpoint side of the next player launch (+1 right / -1 left), alternates
+    this._lastRemoteLaunch = -1;
+    this._lastFlyby = -1;
     this._pullUpOn = false;
     this._schedTimer = 0;
     this._engineLast = -1;
@@ -589,14 +599,51 @@ export class AudioFX {
     this._finish(v, o);
   }
 
-  /** Missile motor whoosh: ignition thump + roar receding (lowpass sweeps down). */
-  missileLaunch() {
+  /** Stereo panner on a voice (a plain gain where StereoPannerNode is missing: mono). */
+  _panner(v, pan) {
+    const ctx = this.ctx;
+    if (typeof ctx.createStereoPanner !== 'function') return this._gain(v, 1);
+    const p = ctx.createStereoPanner(); p.pan.value = Math.max(-1, Math.min(1, pan || 0)); v.nodes.push(p); return p;
+  }
+
+  /**
+   * Missile launch: release / ignition crack + sub thump, then a crackling motor tearing away (doppler drop and
+   * lowpass recession baked into SFX.missile). distance 0 = the player's own shot (alternating hardpoint side, Haas
+   * width); distance > 0 m = someone else's launch (attenuated, dulled, delayed by distance/340 s, low priority, panned
+   * by `pan` -1..1). Launches further than REMOTE_LAUNCH_MAX are silent.
+   */
+  missileLaunch(distance = 0, pan = 0) {
     if (!this.ready || this._paused) return;
-    const t0 = this.ctx.currentTime, S = this._sfx && this._sfx.missile;
+    let d = +distance; if (!(d > 0)) d = 0;
+    const now = this.ctx.currentTime, S = this._sfx && this._sfx.missile, B = this._nodes.sfxBus;
+    if (d > 0) {
+      if (d > REMOTE_LAUNCH_MAX || !S || now - this._lastRemoteLaunch < REMOTE_LAUNCH_GAP) return;
+      this._lastRemoteLaunch = now;
+      const rec = S[this._pick('missile', S)], rate = 0.93 + Math.random() * 0.1, t0 = now + Math.min(d / 340, 2);
+      const v = this._voice(t0 + rec.buffer.duration / rate + 0.05, true);
+      if (!v) return;
+      const src = this.ctx.createBufferSource(); src.buffer = rec.buffer; src.playbackRate.value = rate; v.nodes.push(src);
+      const lp = this._filter(v, 'lowpass', Math.max(600, 16000 / (1 + d / 250)), 0.7);
+      const g = this._gain(v, rec.gain * 0.85 * Math.max(0.05, Math.min(1, Math.pow(120 / Math.max(d, 120), 0.75))));
+      chain(src, lp, g, this._panner(v, pan * 0.8), B);
+      src.start(t0); this._finish(v, src);
+      return;
+    }
+    const t0 = now;
     if (S) {
-      const rec = S[this._pick('missile', S)], rate = 0.95 + Math.random() * 0.1, dur = rec.buffer.duration / rate;
-      const r = this._sample(rec, t0, rate, 1, this._nodes.sfxBus, 6500);
-      if (r) { r.f.frequency.setValueAtTime(6500, t0 + 0.12); r.f.frequency.exponentialRampToValueAtTime(1400, t0 + dur); }
+      const rec = S[this._pick('missile', S)], rate = 0.96 + Math.random() * 0.08, dur = rec.buffer.duration / rate;
+      const side = this._mslSide; this._mslSide = -side;
+      const v = this._voice(t0 + dur + HAAS_DELAY + 0.05);
+      if (!v) return;
+      const src = this.ctx.createBufferSource(); src.buffer = rec.buffer; src.playbackRate.value = rate; v.nodes.push(src);
+      const g = this._gain(v, rec.gain), p = this._panner(v, side * LAUNCH_PAN);
+      chain(src, g, p, B);
+      if (p.pan) { p.pan.setValueAtTime(side * LAUNCH_PAN, t0 + 0.05); p.pan.linearRampToValueAtTime(side * 0.08, t0 + 0.8); }
+      // width / space: a short-delayed, darker copy on the far side (Haas: still localised to the near side)
+      const dl = this.ctx.createDelay(0.05); dl.delayTime.value = HAAS_DELAY; v.nodes.push(dl);
+      const lp = this._filter(v, 'lowpass', 2800, 0.6), g2 = this._gain(v, rec.gain * 0.38);
+      chain(src, dl, lp, g2, this._panner(v, -side * 0.7), B);
+      src.start(t0); this._finish(v, src);
       return;
     }
     const dur = 1.2, v = this._voice(t0 + dur + 0.05);
@@ -617,6 +664,65 @@ export class AudioFX {
     const og = this._gain(v, 0); chain(o, og, S2);
     env(og.gain, t0, 0.6, 0.01, 0.4);
     this._finish(v, n);
+  }
+
+  /** Someone else's missile launch heard from the camera: distance and stereo side from world position `pos`. */
+  missileLaunchAt(pos, camera) {
+    if (!this.ready || this._paused || !pos || !camera) return;
+    const c = camera.position, dx = pos.x - c.x, dy = pos.y - c.y, dz = pos.z - c.z, d = Math.sqrt(dx * dx + dy * dy + dz * dz);
+    if (d > REMOTE_LAUNCH_MAX) return;
+    const e = camera.matrixWorld.elements;      // column 0 = camera right
+    this.missileLaunch(Math.max(d, 40), (dx * e[0] + dy * e[1] + dz * e[2]) / Math.max(d, 1));
+  }
+
+  /**
+   * Missile pass-by whoosh. `lead` s until closest approach, `miss` m closest distance, pan at closest approach and
+   * `sweep` (-1..1, the pan direction the missile crosses in). No synthesized fallback (silent until decoded).
+   */
+  missileFlyby(lead, miss, pan = 0, sweep = 0) {
+    if (!this.ready || this._paused) return;
+    const S = this._sfx && this._sfx.missile_flyby, now = this.ctx.currentTime;
+    if (!S || now - this._lastFlyby < FLYBY_GAP) return;
+    this._lastFlyby = now;
+    const rec = S[this._pick('missile_flyby', S)], off = Math.max(0, FLYBY_PEAK - lead), t0 = now + Math.max(0, lead - FLYBY_PEAK);
+    const rest = rec.buffer.duration - off, v = this._voice(t0 + rest + 0.05);
+    if (!v || rest <= 0.1) return;
+    const src = this.ctx.createBufferSource(); src.buffer = rec.buffer; v.nodes.push(src);
+    const k = Math.max(0, Math.min(1, miss / FLYBY_RADIUS));
+    const g = this._gain(v, rec.gain * (1.1 - 0.75 * k)), lp = this._filter(v, 'lowpass', 18000 - 12000 * k, 0.7);
+    const P = (x) => Math.max(-1, Math.min(1, x)), pk = P(pan), p = this._panner(v, P(pk - 0.6 * sweep));
+    chain(src, lp, g, p, this._nodes.sfxBus);
+    if (p.pan) {
+      const tp = t0 + FLYBY_PEAK - off;
+      if (tp > t0) { p.pan.setValueAtTime(P(pk - 0.6 * sweep), t0); p.pan.linearRampToValueAtTime(pk, tp); } else p.pan.setValueAtTime(pk, t0);
+      p.pan.linearRampToValueAtTime(P(pk + 0.7 * sweep), Math.max(tp, t0) + 0.5);
+    }
+    src.start(t0, off); this._finish(v, src);
+  }
+
+  /**
+   * Once per frame: find missiles (not the player's own) about to pass close to the player and fire missileFlyby.
+   * Closest-point-of-approach from relative position / velocity; allocation-free, a few flops per missile.
+   */
+  trackMissiles(missiles, player, camera) {
+    if (!this.ready || this._paused || !missiles || !player || !player.alive || !(this._sfx && this._sfx.missile_flyby)) return;
+    const P = player.position, V = player.velocity, e = camera && camera.matrixWorld.elements;
+    for (let i = 0; i < missiles.length; i++) {
+      const m = missiles[i];
+      if (!m.alive || m.owner === player || m._wnFlyby === m.id || m.age < 0.25) continue;
+      const rx = m.position.x - P.x, ry = m.position.y - P.y, rz = m.position.z - P.z;
+      if (rx * rx + ry * ry + rz * rz > FLYBY_SCAN2) continue;
+      const vx = m.velocity.x - V.x, vy = m.velocity.y - V.y, vz = m.velocity.z - V.z, vv = vx * vx + vy * vy + vz * vz;
+      if (vv < 2500) continue;                                   // < 50 m/s closure: no whoosh
+      const tca = -(rx * vx + ry * vy + rz * vz) / vv;
+      if (tca < 0 || tca > FLYBY_LEAD) continue;
+      const cx = rx + vx * tca, cy = ry + vy * tca, cz = rz + vz * tca, miss = Math.sqrt(cx * cx + cy * cy + cz * cz);
+      if (miss > FLYBY_RADIUS) continue;
+      m._wnFlyby = m.id;                                         // once per launch (missiles are pooled; id is per shot)
+      let pan = 0, sweep = 0;
+      if (e) { pan = (cx * e[0] + cy * e[1] + cz * e[2]) / Math.max(miss, 8); sweep = (vx * e[0] + vy * e[1] + vz * e[2]) / Math.sqrt(vv); }
+      this.missileFlyby(tca, miss, pan, sweep);
+    }
   }
 
   /**

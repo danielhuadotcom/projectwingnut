@@ -76,7 +76,7 @@ const SOURCES = {
     file: 'oga_thimras_battle_at_sea/cannon_fire_1.ogg',
   },
   kenneyScifi: {
-    title: 'Kenney Sci-Fi Sounds 1.0 (file used: thrusterFire_001.ogg)', author: 'Kenney (www.kenney.nl)', ...CC0,
+    title: 'Kenney Sci-Fi Sounds 1.0 (files used: thrusterFire_001.ogg, impactMetal_002.ogg; only by the non-default missile candidates)', author: 'Kenney (www.kenney.nl)', ...CC0,
     page: 'https://kenney.nl/assets/sci-fi-sounds',
     url: 'https://kenney.nl/media/pages/assets/sci-fi-sounds/6b296f9ecf-1677589334/kenney_sci-fi-sounds.zip', zip: true,
     file: 'kenney_scifi/Audio/thrusterFire_001.ogg',
@@ -106,6 +106,23 @@ const SOURCES = {
     url: 'https://opengameart.org/sites/default/files/yelling%20sounds.zip', zip: true,
     file: 'oga_haeldb_yelling/yelling sounds/1yell4.wav',
   },
+  dklonRocket: {
+    title: 'Rocket Launch Pack (files used: rocket_launch_1.wav, rocket_launch_3.wav)', author: 'dklon (opengameart.org/users/dklon)',
+    license: 'CC BY 3.0', licenseUrl: 'https://creativecommons.org/licenses/by/3.0/', attribution: true,
+    page: 'https://opengameart.org/content/rocket-launch-pack',
+    url: 'https://opengameart.org/sites/default/files/rocket_launches.zip', zip: true,
+    file: 'oga_dklon_rocket_pack/rocket_launch_1.wav',
+  },
+  minesRumble: {
+    title: 'Rocket Engine (low rumble)', author: 'theminesareshakin (opengameart.org/users/theminesareshakin)', ...CC0,
+    page: 'https://opengameart.org/content/rocket-engine',
+    url: 'https://opengameart.org/sites/default/files/rocket_engine.001.wav',
+    file: 'oga_minesare_rocket/rocket_engine.001.wav',
+  },
+  synth: {
+    title: 'Procedural synthesis in tools/build_sfx.mjs (SYNTH: ignition crack/thump, crackling rocket motor, coloured noise; no recorded source)',
+    author: 'PROJECT WINGNUT', ...CC0, page: 'tools/build_sfx.mjs',
+  },
 };
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -115,6 +132,63 @@ const SOURCES = {
 // loudness ({ mode: 'momentary'|'integrated', target: LUFS }), post (ffmpeg filters on the mix), loop ({len, xfade, pad}).
 // `gain` on a sound is the runtime mixing level written into js/sfx_data.js (AudioFX multiplies by it).
 // ---------------------------------------------------------------------------------------------------------------------
+// --- missile launch candidates. One ships as SFX.missile (MISSILE_DEFAULT; override with --missile=<key>); all of them
+//     render with --preview=<dir>. Each: release clunk / ignition crack + sub thump at t=0, then a roaring, crackling
+//     motor that tears away: a doppler pitch drop (playback-rate curve), a 4-pole lowpass closing as it recedes (air
+//     absorption), a falling level, and a terrain slap echo for space. AudioFX adds stereo (hardpoint side + Haas width).
+const MSL_DOPPLER = [[0, 1.04], [0.18, 1.0], [0.9, 0.86], [2.4, 0.74]];
+const MSL_LP = [[0, 15000], [0.2, 11000], [0.7, 4200], [1.4, 1900], [2.4, 900]];
+const MSL_ENV = [[0, -24], [0.035, 0], [0.32, -1.5], [0.9, -8], [1.6, -16], [2.4, -30]];
+const MSL_COMMON = { kbps: 64, maxDur: 2.4, fadeOut: 0.55, trim: -40, loudness: { mode: 'momentary', target: -17 },
+  post: 'aecho=in_gain=1:out_gain=0.9:delays=95|230:decays=0.2|0.11' };
+const IGNITION = { src: 'synth', synth: 'ignition', seed: 7, dur: 0.55, crack: 0.9, chuff: 0.7, thump: 1.0, f0: 90, f1: 38, gain: -3 };
+const MISSILE_CANDIDATES = {
+  // A: all-procedural (CC0, no recordings): ignition + crackling motor, the cleanest "Ace Combat" tear-away.
+  synth: { out: 'missile', ...MSL_COMMON, layers: [
+    IGNITION,
+    { src: 'synth', synth: 'motor', seed: 11, dur: 3.4, rate: 520, crackle: 0.85, roar: 1, rumble: 0.55, roarHz: 620, flutter: 0.4,
+      delay: 0.012, doppler: MSL_DOPPLER, lpSweep: MSL_LP, env: MSL_ENV, gain: -1 },
+  ] },
+  // B: hybrid: Kenney metal clunk (rail release) + ignition, dklon's comb-swept receding rocket whoosh (CC BY 3.0) as the
+  //    tearing body, procedural crackle on top and a CC0 low rocket rumble for weight.
+  hybrid: { out: 'missile', ...MSL_COMMON, layers: [
+    { src: 'kenneyScifi', file: 'kenney_scifi/Audio/impactMetal_002.ogg', pitch: 0.7, af: 'highpass=f=90,lowpass=f=5000', gain: -8, env: [[0, 0], [0.12, -30]] },
+    { ...IGNITION, delay: 0.03 },
+    { src: 'dklonRocket', t: 3.0, af: 'highpass=f=50,lowpass=f=12000', delay: 0.04, doppler: [[0, 1.0], [1.2, 0.9], [2.4, 0.84]],
+      lpSweep: [[0, 16000], [0.6, 7000], [1.6, 2200], [2.4, 1100]], env: [[0, -6], [0.05, 0], [0.4, -2], [1.2, -10], [2.4, -28]], gain: -2 },
+    { src: 'synth', synth: 'motor', seed: 23, dur: 3.4, rate: 600, crackle: 1, roar: 0.35, rumble: 0.2, delay: 0.045,
+      doppler: MSL_DOPPLER, lpSweep: MSL_LP, env: MSL_ENV, gain: -7 },
+    { src: 'minesRumble', ss: 1.0, t: 2.6, af: 'highpass=f=28,lowpass=f=260', delay: 0.03, env: [[0, -30], [0.06, 0], [0.6, -5], [2.4, -30]], gain: -6 },
+  ] },
+  // C: evolution of the old sound: Kenney thruster roar + rubberduck firework whoosh (both CC0) given the same doppler /
+  //    lowpass recession, plus the procedural ignition and crackle.
+  kenney: { out: 'missile', ...MSL_COMMON, layers: [
+    IGNITION,
+    { src: 'kenneyScifi', ss: 0.5, t: 2.6, af: 'highpass=f=40,lowpass=f=7000', delay: 0.01, doppler: MSL_DOPPLER, lpSweep: MSL_LP, gain: -3,
+      env: [[0, -40], [0.03, 0], [0.35, -2], [1.0, -10], [2.4, -32]] },
+    { src: 'rdBang', file: 'oga_rubberduck_bang/fw_06.ogg', pitch: 0.78, af: 'highpass=f=80,lowpass=f=9000', delay: 0.01,
+      doppler: [[0, 1.0], [1.5, 0.85]], lpSweep: [[0, 14000], [1.2, 3000], [2.4, 1200]], gain: -2 },
+    { src: 'synth', synth: 'motor', seed: 31, dur: 3.4, rate: 480, crackle: 1, roar: 0.4, rumble: 0.5, delay: 0.02,
+      doppler: MSL_DOPPLER, lpSweep: MSL_LP, env: MSL_ENV, gain: -6 },
+  ] },
+};
+const MISSILE_DEFAULT = (process.argv.find((a) => a.startsWith('--missile=')) || '').slice(10) || 'synth';
+// Pass-by: a missile (anyone's but the player's) crossing within ~70 m. Crackling motor approaching (pitch high, dull)
+// -> closest approach at FLYBY_PEAK s (lowpass wide open, loudest) -> receding (pitch drops ~0.6x, dulls fast), over a
+// band-passed air "tear". AudioFX schedules the sample so its peak lands on the predicted closest approach.
+const FLYBY_PEAK = 0.42;
+const flybyRate = (t) => 0.78 + 0.5 * (1 - Math.tanh((t - FLYBY_PEAK) / 0.09)) * 0.5;   // 1.28 -> 0.78
+const MISSILE_FLYBY = { out: 'missile_flyby', kbps: 56, maxDur: 1.35, fadeIn: 0.02, fadeOut: 0.5, trim: false, softClip: 0.45, loudness: { mode: 'momentary', target: -17 },
+  layers: [
+    { src: 'synth', synth: 'motor', seed: 41, dur: 2.2, rate: 650, crackle: 0.9, roar: 1, rumble: 0.35, roarHz: 800, flutter: 0.45,
+      doppler: Array.from({ length: 28 }, (_, i) => [i * 0.05, flybyRate(i * 0.05)]),
+      lpSweep: [[0, 1800], [FLYBY_PEAK - 0.12, 5000], [FLYBY_PEAK, 13000], [FLYBY_PEAK + 0.15, 3500], [1.35, 900]],
+      env: [[0, -26], [FLYBY_PEAK - 0.2, -13], [FLYBY_PEAK - 0.05, -3], [FLYBY_PEAK, 0], [FLYBY_PEAK + 0.12, -6], [FLYBY_PEAK + 0.45, -18], [1.35, -36]] },
+    { src: 'synth', synth: 'noise', color: 'pink', seed: 43, dur: 1.4, af: 'highpass=f=700,lowpass=f=9000', gain: -9,
+      lpSweep: [[0, 2500], [FLYBY_PEAK, 11000], [FLYBY_PEAK + 0.3, 2500]],
+      env: [[0, -36], [FLYBY_PEAK - 0.1, -10], [FLYBY_PEAK, 0], [FLYBY_PEAK + 0.1, -10], [FLYBY_PEAK + 0.5, -36]] },
+  ] };
+
 const BASS_ROAR = 'equalizer=f=95:t=q:w=0.9:g=4';               // low end of the turbofan roar
 const SOUNDS = [
   // --- engine: three seamless loops, all bass-dominated with almost nothing above ~2 kHz (no hiss/static).
@@ -144,17 +218,9 @@ const SOUNDS = [
       layers: [{ src: 'rdBang', file: 'oga_rubberduck_bang/shot_03.ogg', pitch: 0.76, af: 'highpass=f=45,equalizer=f=120:t=q:w=1:g=5,lowpass=f=5500,lowpass=f=7000' }] },
   ] },
 
-  // --- missile launch: firework-rocket launch whoosh (pitched down) + Kenney rocket thruster roar + a low ignition thump.
-  //     AudioFX sweeps a lowpass over it at runtime (receding motor).
-  { name: 'missile', gain: 0.85, variants: [{
-    out: 'missile', kbps: 64, maxDur: 1.9, fadeOut: 0.5, trim: -40, loudness: { mode: 'momentary', target: -12 },
-    layers: [
-      { src: 'rdBang', file: 'oga_rubberduck_bang/fw_06.ogg', pitch: 0.8, af: 'highpass=f=80,lowpass=f=6500,lowpass=f=8000', gain: 0 },
-      { src: 'kenneyScifi', ss: 0.5, t: 2.2, af: 'highpass=f=40,lowpass=f=4500,lowpass=f=6000', gain: -4,
-        env: [[0, -40], [0.03, 0], [0.35, -2], [1.0, -12], [1.9, -40]] },
-      { src: 'battleSea', t: 1.2, af: 'lowpass=f=220,lowpass=f=260', gain: -3, env: [[0, 0], [0.25, -6], [0.8, -40]] },
-    ],
-  }] },
+  // --- missile launch (default candidate, see MISSILE_CANDIDATES above) and missile pass-by whoosh.
+  { name: 'missile', gain: 0.8, variants: [MISSILE_CANDIDATES[MISSILE_DEFAULT]] },
+  { name: 'missile_flyby', gain: 0.8, variants: [MISSILE_FLYBY] },
 
   // --- explosions by distance class (AudioFX picks by distance and adds its own lowpass/attenuation/delay).
   { name: 'explosion', gain: 1, variants: [
@@ -219,17 +285,136 @@ const dbToLin = (db) => Math.pow(10, db / 20);
 const linToDb = (v) => 20 * Math.log10(Math.max(v, 1e-12));
 const RS = 'aresample=48000:resampler=soxr:precision=28';
 
+// --- offline synthesis + time-varying processing (missile motor / ignition / pass-by). Deterministic (seeded PRNG).
+function mulberry32(a) {
+  return () => { a |= 0; a = (a + 0x6D2B79F5) | 0; let t = Math.imul(a ^ (a >>> 15), 1 | a); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
+}
+function curveAt(pts, t, log = false) { // piecewise linear (or log-linear) through [[t, v], ...], held at both ends
+  if (t <= pts[0][0]) return pts[0][1];
+  for (let k = 0; k + 1 < pts.length; k++) {
+    const [t0, v0] = pts[k], [t1, v1] = pts[k + 1];
+    if (t < t1) { const a = (t - t0) / (t1 - t0); return log ? v0 * Math.pow(v1 / v0, a) : v0 + (v1 - v0) * a; }
+  }
+  return pts[pts.length - 1][1];
+}
+function bqCoef(st, type, f, Q) { // RBJ cookbook biquad, normalised
+  const w = 2 * Math.PI * Math.min(f, SR * 0.47) / SR, c = Math.cos(w), al = Math.sin(w) / (2 * Q), a0 = 1 + al;
+  let b0, b1, b2;
+  if (type === 'lowpass') { b0 = (1 - c) / 2; b1 = 1 - c; b2 = b0; } else if (type === 'highpass') { b0 = (1 + c) / 2; b1 = -(1 + c); b2 = b0; } else { b0 = al; b1 = 0; b2 = -al; }
+  st.b0 = b0 / a0; st.b1 = b1 / a0; st.b2 = b2 / a0; st.a1 = -2 * c / a0; st.a2 = (1 - al) / a0;
+  return st;
+}
+const bqNew = (type, f, Q = 0.707) => bqCoef({ x1: 0, x2: 0, y1: 0, y2: 0 }, type, f, Q);
+function bqRun(s, v) { const y = s.b0 * v + s.b1 * s.x1 + s.b2 * s.x2 - s.a1 * s.y1 - s.a2 * s.y2; s.x2 = s.x1; s.x1 = v; s.y2 = s.y1; s.y1 = y; return y; }
+function filt(x, type, f, Q = 0.707) { const s = bqNew(type, f, Q), y = new Float32Array(x.length); for (let i = 0; i < x.length; i++) y[i] = bqRun(s, x[i]); return y; }
+function rmsNorm(x, target = 0.25) { let s = 0; for (let i = 0; i < x.length; i++) s += x[i] * x[i]; const k = target / (Math.sqrt(s / x.length) || 1); for (let i = 0; i < x.length; i++) x[i] *= k; return x; }
+/** Time-varying resample: playback rate follows pts [[t_out, rate], ...] (doppler pitch drop / rise). Cubic interpolation. */
+function doppler(x, pts) {
+  const y = []; let pos = 0;
+  for (let i = 0; pos < x.length - 3; i++) {
+    const j = Math.floor(pos), f = pos - j, xm = x[Math.max(0, j - 1)], x0 = x[j], x1 = x[j + 1], x2 = x[j + 2];
+    y.push(x0 + 0.5 * f * (x1 - xm + f * (2 * xm - 5 * x0 + 4 * x1 - x2 + f * (3 * (x0 - x1) + x2 - xm))));
+    pos += curveAt(pts, i / SR);
+  }
+  return Float32Array.from(y);
+}
+/** Time-varying 4-pole lowpass, cutoff follows pts [[t, Hz], ...] (log-interpolated): air absorption as a source recedes. */
+function lpSweep(x, pts) {
+  const a = bqNew('lowpass', pts[0][1]), b = bqNew('lowpass', pts[0][1]), y = new Float32Array(x.length);
+  for (let i = 0; i < x.length; i++) {
+    if ((i & 31) === 0) { const f = curveAt(pts, i / SR, true); bqCoef(a, 'lowpass', f, 0.54); bqCoef(b, 'lowpass', f, 1.31); }
+    y[i] = bqRun(b, bqRun(a, x[i]));
+  }
+  return y;
+}
+const SYNTH = {
+  /** Coloured noise: L.color 'white' | 'pink' | 'brown', L.dur s. */
+  noise(L, rnd) {
+    const n = Math.round(L.dur * SR), y = new Float32Array(n);
+    let b0 = 0, b1 = 0, b2 = 0, b3 = 0, b4 = 0, b5 = 0, b6 = 0, br = 0;
+    for (let i = 0; i < n; i++) {
+      const w = rnd() * 2 - 1;
+      if (L.color === 'white') y[i] = w;
+      else if (L.color === 'brown') { br = (br + 0.02 * w) / 1.02; y[i] = br; }
+      else { b0 = 0.99886 * b0 + w * 0.0555179; b1 = 0.99332 * b1 + w * 0.0750759; b2 = 0.969 * b2 + w * 0.153852; b3 = 0.8665 * b3 + w * 0.3104856;
+        b4 = 0.55 * b4 + w * 0.5329522; b5 = -0.7616 * b5 - w * 0.016898; y[i] = b0 + b1 + b2 + b3 + b4 + b5 + b6 + w * 0.5362; b6 = w * 0.115926; }
+    }
+    return rmsNorm(y);
+  },
+  /**
+   * Missile ignition: a bright shock "crack" (skewed N-wave + 1 kHz+ noise burst, ~5 ms), a mid "chuff" of the motor
+   * lighting (band-passed noise, ~60 ms) and a pitch-dropping sub thump (L.f0 -> L.f1 Hz) for weight.
+   * L.crack / L.chuff / L.thump are linear mix levels.
+   */
+  ignition(L, rnd) {
+    const n = Math.round((L.dur ?? 0.6) * SR), y = new Float32Array(n), hp = bqNew('highpass', 1100), bp = bqNew('bandpass', L.chuffHz ?? 480, 0.9);
+    const f0 = L.f0 ?? 85, f1 = L.f1 ?? 38; let ph = 0;
+    for (let i = 0; i < n; i++) {
+      const t = i / SR, w = rnd() * 2 - 1;
+      const nw = t < 0.0007 ? Math.sin(Math.PI * t / 0.0007) : t < 0.0025 ? -0.55 * Math.sin(Math.PI * (t - 0.0007) / 0.0018) : 0;
+      const crack = 0.9 * nw + bqRun(hp, w) * (1 - Math.exp(-t / 0.0002)) * Math.exp(-t / 0.0028) * 1.3;
+      const chuff = bqRun(bp, w) * (1 - Math.exp(-t / 0.002)) * Math.exp(-t / 0.05) * 2.2;
+      ph += 2 * Math.PI * (f1 + (f0 - f1) * Math.exp(-t / 0.05)) / SR;
+      const thump = Math.tanh(1.8 * Math.sin(ph) * (1 - Math.exp(-t / 0.003)) * Math.exp(-t / (L.thumpTau ?? 0.12))) / Math.tanh(1.8);
+      y[i] = (L.crack ?? 1) * crack + (L.chuff ?? 0.6) * chuff + (L.thump ?? 0.9) * thump;
+    }
+    return y;
+  },
+  /**
+   * Rocket motor: roaring band-limited pink noise (body around L.roarHz), sparse heavy-tailed positive-skewed impulses
+   * (the "crackle" of a supersonic exhaust, Poisson at L.rate/s, density and level riding a turbulence LFO), and a
+   * brown-noise rumble for weight. Steady state: the launch recipe adds doppler / lpSweep / env per layer.
+   */
+  motor(L, rnd) {
+    const n = Math.round(L.dur * SR), roar = new Float32Array(n), crk = new Float32Array(n), rum = new Float32Array(n);
+    let b0 = 0, b1 = 0, b2 = 0, b3 = 0, b4 = 0, b5 = 0, b6 = 0, br = 0, lfo = 0, lfo2 = 0;
+    const lfoA = 1 - Math.exp(-2 * Math.PI * (L.flutterHz ?? 13) / SR), rate = (L.rate ?? 420) / SR;
+    const lpR = bqNew('lowpass', L.roarLp ?? 3600), bpR = bqNew('bandpass', L.roarHz ?? 650, 0.6), lpU = bqNew('lowpass', 150);
+    const c1 = bqNew('bandpass', L.crackleHz ?? 2300, 0.75), c2 = bqNew('bandpass', 850, 1.1), c3 = bqNew('highpass', 160);
+    const mod = new Float32Array(n);                                            // turbulence LFO (~flutterHz), unit std
+    for (let i = 0; i < n; i++) { lfo += (rnd() * 2 - 1 - lfo) * lfoA; lfo2 += (lfo - lfo2) * lfoA; mod[i] = lfo2; }
+    { let s = 0; for (let i = 0; i < n; i++) s += mod[i] * mod[i]; const k = 1 / (Math.sqrt(s / n) || 1);
+      for (let i = 0; i < n; i++) mod[i] = Math.max(0.2, 1 + (L.flutter ?? 0.35) * Math.max(-2.5, Math.min(2.5, mod[i] * k))); }
+    for (let i = 0; i < n; i++) {
+      const w = rnd() * 2 - 1;
+      b0 = 0.99886 * b0 + w * 0.0555179; b1 = 0.99332 * b1 + w * 0.0750759; b2 = 0.969 * b2 + w * 0.153852; b3 = 0.8665 * b3 + w * 0.3104856;
+      b4 = 0.55 * b4 + w * 0.5329522; b5 = -0.7616 * b5 - w * 0.016898; const pink = b0 + b1 + b2 + b3 + b4 + b5 + b6 + w * 0.5362; b6 = w * 0.115926;
+      const m = mod[i];
+      roar[i] = (bqRun(lpR, pink) + 0.9 * bqRun(bpR, pink)) * m;
+      br = (br + 0.02 * (rnd() * 2 - 1)) / 1.02; rum[i] = bqRun(lpU, br);
+      let d = 0;
+      if (rnd() < rate * Math.max(0.15, m)) { const a = Math.min(5, Math.pow(1 - rnd(), -1 / 1.5)); d = rnd() < 0.85 ? a : -0.5 * a; }
+      crk[i] = d;
+    }
+    // shape each impulse: instant rise, ~0.25 ms decay, then band-limit (bright crackle + a lower "pop" body)
+    let e = 0; const dec = Math.exp(-1 / (0.00025 * SR));
+    for (let i = 0; i < n; i++) { e = e * dec + crk[i]; crk[i] = bqRun(c3, bqRun(c1, e) + 0.55 * bqRun(c2, e)); }
+    rmsNorm(roar); rmsNorm(crk); rmsNorm(rum);
+    const y = new Float32Array(n), gr = L.roar ?? 1, gc = L.crackle ?? 0.7, gu = L.rumble ?? 0.5;
+    for (let i = 0; i < n; i++) y[i] = gr * roar[i] + gc * crk[i] + gu * rum[i];
+    return y;
+  },
+};
+
 function decodeLayer(L) {
-  const path = join(DL, L.file || SOURCES[L.src].file);
-  if (!existsSync(path)) throw new Error(`missing source ${path} (run with --fetch)`);
-  const args = [];
-  if (L.ss) args.push('-ss', String(L.ss));
-  if (L.t) args.push('-t', String(L.t));
-  const f = [RS];
-  if (L.pitch && L.pitch !== 1) f.push(`asetrate=${Math.round(SR * L.pitch)}`, RS);
-  if (L.af) f.push(L.af);
-  args.push('-i', path, '-ac', '1', '-af', f.join(','), '-ar', String(SR), '-f', 'f32le', 'pipe:1');
-  let x = toF32(ffmpeg(args));
+  let x;
+  if (L.src === 'synth') {
+    x = SYNTH[L.synth](L, mulberry32(L.seed ?? 1));
+    if (L.af) x = applyFilter(x, L.af);
+  } else {
+    const path = join(DL, L.file || SOURCES[L.src].file);
+    if (!existsSync(path)) throw new Error(`missing source ${path} (run with --fetch)`);
+    const args = [];
+    if (L.ss) args.push('-ss', String(L.ss));
+    if (L.t) args.push('-t', String(L.t));
+    const f = [RS];
+    if (L.pitch && L.pitch !== 1) f.push(`asetrate=${Math.round(SR * L.pitch)}`, RS);
+    if (L.af) f.push(L.af);
+    args.push('-i', path, '-ac', '1', '-af', f.join(','), '-ar', String(SR), '-f', 'f32le', 'pipe:1');
+    x = toF32(ffmpeg(args));
+  }
+  if (L.doppler) x = doppler(x, L.doppler);
+  if (L.lpSweep) x = lpSweep(x, L.lpSweep);
   if (L.env) x = applyEnv(x, L.env);
   if (L.gain) { const g = dbToLin(L.gain); for (let i = 0; i < x.length; i++) x[i] *= g; }
   return x;
@@ -315,7 +500,7 @@ function encode(x, path, kbps) {
 }
 const decodeFile = (path) => toF32(ffmpeg(['-i', path, '-ac', '1', '-ar', String(SR), '-f', 'f32le', 'pipe:1']));
 
-function buildVariant(v) {
+function buildVariant(v, outDir = OUT) {
   let x = mix(v.layers);
   if (v.post) x = applyFilter(x, v.post);
   let loopInfo = null;
@@ -331,13 +516,17 @@ function buildVariant(v) {
     if (v.maxDur) x = x.subarray(0, Math.min(x.length, Math.round(v.maxDur * SR)));
     x = trimTail(x, v.tailDb ?? -54);
     x = fade(x, v.fadeIn ?? 0.003, Math.min(v.fadeOut ?? 0.03, 0.6 * x.length / SR));
+    if (v.softClip) { // tame isolated transient peaks (crackle spikes) so the loudness target is reachable under the ceiling
+      const k = 1 / (peakOf(x) || 1), t = v.softClip;
+      x = x.map((s) => { const a = Math.abs(s * k); return Math.sign(s) * (a <= t ? a : t + (1 - t) * Math.tanh((a - t) / (1 - t))); });
+    }
     const g = dbToLin(v.loudness.target - loudness(x, v.loudness.mode));
     x = x.map((s) => s * g);
   }
   // never let the pre-encode peak exceed the ceiling, then verify (and if needed correct) the decoded Opus peak
   const pre = linToDb(peakOf(x));
   if (pre > PEAK_CEILING_DB - 0.3) { const k = dbToLin(PEAK_CEILING_DB - 0.3 - pre); x = x.map((s) => s * k); }
-  const path = join(OUT, `${v.out}.ogg`);
+  const path = join(outDir, `${v.out}.ogg`);
   for (let pass = 0; pass < 4; pass++) {
     encode(x, path, v.kbps);
     const d = decodeFile(path), pk = linToDb(peakOf(d));
@@ -355,6 +544,7 @@ function buildVariant(v) {
 // ---------------------------------------------------------------------------------------------------------------------
 function fetchSources() {
   for (const [id, s] of Object.entries(SOURCES)) {
+    if (!s.url) continue;                  // procedural (no download)
     const target = join(DL, s.file);
     if (existsSync(target)) continue;
     const dir = join(DL, s.file.split('/')[0]); mkdirSync(dir, { recursive: true });
@@ -380,7 +570,7 @@ function writeLicenses(stats) {
     'either CC0 / public domain or CC BY (attribution required, redistribution in a game allowed). All shipped files are',
     'modified derivatives (trimmed, mixed, pitch-shifted, EQ\'d, loudness-normalised, looped, re-encoded).', '',
     '## Required attributions (CC BY)', ''];
-  for (const s of Object.values(SOURCES).filter((s) => s.attribution)) lines.push(`- "${s.title}" by ${s.author}, ${s.license} (${s.licenseUrl}), ${s.page} – modified.`);
+  for (const [id, s] of Object.entries(SOURCES).filter(([id, s]) => s.attribution && SOUNDS.some((snd) => used(snd).includes(id)))) lines.push(`- "${s.title}" by ${s.author}, ${s.license} (${s.licenseUrl}), ${s.page} – modified.`);
   lines.push('', '## Shipped files', '', '| file | used for | sources | size | duration |', '|---|---|---|---|---|');
   for (const snd of SOUNDS) for (const v of snd.variants) {
     const st = stats[v.out] || {};
@@ -389,8 +579,9 @@ function writeLicenses(stats) {
   lines.push('', '## Sources', '');
   for (const [id, s] of Object.entries(SOURCES)) {
     const usedBy = SOUNDS.filter((snd) => used(snd).includes(id)).map((snd) => `\`${snd.name}\``).join(', ');
+    if (!usedBy) continue;                 // downloaded but not in any shipped sound (e.g. a non-default missile candidate)
     lines.push(`### ${id}`, '', `- **Title:** ${s.title}`, `- **Author:** ${s.author}`, `- **License:** ${s.license} – ${s.licenseUrl}`,
-      `- **Source page:** ${s.page}`, ...(s.origin ? [`- **Original upload:** ${s.origin}`] : []), `- **Downloaded from:** ${s.url}`,
+      `- **Source page:** ${s.page}`, ...(s.origin ? [`- **Original upload:** ${s.origin}`] : []), ...(s.url ? [`- **Downloaded from:** ${s.url}`] : []),
       `- **Used in:** ${usedBy}`, '');
   }
   lines.push('## Wilhelm scream', '',
@@ -431,6 +622,15 @@ function embed(stats) {
 
 // ---------------------------------------------------------------------------------------------------------------------
 const argv = process.argv.slice(2);
+const preview = (argv.find((a) => a.startsWith('--preview=')) || '').slice(10);
+if (preview) { // render every missile candidate + the pass-by into <dir> (nothing in assets/ or js/ is touched)
+  mkdirSync(preview, { recursive: true });
+  for (const [key, v] of [...Object.entries(MISSILE_CANDIDATES).map(([k, v]) => [k, { ...v, out: `missile_${k}` }]), ['flyby', MISSILE_FLYBY]]) {
+    const st = buildVariant(v, preview);
+    console.log(`${v.out.padEnd(16)} ${st.dur.toFixed(3).padStart(6)} s  ${(st.bytes / 1024).toFixed(1).padStart(6)} KB  peak ${st.peakDb.toFixed(2)} dBFS  LUFS(M max) ${st.lufs.toFixed(1)}`);
+  }
+  process.exit(0);
+}
 const only = (argv.find((a) => a.startsWith('--only=')) || '').slice(7).split(',').filter(Boolean);
 mkdirSync(OUT, { recursive: true });
 if (argv.includes('--fetch')) fetchSources();
