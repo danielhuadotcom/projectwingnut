@@ -120,12 +120,14 @@ function selfTest() {
   key('keydown', 'KeyC'); t.update(DT); check('C held: freeLook', t.freeLook === true); key('keyup', 'KeyC'); t.update(DT); check('C up: freeLook off', t.freeLook === false);
   key('keydown', 'KeyQ'); steps(10); check('Q: yaw -1', t.yaw === -1); key('keyup', 'KeyQ'); key('keydown', 'KeyE'); steps(20); check('E: yaw +1', t.yaw === 1); key('keyup', 'KeyE'); steps(6);
 
-  // held ←/→ (OS key repeat) keeps stepping the menu adjust edge; held ↑ does not
-  key('keydown', 'ArrowRight'); t.update(DT); const r1 = t.menuRight;
-  key('keydown', 'ArrowRight', { repeat: true }); t.update(DT); const r2 = t.menuRight;
-  key('keyup', 'ArrowRight'); key('keydown', 'ArrowUp'); t.update(DT); key('keydown', 'ArrowUp', { repeat: true }); t.update(DT);
-  check('kb: ArrowRight repeat -> menuRight again, ArrowUp repeat ignored', r1 && r2 && !t.menuUp);
-  key('keyup', 'ArrowUp'); steps(8);
+  // held arrows (OS key repeat) keep stepping the menu edges, flagged menuRepeat (menus don't wrap on a repeat)
+  key('keydown', 'ArrowRight'); t.update(DT); const r1 = t.menuRight, f1 = t.menuRepeat;
+  key('keydown', 'ArrowRight', { repeat: true }); t.update(DT); const r2 = t.menuRight, f2 = t.menuRepeat;
+  key('keyup', 'ArrowRight'); key('keydown', 'ArrowDown'); t.update(DT); const d1 = t.menuDown && !t.menuRepeat;
+  key('keydown', 'ArrowDown', { repeat: true }); t.update(DT); const d2 = t.menuDown && t.menuRepeat;
+  t.update(DT);
+  check('kb: arrow repeat -> menu edge again, flagged as a repeat', r1 && !f1 && r2 && f2 && d1 && d2 && !t.menuDown && !t.menuRepeat, { r1, f1, r2, f2, d1, d2 });
+  key('keyup', 'ArrowDown'); steps(8);
   // U = fullscreen: onFullscreenKey runs inside the keydown handler itself (browsers only grant fullscreen there)
   let fsKeys = 0, fsType = '';
   t.onFullscreenKey = (e) => { fsKeys++; fsType = e && e.type; };
@@ -249,16 +251,35 @@ function selfTest() {
     key('keydown', 'KeyQ'); t.update(DT); check('held LT keeps usingGamepad on despite key', t.usingGamepad === true); key('keyup', 'KeyQ'); steps(6);
     fake.buttons[6] = { pressed: false, touched: false, value: 0 }; t.update(DT); check('gp: LT release -> missileReleased', t.missileReleased === true && t.missile === false);
     key('keydown', 'KeyQ'); t.update(DT); check('keyboard flips usingGamepad off', t.usingGamepad === false); key('keyup', 'KeyQ'); steps(6);
-    // held D-pad right repeats the menu adjust edge (after 0.35 s, every 0.07 s); up / down never repeat
+    // held D-pad right repeats the menu edge: nothing for ~0.38 s, then ~12/s; repeats are flagged menuRepeat
     fake.buttons[15] = { pressed: true, touched: true, value: 1 }; t.update(DT);
-    let reps = t.menuRight ? 1 : 0; const first = t.menuRight;
-    for (let i = 0; i < 20; i++) { t.update(DT); if (t.menuRight) reps++; }   // ~0.35 s: no repeat yet
-    const early = reps;
-    for (let i = 0; i < 42; i++) { t.update(DT); if (t.menuRight) reps++; }   // +0.7 s: ~10 repeats
+    let reps = t.menuRight ? 1 : 0; const first = t.menuRight && !t.menuRepeat;
+    for (let i = 0; i < 21; i++) { t.update(DT); if (t.menuRight) reps++; }   // 0.367 s held: no repeat yet
+    const early = reps; let flagged = true;
+    for (let i = 0; i < 42; i++) { t.update(DT); if (t.menuRight) { reps++; flagged = flagged && t.menuRepeat; } }   // +0.7 s: ~9 repeats
     fake.buttons[15] = { pressed: false, touched: false, value: 0 }; t.update(DT);
-    check('gp: D-pad right held -> edge, then repeats', first && early === 1 && reps >= 9 && reps <= 12 && !t.menuRight, { early, reps });
-    fake.buttons[12] = { pressed: true, touched: true, value: 1 }; let ups = 0; for (let i = 0; i < 60; i++) { t.update(DT); if (t.menuUp) ups++; }
-    fake.buttons[12] = { pressed: false, touched: false, value: 0 }; t.update(DT); check('gp: D-pad up held -> one edge only', ups === 1, ups);
+    check('gp: D-pad right held -> edge, then repeats', first && early === 1 && reps - 1 >= 7 && reps - 1 <= 10 && flagged && !t.menuRight, { early, reps });
+    // up / down repeat too (lists scroll), and speed up in a long hold: ~12/s at first, faster after a second or two
+    fake.buttons[13] = { pressed: true, touched: true, value: 1 }; let downs = 0, late = 0;
+    for (let i = 0; i < 180; i++) { t.update(DT); if (t.menuDown) { downs++; if (i >= 120) late++; } }   // 3 s held
+    fake.buttons[13] = { pressed: false, touched: false, value: 0 }; t.update(DT);
+    check('gp: D-pad down held -> repeats, accelerating', downs >= 36 && downs <= 46 && late >= 15 && late <= 19 && !t.menuDown, { downs, late });
+    fake.buttons[12] = { pressed: true, touched: true, value: 1 }; fake.buttons[13] = { pressed: true, touched: true, value: 1 }; let both = 0;
+    for (let i = 0; i < 60; i++) { t.update(DT); if (t.menuUp || t.menuDown) both++; }
+    fake.buttons[12] = { pressed: false, touched: false, value: 0 }; fake.buttons[13] = { pressed: false, touched: false, value: 0 }; t.update(DT);
+    check('gp: up + down together -> one edge each, no repeat', both === 1, both);
+    // left stick as menu directions: on past 0.6, off below 0.4 (hysteresis: no jitter at the threshold), held = repeat
+    const ly = (v, n = 1) => { fake.axes = [0, v, 0, 0]; let e = 0; for (let i = 0; i < n; i++) { t.update(DT); if (t.menuDown) e++; } return e; };
+    const s1 = ly(0.62), s2 = ly(0.58) + ly(0.45) + ly(0.61) + ly(0.5), s3 = ly(0.35), s4 = ly(0.62), s5 = ly(0.5, 60);
+    check('gp: stick down hysteresis + repeat', s1 === 1 && s2 === 0 && s3 === 0 && s4 === 1 && s5 >= 6 && s5 <= 9, { s1, s2, s3, s4, s5 });
+    ly(0); t.update(DT);
+    // LB / RB: menu tab edges from the physical bumpers (one per press, no repeat), whatever the flight layout uses them for
+    const bump = (i, on) => { fake.buttons[i] = { pressed: on, touched: on, value: on ? 1 : 0 }; t.update(DT); };
+    bump(4, true); const lb1 = t.menuTabPrev && !t.menuTabNext && t.lookBack; let lbHeld = 0;
+    for (let i = 0; i < 60; i++) { t.update(DT); if (t.menuTabPrev) lbHeld++; }
+    bump(4, false); bump(5, true); const rb1 = t.menuTabNext && !t.menuTabPrev && t.targetButton; bump(5, false);
+    t.setPadLayout('ace'); bump(5, true); const rbAce = t.menuTabNext; bump(5, false); bump(4, true); const lbAce = t.menuTabPrev; bump(4, false); t.setPadLayout('mode2');
+    check('gp: LB / RB -> menuTabPrev / menuTabNext, once per press, any layout', lb1 && lbHeld === 0 && rb1 && rbAce && lbAce && !t.menuTabPrev, { lb1, lbHeld, rb1, rbAce, lbAce });
     fake.axes = [0.9, 0, 0, 0]; t.update(DT); check('stick flips usingGamepad on', t.usingGamepad === true && near(t.yaw, shapeAxis(0.9)) && t.yaw > 0.7, t.yaw); fake.axes = [0, 0, 0, 0];
     navigator.getGamepads = () => [null]; t.update(DT);
     check('gp: disconnect detected', t.gamepadConnected === false && t.gamepadName === null);

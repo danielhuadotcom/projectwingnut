@@ -138,6 +138,8 @@ body { margin: 0; background: var(--bg); color: var(--fg); font-family: var(--mo
 .m-g-ok::before { content: "Enter"; } .m-g-back::before { content: "Esc"; }
 .dev-pad .m-g-ok::before { content: "A"; } .dev-pad .m-g-back::before { content: "B"; }
 .dev-pad .m-g-ok, .dev-pad .m-g-back { width: 18px; min-width: 18px; padding: 0; border-radius: 50%; border-bottom-width: 1px; }
+.m-g-lb::before { content: "LB"; } .m-g-rb::before { content: "RB"; }
+.m-tabg { display: none; } .dev-pad .m-tabg { display: inline-grid; flex: none; align-self: center; margin: 0 6px; }   /* Settings tab bar: bumpers switch tabs */
 .dev-touch .m-hints, .dev-touch .m-foot--hints { display: none; }
 
 /* Sub-screen header */

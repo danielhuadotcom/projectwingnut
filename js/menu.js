@@ -15,7 +15,10 @@
 // Navigation works three ways and they can be mixed freely:
 //   pointer  hovering highlights an item, click/tap activates it, sliders drag, segments click;
 //   keyboard and gamepad through the one-frame edges of js/input.js (menuUp/Down/Left/Right/Confirm/Back, plus
-//            pausePressed so Start / P resume from anywhere in the pause menu).
+//            pausePressed so Start / P resume from anywhere in the pause menu). A held direction repeats (input.js);
+//            repeats never wrap around a data-wrap list, and only count once the direction was pressed inside the
+//            menu (a stick already held when it opened does nothing). LB / RB (menuTabPrev / menuTabNext) cycle the
+//            Settings tabs, wrapping; focus stays on the tab bar if it was there, else lands on the new tab's first row.
 // Focus moves spatially (to the nearest item in the pressed direction), so every responsive layout navigates
 // correctly without per-layout tables. On a settings row left/right changes the value (sliders step 5 %, toggles
 // flip, choices cycle); the change applies live through onSetting(key, value, settings) and is saved.
@@ -398,6 +401,7 @@ export class Menu {
     this._cur = null;           // current screen element
     this._focusEl = null;       // the highlighted item (pointer hover or keyboard/gamepad focus)
     this._lock = 0;             // s during which update() ignores input (opening, debrief)
+    this._repOk = false;        // a direction was freshly pressed since the menu took input (held repeats count)
     this._tab = 'graphics';
     this._missionSel = 0; this._detailFor = -1; this._missionIndex = -1;
     this._deb = { canNext: false, infinity: false }; this._pending = null; this._pauseInf = false;
@@ -467,16 +471,21 @@ export class Menu {
     this._fsSkip = this._fsKeyDone; this._fsKeyDone = false;   // _fsKey already acted on this frame's key edge
     if (!this.open || !input) return;
     // the wizard reads the raw pad while it listens; menu edges then do nothing (A / B may be what is being bound)
-    if (this.screen === 'padwiz' && this._wiz && this._wizUpdate(dt, input)) return;
-    if (performance.now() < (this._lockUntil || 0)) return;
-    const edge = input.menuBack ? 'back' : input.menuConfirm ? 'ok' : input.menuUp ? 'up' : input.menuDown ? 'down'
-      : input.menuLeft ? 'left' : input.menuRight ? 'right' : null;
+    if (this.screen === 'padwiz' && this._wiz && this._wizUpdate(dt, input)) { this._repOk = false; return; }
+    if (performance.now() < (this._lockUntil || 0)) { this._repOk = false; return; }
+    let edge = input.menuBack ? 'back' : input.menuConfirm ? 'ok' : input.menuUp ? 'up' : input.menuDown ? 'down'
+      : input.menuLeft ? 'left' : input.menuRight ? 'right' : input.menuTabPrev ? 'tabprev' : input.menuTabNext ? 'tabnext' : null;
+    // A held direction repeats only after a fresh press here: a stick held through opening (airbrake into pause, a pull
+    // at the moment of death) or through the binding wizard must not march the focus.
+    const dir = edge === 'up' || edge === 'down' || edge === 'left' || edge === 'right', rep = dir && !!input.menuRepeat;
+    if (rep && !this._repOk) edge = null;
+    else if (dir) this._repOk = true;
     // Hint glyphs: switch on a real navigation edge. input.js also reports the on-screen touch sticks as a gamepad,
     // so without an edge only an actually connected pad may flip the hints away from keyboard glyphs.
     if (edge) this._setDevice(input.usingGamepad ? 'pad' : 'kb');
     else if (input.usingGamepad && input.gamepadConnected && this._device === 'kb') this._setDevice('pad');
     if (this._cap) { if (edge === 'back') { this._capCancel(); this._sound('back'); } return; }   // key capture: B cancels
-    if (edge) this._nav(edge);
+    if (edge) this._nav(edge, rep);
     else if (input.pausePressed && this._stack.length && this._stack[0].screen === 'pause' && !NO_RESUME.has(this.screen)) this._run('onResume');  // Start / P
     if (this.open && this.screen === 'settings' && this._tab === 'controls') this._drawExpo(input);
   }
@@ -737,7 +746,7 @@ export class Menu {
     return `<section class="m-screen" data-screen="settings" aria-labelledby="m-set-h" hidden>
       <div class="m-panel m-panel--settings">
         ${head('Options · auto-saved', 'Settings', 'm-set-h', false)}
-        <div class="m-tabs" role="tablist" aria-label="Settings sections">${tabs}</div>
+        <div class="m-tabs" role="tablist" aria-label="Settings sections"><i class="m-g m-g-lb m-tabg" aria-hidden="true"></i>${tabs}<i class="m-g m-g-rb m-tabg" aria-hidden="true"></i></div>
         <div class="m-body m-scroll">${panels}</div>
         ${hintFoot([['ud', 'Select'], ['lr', 'Adjust'], ['back', 'Back']])}
       </div></section>`;
@@ -910,6 +919,7 @@ export class Menu {
 
   /** Make `screen` (top of the stack) visible and focus its default item, or the remembered one when returning. */
   _enter(screen, data, restoring) {
+    this._repOk = false;         // a held direction needs a fresh press on the new screen before it repeats
     if (data && Number.isInteger(data.missionIndex)) this._missionIndex = data.missionIndex;
     if (!restoring) {
       if (screen === 'missions') {
@@ -1400,16 +1410,30 @@ export class Menu {
   // ---------------------------------------------------------------------------------------------------------------
   // Navigation
   // ---------------------------------------------------------------------------------------------------------------
-  _nav(edge) {
+  /** One navigation edge; repeat = it comes from a held direction (no wrap-around). */
+  _nav(edge, repeat = false) {
     this._setKbNav(true);
     if (edge === 'back') this._back();
     else if (edge === 'ok') this._activate(this._focusEl, false);
-    else if (edge === 'up' || edge === 'down') this._move(edge);
+    else if (edge === 'tabprev' || edge === 'tabnext') this._tabStep(edge === 'tabprev' ? -1 : 1);
+    else if (edge === 'up' || edge === 'down') this._move(edge, repeat);
     else {
       const dir = edge === 'left' ? -1 : 1, f = this._focusEl;
       if (f && f.dataset.key && this._cur && this._cur.contains(f)) this._step(f.dataset.key, dir);
-      else this._move(edge);
+      else this._move(edge, repeat);
     }
+  }
+
+  /** LB / RB: previous / next Settings tab, wrapping. Focus on the tab bar (or nowhere) follows to the new tab; focus
+   *  inside the old panel moves to the new panel's first row. Other screens have no tabs. */
+  _tabStep(dir) {
+    if (this.screen !== 'settings' || !this._cur) return;
+    const n = SETTING_TABS.length, i = SETTING_TABS.findIndex(([t]) => t === this._tab);
+    const tab = SETTING_TABS[((i < 0 ? 0 : i) + dir + n) % n][0];
+    const f = this._focusEl, onBar = !f || !!f.dataset.tab || !this._cur.contains(f);
+    this._setTab(tab);
+    const btn = this._cur.querySelector(`[data-tab="${tab}"]`);
+    this._focus(onBar ? btn : this._firstInTab() || btn);
   }
 
   _items() {
@@ -1417,7 +1441,7 @@ export class Menu {
   }
 
   /** Spatial move: nearest item whose center lies in the pressed direction, preferring items in line with the current one. */
-  _move(dir) {
+  _move(dir, noWrap = false) {
     const items = this._items();
     if (!items.length) return;
     const cur = this._focusEl && items.includes(this._focusEl) ? this._focusEl : null;
@@ -1437,7 +1461,7 @@ export class Menu {
         const score = Math.max(0, edge) + across * 3 + Math.abs(dc) * 0.01;
         if (score < bestScore) { bestScore = score; best = el; }
       }
-      if (!best && vert && this._cur.hasAttribute('data-wrap')) best = this._wrapTarget(items, cur, sgn);
+      if (!best && vert && !noWrap && this._cur.hasAttribute('data-wrap')) best = this._wrapTarget(items, cur, sgn);
       if (!best && cur.hasAttribute(`data-${dir}`)) {        // explicit fallback, e.g. mission row -> Launch when stacked
         const alt = this._cur.querySelector(cur.getAttribute(`data-${dir}`));
         if (alt && alt.getClientRects().length) best = alt;

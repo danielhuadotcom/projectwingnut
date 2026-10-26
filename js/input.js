@@ -13,6 +13,8 @@
 // them like any key; mouse-aim movement is untouched. padRaw is a per-frame snapshot of the active pad
 // ({ axes, buttons: values 0..1 }) for the binding wizard. The D-pad, A / B (menu confirm / back), Start (pause) and the
 // legacy Back (invert edge) / Y (restart edge) are read directly; Back and Y only when the layout leaves them unbound.
+// Menu edges never go through the layout: D-pad / left stick (held = repeat), A / B, and the physical bumpers LB / RB as
+// menuTabPrev / menuTabNext (whatever the flight layout puts on them).
 
 const DEADZONE = 0.12;          // per-axis deadzone before rescaling
 const ATTACK_TIME = 0.15;       // s for a keyboard axis to reach full deflection
@@ -22,6 +24,12 @@ const GUN_THRESHOLD = 0.25;     // right trigger analog threshold
 const MISSILE_THRESHOLD = 0.35; // left trigger analog threshold
 const MAX_DT = 0.25;            // clamp for update(dt) so a long tab-switch doesn't produce a huge ramp step
 const STORAGE_KEY = 'wingnut.invertPitch';
+// Menu navigation: the left stick counts as a direction past MENU_STICK_ON and lets go below MENU_STICK_OFF (hysteresis,
+// so a stick resting near the threshold can't flicker into a burst of moves). A held direction (stick, D-pad) repeats
+// after MENU_REPEAT_DELAY s, every MENU_REPEAT_SLOW s at first, speeding up to MENU_REPEAT_FAST over MENU_REPEAT_RAMP s
+// (~12/s -> ~18/s: long lists and slider sweeps get there without overshooting a short list).
+const MENU_STICK_ON = 0.6, MENU_STICK_OFF = 0.4;
+const MENU_REPEAT_DELAY = 0.38, MENU_REPEAT_SLOW = 0.085, MENU_REPEAT_FAST = 0.055, MENU_REPEAT_RAMP = 1.5;
 import { PAD_PRESETS, PAD_LAYOUTS, loadBindings, padMapFor, padValue, codeMap, sanitizeKeys, sanitizePadMap, isMouseCode } from './bindings.js';
 
 // Standard-mapping indices (https://w3c.github.io/gamepad/#remapping). Non-standard pads fall back to the same indices.
@@ -146,11 +154,17 @@ export class Input {
     this._gpPressEdge = false;          // any gamepad button went down since the last update
     this._gpHeldPrev = { pause: false, invertPitch: false, restart: false, dl: false, dr: false, du: false, l3: false };
     this.flaresPressed = false;          // left stick click (L3) / X: countermeasure flares
-    // Menu navigation edges (one frame): D-pad / arrows / WASD-free, A or Enter confirms, B or Esc goes back
+    // Menu navigation edges (one frame): D-pad / left stick / arrows (held = repeat), A or Enter confirms, B or Esc goes
+    // back, LB / RB switch tabs
     this.menuUp = false; this.menuDown = false; this.menuLeft = false; this.menuRight = false;
-    this.menuConfirm = false; this.menuBack = false;
-    this._gpMenuPrev = { u: false, d: false, l: false, r: false, a: false, b: false };
+    this.menuConfirm = false; this.menuBack = false; this.menuTabPrev = false; this.menuTabNext = false;
+    this.menuRepeat = false;            // this frame's direction edges all come from a held repeat (menus: no wrap-around)
+    this._gpMenuPrev = { u: false, d: false, l: false, r: false, a: false, b: false, lb: false, rb: false };
+    this._lsMenu = { u: false, d: false, l: false, r: false };            // left stick directions (with hysteresis)
+    this._menuRep = { u: 0, d: 0, l: 0, r: 0 };                           // s each pad direction has been held
+    this._menuRepNext = { u: MENU_REPEAT_DELAY, d: MENU_REPEAT_DELAY, l: MENU_REPEAT_DELAY, r: MENU_REPEAT_DELAY };   // held time at which it next repeats
     this._kbMenu = { u: 0, d: 0, l: 0, r: 0, a: 0, b: 0 };
+    this._kbMenuRep = { u: 0, d: 0, l: 0, r: 0 };                        // OS key-repeat arrow keydowns
     // Optional on-screen touch controls (js/touch.js): an object exposing { active, lx, ly, rx, ry, buttons:{...} }
     this.touch = null;
     // Menu edges: D-pad right / G = next graphics preset, D-pad left = previous, D-pad up / ` / F9 = perf overlay
@@ -253,8 +267,10 @@ export class Input {
       const M = this._kbMenu;
       if (code === 'ArrowUp') M.u++; else if (code === 'ArrowDown') M.d++; else if (code === 'ArrowLeft') M.l++; else if (code === 'ArrowRight') M.r++;
       else if (code === 'Enter' || code === 'NumpadEnter' || code === 'Space') M.a++; else if (code === 'Escape' || code === 'Backspace') M.b++;
-    } else if (code === 'ArrowLeft') this._kbMenu.l++;    // held ←/→ repeat (OS key repeat): sliders keep stepping
-    else if (code === 'ArrowRight') this._kbMenu.r++;
+    } else {                                               // held arrows repeat (OS key repeat): lists scroll, sliders step
+      const M = this._kbMenuRep;
+      if (code === 'ArrowUp') M.u++; else if (code === 'ArrowDown') M.d++; else if (code === 'ArrowLeft') M.l++; else if (code === 'ArrowRight') M.r++;
+    }
     if (!action) return;
     // fullscreen: plain U (Shift allowed: it is held for boost); Ctrl / Alt / Meta combos are left to the browser and OS
     if (action === 'fullscreen' && (e.ctrlKey || e.altKey || e.metaKey)) return;
@@ -377,7 +393,8 @@ export class Input {
     // ---- gamepad -----------------------------------------------------------------------------------------------
     let gpPitch = 0, gpRoll = 0, gpYaw = 0, gpThr = 0, gpGunV = 0, gpMisV = 0;
     let gpTarget = false, gpLook = false, gpPause = false, gpInvert = false, gpRestart = false, gpDL = false, gpDR = false, gpDU = false, gpL3 = false;
-    let gpDD = false, gpA = false, gpB = false, lsU = false, lsD = false, lsL = false, lsR = false;
+    let gpDD = false, gpA = false, gpB = false, gpLB = false, gpRB = false;
+    const LS = this._lsMenu;
     let gpActive = false;
     this._gpPressEdge = false;
     const gp = this._pollGamepad();
@@ -420,8 +437,10 @@ export class Input {
       gpRestart = !used.has(BTN.Y) && isPressed(b[BTN.Y]);
       gpDU = isPressed(b[12]); gpDL = isPressed(b[14]); gpDR = isPressed(b[15]);
       gpDD = isPressed(b[13]); gpA = isPressed(b[BTN.A]); gpB = isPressed(b[BTN.B]);
-      lsU = rawLY < -0.6; lsD = rawLY > 0.6; lsL = rawLX < -0.6; lsR = rawLX > 0.6;
-    } else { const S = this.stickRaw; S.pitch = S.roll = S.yaw = 0; this.padRaw = null; }
+      gpLB = isPressed(b[BTN.LB]); gpRB = isPressed(b[BTN.RB]);
+      LS.u = rawLY < -(LS.u ? MENU_STICK_OFF : MENU_STICK_ON); LS.d = rawLY > (LS.d ? MENU_STICK_OFF : MENU_STICK_ON);
+      LS.l = rawLX < -(LS.l ? MENU_STICK_OFF : MENU_STICK_ON); LS.r = rawLX > (LS.r ? MENU_STICK_OFF : MENU_STICK_ON);
+    } else { const S = this.stickRaw; S.pitch = S.roll = S.yaw = 0; this.padRaw = null; LS.u = LS.d = LS.l = LS.r = false; }
 
     // ---- on-screen touch controls (phones): a second "gamepad" with the same mode-2 layout ---------------------------
     const T = this.touch;
@@ -436,18 +455,27 @@ export class Input {
     }
     // ---- menu navigation edges ----------------------------------------------------------------------------------
     {
-      const M = this._kbMenu, G = this._gpMenuPrev;
-      const u = gpDU || lsU, d = gpDD || lsD, l = gpDL || lsL, r = gpDR || lsR;
-      this.menuUp = M.u > 0 || (u && !G.u); this.menuDown = M.d > 0 || (d && !G.d);
-      // held left / right on the pad repeats (after 0.35 s, every 0.07 s) so settings sliders can be swept
-      const R = this._gpMenuRep || (this._gpMenuRep = { l: 0, r: 0 });
-      let repL = false, repR = false;
-      if (l && !r) { R.l += dt; if (R.l > 0.35) { repL = true; R.l -= 0.07; } } else R.l = 0;
-      if (r && !l) { R.r += dt; if (R.r > 0.35) { repR = true; R.r -= 0.07; } } else R.r = 0;
-      this.menuLeft = M.l > 0 || (l && !G.l) || repL; this.menuRight = M.r > 0 || (r && !G.r) || repR;
+      const M = this._kbMenu, K = this._kbMenuRep, G = this._gpMenuPrev, R = this._menuRep, N = this._menuRepNext;
+      const u = gpDU || LS.u, d = gpDD || LS.d, l = gpDL || LS.l, r = gpDR || LS.r;
+      // a held pad direction repeats (MENU_REPEAT_*): lists scroll, sliders sweep. Opposite directions together cancel.
+      // At most one repeat per frame, so a slow frame never fires a burst.
+      const rep = (k, on) => {
+        if (!on) { R[k] = 0; N[k] = MENU_REPEAT_DELAY; return false; }
+        R[k] += dt;
+        if (R[k] < N[k]) return false;
+        const ramp = Math.min(1, (R[k] - MENU_REPEAT_DELAY) / MENU_REPEAT_RAMP);
+        N[k] = Math.max(N[k] + MENU_REPEAT_SLOW + (MENU_REPEAT_FAST - MENU_REPEAT_SLOW) * ramp, R[k]);
+        return true;
+      };
+      const repU = rep('u', u && !d), repD = rep('d', d && !u), repL = rep('l', l && !r), repR = rep('r', r && !l);
+      const fU = M.u > 0 || (u && !G.u), fD = M.d > 0 || (d && !G.d), fL = M.l > 0 || (l && !G.l), fR = M.r > 0 || (r && !G.r);
+      this.menuUp = fU || repU || K.u > 0; this.menuDown = fD || repD || K.d > 0;
+      this.menuLeft = fL || repL || K.l > 0; this.menuRight = fR || repR || K.r > 0;
+      this.menuRepeat = !(fU || fD || fL || fR) && (this.menuUp || this.menuDown || this.menuLeft || this.menuRight);
       this.menuConfirm = M.a > 0 || (gpA && !G.a); this.menuBack = M.b > 0 || (gpB && !G.b);
-      G.u = u; G.d = d; G.l = l; G.r = r; G.a = gpA; G.b = gpB;
-      M.u = M.d = M.l = M.r = M.a = M.b = 0;
+      this.menuTabPrev = gpLB && !G.lb; this.menuTabNext = gpRB && !G.rb;     // physical bumpers, no repeat
+      G.u = u; G.d = d; G.l = l; G.r = r; G.a = gpA; G.b = gpB; G.lb = gpLB; G.rb = gpRB;
+      M.u = M.d = M.l = M.r = M.a = M.b = 0; K.u = K.d = K.l = K.r = 0;
     }
     // ---- mouse: consume accumulated motion, button edges ------------------------------------------------------------
     this.mouseMoveX = this._mdx; this.mouseMoveY = this._mdy; this._mdx = 0; this._mdy = 0;
@@ -590,6 +618,7 @@ export class Input {
     this.gunPressed = this.missilePressed = this.targetPressed = this.targetReleased = false;
     this.pausePressed = this.restartPressed = this.invertPitchToggled = this.anyPressed = false;
     this.graphicsNextPressed = this.graphicsPrevPressed = this.overlayToggled = this.flaresPressed = false;
+    this.menuUp = this.menuDown = this.menuLeft = this.menuRight = this.menuConfirm = this.menuBack = this.menuTabPrev = this.menuTabNext = this.menuRepeat = false;
   }
 }
 

@@ -66,8 +66,9 @@ window.__menu = menu;
 const results = [];
 const check = (name, ok, info) => { results.push({ name, ok: !!ok }); if (!ok) console.log('MENU_FAIL ' + name + (info !== undefined ? ' :: ' + JSON.stringify(info) : '')); };
 const near = (a, b, e = 1e-6) => Math.abs(a - b) <= e;
-const EDGES = ['menuUp', 'menuDown', 'menuLeft', 'menuRight', 'menuConfirm', 'menuBack', 'pausePressed'];
-const NAMES = { up: 'menuUp', down: 'menuDown', left: 'menuLeft', right: 'menuRight', ok: 'menuConfirm', back: 'menuBack', pause: 'pausePressed' };
+const EDGES = ['menuUp', 'menuDown', 'menuLeft', 'menuRight', 'menuConfirm', 'menuBack', 'pausePressed', 'menuTabPrev', 'menuTabNext', 'menuRepeat'];
+const NAMES = { up: 'menuUp', down: 'menuDown', left: 'menuLeft', right: 'menuRight', ok: 'menuConfirm', back: 'menuBack', pause: 'pausePressed',
+  tabprev: 'menuTabPrev', tabnext: 'menuTabNext' };
 const fake = { usingGamepad: params.get('dev') !== 'kb' };
 const visited = new Set();
 const note = () => { if (menu.screen) visited.add(menu.screen); };
@@ -113,6 +114,22 @@ async function runSelfTest() {
   press('right'); check('right jumps to Launch', focused() === 'launch', focused());
   press('left'); check('left returns to the selected mission', focused() === 'm3', focused());
   press('ok'); check('confirm on a mission launches it', last()[0] === 'start' && last()[1] === 3 && !menu.open, last());
+
+  // Holding down scrolls the mission list (repeat edges), keeping the focused row in view; a direction already held when the
+  // screen opened does nothing until it is pressed again
+  menu.show('missions', { selected: 0 }); await settle();
+  check('missions open on M1', focused() === 'm0', focused());
+  step(1 / 60, ['menuDown', 'menuRepeat']); check('a repeat without a fresh press is ignored', focused() === 'm0', focused());
+  press('down'); for (let i = 0; i < 30; i++) step(1 / 60, ['menuDown', 'menuRepeat']);
+  check('held down runs to the end of the list (no wrap)', focused() === 'm' + (MISSIONS.length - 1), focused());
+  { const list = scr('missions').querySelector('.m-mlist'), row = list.querySelector(`[data-mission="${MISSIONS.length - 1}"]`);
+    const inView = () => { const a = list.getBoundingClientRect(), b = row.getBoundingClientRect(); return b.top >= a.top - 1 && b.bottom <= a.bottom + 1; };
+    for (let i = 0; i < 40 && !inView(); i++) await new Promise((r) => setTimeout(r, 50));
+    check('the focused row is scrolled into view', inView(), [list.scrollTop, list.scrollHeight, list.clientHeight]);
+    check('the detail follows', menu.el.querySelector('.m-dname').textContent === MISSIONS[MISSIONS.length - 1].name); }
+  for (let i = 0; i < 4; i++) step(1 / 60, ['menuUp', 'menuRepeat']);
+  check('held up scrolls back', focused() === 'm' + (MISSIONS.length - 5), focused());
+  menu.hide();
 
   // Settings from the title
   menu.show('title'); await settle(); press('down'); press('down'); press('down');
@@ -236,7 +253,30 @@ async function runSelfTest() {
   press('left'); check('Master -5%', near(settings.master, Math.max(0, Math.round((mv - 0.05) * 100) / 100)), settings.master);
   press('right'); check('Master back', near(settings.master, mv), settings.master);
   check('slider value label', menu.el.querySelector('.m-row[data-key="master"] .m-val').textContent === Math.round(settings.master * 100) + '%');
-  press('back'); check('Back from stacked Settings returns to title', menu.screen === 'title', menu.screen);
+  // LB / RB cycle the tabs, wrapping: focus in a panel lands on the new tab's first row, focus on the bar stays on the bar
+  const firstRow = (tab) => SETTING_DEFS.find((d) => d.tab === tab).key;
+  press('tabnext'); check('RB from a row: next tab, its first row', menu._tab === 'gameplay' && focused() === firstRow('gameplay') &&
+    !scr('settings').querySelector('[data-tabpanel="gameplay"]').hidden, [menu._tab, focused()]);
+  press('tabnext'); check('RB wraps from the last tab to the first', menu._tab === 'graphics' && focused() === 'quality', [menu._tab, focused()]);
+  press('tabprev'); check('LB wraps back to the last tab', menu._tab === 'gameplay' && focused() === firstRow('gameplay'), [menu._tab, focused()]);
+  press('up'); check('up to the tab bar', focused() === 'gameplay', focused());
+  press('tabprev'); check('LB on the tab bar moves along it', focused() === 'audio' && menu._tab === 'audio' &&
+    scr('settings').querySelector('[data-tab="audio"]').getAttribute('aria-selected') === 'true', [menu._tab, focused()]);
+  press('tabnext'); press('tabnext'); check('RB on the tab bar wraps along it', focused() === 'graphics' && menu._tab === 'graphics', focused());
+  { const lb = scr('settings').querySelector('.m-tabs > .m-g-lb:first-child'), rb = scr('settings').querySelector('.m-tabs > .m-g-rb:last-child');
+    const shown = (e) => !!e && getComputedStyle(e).display !== 'none';
+    const was = menu._device;
+    menu.setDevice('pad'); const onPad = shown(lb) && shown(rb) && getComputedStyle(lb, '::before').content.includes('LB');
+    menu.setDevice('kb'); const onKb = !shown(lb) && !shown(rb);
+    menu.setDevice(was);
+    check('LB / RB glyphs flank the tab bar on a pad only', onPad && onKb, { onPad, onKb }); }
+  press('tabprev'); press('tabprev'); press('back'); check('Back from stacked Settings returns to title', menu.screen === 'title', menu.screen);
+  press('tabnext'); press('tabprev'); check('LB / RB do nothing on a screen without tabs', menu.screen === 'title' && focused() === 'settings', [menu.screen, focused()]);
+  // Held direction (input.js repeat edges, menuRepeat): never wraps a data-wrap list; a fresh press still does
+  press('down'); press('down'); check('title: down to Credits', focused() === 'credits', focused());
+  step(1 / 60, ['menuDown', 'menuRepeat']); check('a held repeat stops at the end of the title list', focused() === 'credits', focused());
+  press('down'); check('a fresh press still wraps', focused() === 'start', focused());
+  press('down'); press('down'); press('down'); check('back on Settings', focused() === 'settings', focused());
 
   // Controls and credits
   press('down'); check('focus on Controls', focused() === 'controls', focused());
