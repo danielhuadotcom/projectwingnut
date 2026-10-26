@@ -439,7 +439,7 @@ export const MISSIONS = [
         { kind: 'ground', type: 'railgun', count: 2, area: 'base', position: 'ahead', distance: 5200, difficulty: 'mercenary' },
         { kind: 'air', type: 'Q07', count: 3, formation: 'vee', position: 'left', distance: 5000, after: 25, task: 'engage', difficulty: 'mercenary' },
       ] },
-      { label: 'Chime Squadron', endAtRemaining: 2, groups: [   // won with two left: the rest of Chime pulls out with Mainspring
+      { label: 'Chime Squadron', music: 'mainspring', endAtRemaining: 2, groups: [   // won with two left: the rest of Chime pulls out with Mainspring
         { kind: 'air', type: 'Q07 MAINSPRING', count: 1, formation: 'pair', position: 'behind', distance: 5000, task: 'engage' },
         { kind: 'air', type: 'Q07 CHIME', count: 2, formation: 'pair', position: 'behind', distance: 4700, task: 'engage' },
         { kind: 'air', type: 'Q11 CHIME', count: 1, formation: 'pair', position: 'behind', distance: 5200, task: 'engage' },
@@ -846,7 +846,7 @@ export const MISSIONS = [
         { kind: 'air', type: 'NV-4', count: 2, formation: 'pair', position: 'left', distance: 3000, task: 'patrol' },
         { kind: 'air', type: 'SQUALL-27', count: 2, formation: 'pair', position: 'right', distance: 3000, task: 'patrol' },
       ] },
-      { label: "Chime's last round", mainspring: true, groups: [   // Mainspring sends them in over the radio
+      { label: "Chime's last round", mainspring: true, music: 'mainspring', groups: [   // Mainspring sends them in over the radio
         { kind: 'air', type: 'Q07 CHIME', count: 4, formation: 'vee', position: 0, distance: 9000, task: 'engage', flight: 4 },
         { kind: 'air', type: 'Q11 CHIME', count: 4, formation: 'vee', position: 'high', distance: 9100, task: 'engage', flight: 4 },
       ] },
