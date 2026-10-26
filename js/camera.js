@@ -17,6 +17,7 @@ const PAD_SIDE_ZONE = 0.4;                  // rad short of +-pi inside which th
 const TWO_PI = Math.PI * 2;
 const AOA_TWEEN = 0.5;                      // s, held view -> new heading after the AOA limiter (camera lock)
 const _qA = new THREE.Quaternion(), _qB = new THREE.Quaternion(), _qC = new THREE.Quaternion(), _m4 = new THREE.Matrix4();
+const _twDir = new THREE.Vector3();   // mouse-aim view direction held at the release
 const _bR = new THREE.Vector3(), _bU = new THREE.Vector3(), _bB = new THREE.Vector3();
 /** Camera-style orientation (looking down -Z) from a forward and a rough up. */
 function basisQuat(q, fwd, up) {
@@ -79,9 +80,9 @@ export class ChaseCamera {
     // AOA limiter off with the camera lock (aoaLock, a setting): the view holds where it was while the jet spins in place,
     // then on release eases from the held view onto the new heading over AOA_TWEEN s (slerped: no flip through a
     // reversed view). Without the lock the lag just tightens.
-    const locked = this.aoaLock && aircraft.aoaOff && aircraft.alive && mode !== 'mouseaim';
+    const locked = this.aoaLock && aircraft.aoaOff && aircraft.alive;
     if (locked) this._aoaTw = -1;
-    else if (this._aoaTw < 0) { this._aoaTw = 0; basisQuat(_qA, this.sFwd, this.sUp); }
+    else if (this._aoaTw < 0) { this._aoaTw = 0; basisQuat(_qA, this.sFwd, this.sUp); _twDir.copy(this.sDir); }
     if (locked) { /* held */ } else if (this._aoaTw >= 0 && this._aoaTw < AOA_TWEEN) {
       this._aoaTw += dt;
       const u = Math.min(1, this._aoaTw / AOA_TWEEN), e = u * u * (3 - 2 * u);
@@ -119,8 +120,12 @@ export class ChaseCamera {
       // War Thunder-style: the camera looks where you aim (not where the jet points), horizon level; the jet chases
       // the reticle at the screen center. aimDir is set by main (unit vector), lookDir adds free look.
       const d = this.lookDir;
-      const k = 1 - Math.exp(-dt / 0.06);
-      this.sDir.lerp(d, k).normalize();
+      if (locked) { /* held (main keeps the aim still too) */ }
+      else if (this._aoaTw >= 0 && this._aoaTw < AOA_TWEEN) {
+        const u = Math.min(1, this._aoaTw / AOA_TWEEN), e = u * u * (3 - 2 * u);
+        _qC.setFromUnitVectors(_twDir, d); _qB.identity().slerp(_qC, e);
+        this.sDir.copy(_twDir).applyQuaternion(_qB);
+      } else this.sDir.lerp(d, 1 - Math.exp(-dt / 0.06)).normalize();
       const dist = 19 + speedFrac * 6;
       this.pos.copy(aircraft.position).addScaledVector(this.sDir, -dist).addScaledVector(this.mouseUp || WORLD_UP, 5);
       const mu = this.mouseUp || WORLD_UP;

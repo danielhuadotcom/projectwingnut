@@ -362,7 +362,7 @@ export class HUD {
     const gc = frame.gunCross;
     if (frame.mouseAim) {
       // War Thunder-style mouse aim: the circle is where you're steering, the cross is where the guns point now
-      this._drawAimCircle(frame.mouseAim);
+      if (frame.aoaStick) this._drawAoaStick(frame.aoaStick); else this._drawAimCircle(frame.mouseAim);
     } else {
       this._drawPitchLadder(p);
       this._drawBankScale(p);
@@ -491,6 +491,13 @@ export class HUD {
     this._fillOutlined(COL.green);
   }
 
+  /** Mouse virtual stick while the AOA limiter is off: a ring at screen center, the dot at the held deflection. */
+  _drawAoaStick(st) {
+    const ctx = this.ctx, L = this.L, s = L.s, R = 42 * s, x = L.cx + st.x * R, y = L.cy - st.y * R;
+    ctx.beginPath(); ctx.arc(L.cx, L.cy, R, 0, TAU); this._stroke(COL.green, L.lw);
+    ctx.beginPath(); ctx.moveTo(L.cx, L.cy); ctx.lineTo(x, y); this._stroke(COL.green, L.lw);
+    ctx.beginPath(); ctx.arc(x, y, 4 * s, 0, TAU); this._fillOutlined(COL.green);
+  }
   _drawAimCircle(m) {
     if (!m || m.aimVisible === false) return;
     const ctx = this.ctx, L = this.L, s = L.s, r = 15 * s;

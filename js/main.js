@@ -104,6 +104,8 @@ const ENEMY_MISSILE_TURN = 0.6;
 // a close tail chase (a missile still accelerating, closing at 250-450 m/s) left 0.2-0.35 s unguided: long enough for an
 // ordinary evasive turn to slip the 13 m fuse (js/weapons.js fireMissile). Per-shot values on the Missile, set in
 // onMissileLaunch.
+const AOA_MOUSE_SETTLE = 0.3;   // s the mouse aim rides the nose after the AOA limiter
+const AOA_MOUSE_STICK = 0.005;   // virtual stick deflection per mouse px while the AOA limiter is off (x mouse sensitivity): full at ~200 px
 const PLAYER_MISSILE = { maxSpeed: 350, carry: 1.9, boostTime: 2.4, drag: 0.7e-4, life: 6, turnScale: 1.3, fuse: 13, blindTime: 0.05,
   blindMinTime: 0.2, blindJitter: 0.5, headTermTime: 0.3, headGMax: 1800 };
 const WORLD_UP = new THREE.Vector3(0, 1, 0);
@@ -178,6 +180,7 @@ class Game {
     this.sunScreen = { x: 0.5, y: 0.5, visible: false };
     // War Thunder-style mouse aim (default without a gamepad): aim heading/pitch, free-look offsets
     this.aimHeading = 0; this.aimPitch = 0; this.lookYaw = 0; this.lookPitch = 0;
+    this._aoaStick = { x: 0, y: 0 }; this._aoaMouse = false; this._aoaSettle = 0;   // mouse virtual stick while the AOA limiter is off
     this.aimDir = new THREE.Vector3(0, 0, -1); this._qInv = new THREE.Quaternion();
     this.aimUp = new THREE.Vector3(0, 1, 0); this._lookDir = new THREE.Vector3(0, 0, -1); this._aimQ = new THREE.Quaternion();
     this._ovRoll = 0; this._ovPitch = 0; this._behindDir = 0;
@@ -2243,7 +2246,26 @@ class Game {
     if (!this.isMouseMode()) { if (this._wasGamepad !== true) this._wasGamepad = true; return; }
     if (this._wasGamepad) { this._wasGamepad = false; this.syncAim(); }
     const sens = 0.0021 * (this.settings.mouseSens || 1) * (this.camera.fov / 66) * (i.mouseAimScale || 1);   // (gun precision while firing)
-    const up = this.aimUp;
+    const up = this.aimUp, p = this.player;
+    // AOA limiter off: the mouse deflects a virtual stick that stays where it is left (held deflection = held rate, so the
+    // jet keeps tumbling); the aim holds still with the camera lock (the view stays put) or rides the nose without it.
+    // On release the aim rides the nose for AOA_MOUSE_SETTLE s while the leftover turn rate dies away, then restarts
+    // from where the nose settled (no snap back); the camera eases over meanwhile.
+    const aoa = p.alive && p.aoaOff, S = this._aoaStick;
+    if (aoa !== this._aoaMouse) {
+      this._aoaMouse = aoa; S.x = S.y = 0;
+      if (!aoa) this._aoaSettle = p.alive ? AOA_MOUSE_SETTLE : 0;
+    }
+    if (this._aoaSettle > 0) { this._aoaSettle -= dt; this.syncAim(); return; }
+    if (aoa) {
+      if (!i.freeLook) {
+        const k = AOA_MOUSE_STICK * (this.settings.mouseSens || 1);
+        S.x += i.mouseMoveX * k; S.y -= i.mouseMoveY * k;
+        const l = Math.hypot(S.x, S.y); if (l > 1) { S.x /= l; S.y /= l; }
+      }
+      if (!this.chase.aoaLock) { p.getForward(this.aimDir); this._lookDir.copy(this.aimDir); }
+      return;
+    }
     if (i.freeLook) {
       this.lookYaw -= i.mouseMoveX * sens;
       this.lookPitch = THREE.MathUtils.clamp(this.lookPitch - i.mouseMoveY * sens, -1.3, 1.3);
@@ -2290,9 +2312,7 @@ class Game {
       // AOA limiter off (engaged: the cooldown can refuse a press): no bank-to-turn, the nose slews straight onto the aim
       // (pitch and rudder along the shortest rotation, both fast in this mode; dead astern: pull). Keyboard roll / rudder
       // still add on top; thrust is ignored.
-      const h = Math.hypot(lx, ly), m = Math.min(1, ang * 2.5);
-      pitch = (h > 1e-4 ? ly / h : 1) * m - r.pitch * 0.07;
-      yaw = (h > 1e-4 ? lx / h : 0) * m - r.yaw * 0.12;
+      pitch = this._aoaStick.y + (this.settings.mouseKeys === 'advanced' ? kb.pitch : 0); yaw = this._aoaStick.x;   // (simple keys: W / S are thrust, ignored here)
       roll = kb.roll - r.roll * 0.05;
       this._aimPush = false; this._behindDir = 0; this._rollSide = 0;
       p.setControls({ pitch: THREE.MathUtils.clamp(pitch, -1, 1), roll: THREE.MathUtils.clamp(roll, -1, 1), yaw: THREE.MathUtils.clamp(yaw + kb.yaw, -1, 1), throttleDelta: 0, aoaOff: this.input.aoaOff });
@@ -2665,6 +2685,7 @@ class Game {
       M.aimX = M._a.x; M.aimY = M._a.y; M.aimVisible = M._a.onScreen; M.noseX = M._n.x; M.noseY = M._n.y; M.noseVisible = M._n.onScreen;
       f.mouseAim = M;
     } else f.mouseAim = null;
+    f.aoaStick = f.mouseAim && f.aoaOff ? this._aoaStick : null;   // (mouse: the virtual stick replaces the aim circle)
     const i = this.input; f.input.gamepadConnected = i.gamepadConnected; f.input.gamepadName = i.gamepadName; f.input.gamepadBlocked = i.gamepadBlocked; f.input.usingGamepad = i.usingGamepad; f.input.pointerLocked = i.pointerLocked;
     f.hitFlash = this.hitFlash; f.damageFlash = this.damageFlash;
   }
