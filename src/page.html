@@ -19,6 +19,8 @@ html, body { height: 100%; }
 body { margin: 0; background: var(--bg); color: var(--fg); font-family: var(--mono); overflow: hidden; -webkit-font-smoothing: antialiased; }
 #game { position: fixed; inset: 0; overflow: hidden; background: var(--bg); touch-action: none; }
 #gl, #hud { position: absolute; inset: 0; }
+/* gamepad in use (js/main.js updateDeviceHints): no mouse cursor over the game or the menus until the mouse moves again */
+#game.wn-pad, #game.wn-pad * { cursor: none !important; }
 #gl canvas { display: block; width: 100%; height: 100%; }
 #hud { pointer-events: none; }
 #ui { position: absolute; inset: 0; pointer-events: none; display: grid; place-items: center;

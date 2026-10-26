@@ -445,6 +445,7 @@ export class Menu {
     this._lock = screen === 'debrief' ? 0.8 : (wasOpen ? 0 : 0.25);
     this._lockUntil = performance.now() + this._lock * 1000;   // wall-clock, so slow frames can't stretch it
     this.el.hidden = false;
+    if (this._device === 'pad') this._setKbNav(true);   // on the gamepad the focused item shows its ring straight away
     this._enter(screen, data || {}, false);
   }
 
@@ -1600,6 +1601,7 @@ export class Menu {
     if (this._device) this.el.classList.remove(`dev-${this._device}`);
     this._device = kind;
     this.el.classList.add(`dev-${kind}`);
+    if (kind === 'pad') this._setKbNav(true);
   }
   _setKbNav(on) { this.el.classList.toggle('kbnav', !!on); }
 
@@ -1662,6 +1664,9 @@ export class Menu {
     if (this._drag && e.pointerId === this._drag.id) { this._dragTo(e.clientX); return; }
     if (!this.open || e.pointerType === 'touch') return;
     if (e.clientX === this._px && e.clientY === this._py) return;   // only real movement (not layout shifts under a still mouse)
+    // On the gamepad, a move without motion is the browser's synthetic one (a menu opening under the still cursor, or
+    // the cursor freed by pointer lock): it must not steal the pad's focus or flip the hints to the keyboard.
+    if (this._device === 'pad' && e.pointerType === 'mouse' && !e.movementX && !e.movementY) return;
     this._px = e.clientX; this._py = e.clientY;
     this._setDevice('kb');
     this._setKbNav(false);

@@ -2173,7 +2173,12 @@ class Game {
   }
   updateDeviceHints() {
     const dev = this.touch && this.touch.active ? 'touch' : this.input.usingGamepad ? 'pad' : 'kb';
-    if (dev !== this._dev) { this._dev = dev; if (this.menu.setDevice) this.menu.setDevice(dev); }
+    if (dev !== this._dev) {
+      this._dev = dev; if (this.menu.setDevice) this.menu.setDevice(dev);
+      // Hide the cursor while on the gamepad: pointer lock is mouse-aim only, so after the debrief (or pause) frees it
+      // the cursor would otherwise sit over the next mission. Moving the mouse switches back to 'kb' and shows it.
+      if (this.root && this.root.classList) this.root.classList.toggle('wn-pad', dev === 'pad');
+    }
   }
   /** World position the cannon fires from (mean of the muzzle points). */
   gunOrigin(out) {
