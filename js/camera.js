@@ -15,6 +15,16 @@ const PAD_OMEGA = 17;                       // ~0.28 s to settle (in and out)
 const PAD_MAX_PITCH = 75 * Math.PI / 180;
 const PAD_SIDE_ZONE = 0.4;                  // rad short of +-pi inside which the committed swing side is kept
 const TWO_PI = Math.PI * 2;
+const AOA_TWEEN = 0.5;                      // s, held view -> new heading after the AOA limiter (camera lock)
+const _qA = new THREE.Quaternion(), _qB = new THREE.Quaternion(), _qC = new THREE.Quaternion(), _m4 = new THREE.Matrix4();
+const _bR = new THREE.Vector3(), _bU = new THREE.Vector3(), _bB = new THREE.Vector3();
+/** Camera-style orientation (looking down -Z) from a forward and a rough up. */
+function basisQuat(q, fwd, up) {
+  _bR.crossVectors(fwd, up);
+  if (_bR.lengthSq() < 1e-8) _bR.set(1, 0, 0);
+  _bR.normalize(); _bU.crossVectors(_bR, fwd).normalize(); _bB.copy(fwd).negate();
+  return q.setFromRotationMatrix(_m4.makeBasis(_bR, _bU, _bB));
+}
 // Exact critically damped step toward `goal`: state in s[0] (value) / s[1] (velocity), no allocation.
 function springStep(s, i, goal, omega, dt) {
   const x = s[i] - goal, v = s[i + 1];
@@ -43,12 +53,15 @@ export class ChaseCamera {
     this.pad = new Float64Array(6); this.padSide = 1;
     this.ground = null;      // optional World (getHeight) for the terrain clamp, set by main
     this.inTunnel = false;   // set by main: inside the bore the tunnel's own clamp applies, not the terrain one
+    this.aoaLock = true;     // AOA limiter camera lock (setting)
+    this._aoaTw = 1e9;       // -1 = held by the lock; 0..AOA_TWEEN = easing onto the new heading; past it = normal lag
   }
   resetPadlock() { this.pad.fill(0); this.padSide = 1; }
   addShake(a) { this.shake = Math.min(1.2, this.shake + a * (this.shakeScale ?? 1)); }
   snap(aircraft) {
     aircraft.getForward(this.sFwd); aircraft.getUp(this.sUp);
     this.sDir.copy(this.sFwd);
+    this._aoaTw = 1e9;
     this.resetPadlock();
   }
   // mode: 'chase' | 'padlock' | 'rear' | 'orbit' | 'wreck'
@@ -61,13 +74,25 @@ export class ChaseCamera {
     // Project Wingman-style rotational lag: the camera trails the jet's rotation by ~0.3 s, so in hard maneuvers the
     // jet visibly swings off-axis (belly or back toward the camera) and settles back when the maneuver ends.
     const chaseLike = mode === 'chase' || mode === 'padlock';   // padlock is the chase camera, orbited
-    // AOA limiter off: the nose turns ~2.5x faster, so the lag tightens (the jet still swings visibly off-axis, but the
-    // gun line stays near the screen)
-    const kRot = 1 - Math.exp(-dt / (chaseLike ? (aircraft.aoaOff ? 0.2 : 0.3) : 0.11));
-    this.sFwd.lerp(_fwd, kRot).normalize();
     // Up mostly follows the jet (the horizon tilts with it, as in PW) with a little world-up for stability
     _tmp.copy(_up).multiplyScalar(0.8).addScaledVector(WORLD_UP, 0.2).normalize();
-    this.sUp.lerp(_tmp, 1 - Math.exp(-dt / (chaseLike ? 0.26 : 0.11))).normalize();
+    // AOA limiter off with the camera lock (aoaLock, a setting): the view holds where it was while the jet spins in place,
+    // then on release eases from the held view onto the new heading over AOA_TWEEN s (slerped: no flip through a
+    // reversed view). Without the lock the lag just tightens.
+    const locked = this.aoaLock && aircraft.aoaOff && aircraft.alive && mode !== 'mouseaim';
+    if (locked) this._aoaTw = -1;
+    else if (this._aoaTw < 0) { this._aoaTw = 0; basisQuat(_qA, this.sFwd, this.sUp); }
+    if (locked) { /* held */ } else if (this._aoaTw >= 0 && this._aoaTw < AOA_TWEEN) {
+      this._aoaTw += dt;
+      const u = Math.min(1, this._aoaTw / AOA_TWEEN), e = u * u * (3 - 2 * u);
+      basisQuat(_qB, _fwd, _tmp);
+      _qC.slerpQuaternions(_qA, _qB, e);
+      this.sFwd.set(0, 0, -1).applyQuaternion(_qC); this.sUp.set(0, 1, 0).applyQuaternion(_qC);
+    } else {
+      const kRot = 1 - Math.exp(-dt / (chaseLike ? (aircraft.aoaOff ? 0.2 : 0.3) : 0.11));
+      this.sFwd.lerp(_fwd, kRot).normalize();
+      this.sUp.lerp(_tmp, 1 - Math.exp(-dt / (chaseLike ? 0.26 : 0.11))).normalize();
+    }
 
     let desiredFov = this.baseFov + speedFrac * speedFrac * 14 + (aircraft.afterburner && !aircraft.aoaOff ? 4 : 0);   // (AOA off: the burner follows the stick)
     if (mode === 'orbit') {
@@ -112,8 +137,9 @@ export class ChaseCamera {
       const r = aircraft._rates;
       const kS = 1 - Math.exp(-dt / 0.25);
       const pr = r ? THREE.MathUtils.clamp(r.pitch / 1.57, -1, 1) : 0, yr = r ? THREE.MathUtils.clamp(r.yaw / 0.3, -1, 1) : 0;
-      this.shiftUp += (pr * 5.5 - this.shiftUp) * kS;
-      this.shiftRight += (yr * 3 - this.shiftRight) * kS;
+      const hold = locked ? 0 : 1;                                   // (no look-into-turn while the view is held)
+      this.shiftUp += (pr * 5.5 * hold - this.shiftUp) * kS;
+      this.shiftRight += (yr * 3 * hold - this.shiftRight) * kS;
       const dist = 17 + speedFrac * 6;
       _tmp2.crossVectors(this.sFwd, this.sUp).normalize();          // chase right
       const P = this.pad;

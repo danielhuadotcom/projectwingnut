@@ -948,8 +948,19 @@ export class AudioFX {
     W.puLP = ctx.createBiquadFilter(); W.puLP.type = 'lowpass'; W.puLP.frequency.value = 2200; W.puLP.Q.value = 1.0;
     W.puGate = ctx.createGain(); W.puGate.gain.value = 0;
     chain(W.puOsc, W.puLP, W.puGate, N.warnBus);
+    // AOA limiter off: a soft held tone, two sines a fifth apart with a slow swell
+    W.aoaOsc1 = ctx.createOscillator(); W.aoaOsc1.type = 'sine'; W.aoaOsc1.frequency.value = 523;
+    W.aoaOsc2 = ctx.createOscillator(); W.aoaOsc2.type = 'sine'; W.aoaOsc2.frequency.value = 784;
+    W.aoaMix2 = ctx.createGain(); W.aoaMix2.gain.value = 0.45;
+    W.aoaSwell = ctx.createGain(); W.aoaSwell.gain.value = 0.8;
+    W.aoaLfo = ctx.createOscillator(); W.aoaLfo.type = 'sine'; W.aoaLfo.frequency.value = 3;
+    W.aoaLfoDepth = ctx.createGain(); W.aoaLfoDepth.gain.value = 0.2;
+    W.aoaGate = ctx.createGain(); W.aoaGate.gain.value = 0;
+    W.aoaLfo.connect(W.aoaLfoDepth); W.aoaLfoDepth.connect(W.aoaSwell.gain);
+    W.aoaOsc1.connect(W.aoaSwell); chain(W.aoaOsc2, W.aoaMix2, W.aoaSwell);
+    chain(W.aoaSwell, W.aoaGate, N.warnBus);
     const t = ctx.currentTime;
-    for (const s of [W.lockOsc, W.lfo, W.rwrOsc, W.puOsc]) { try { s.start(t); } catch (e) { /* ignore */ } }
+    for (const s of [W.lockOsc, W.lfo, W.rwrOsc, W.puOsc, W.aoaOsc1, W.aoaOsc2, W.aoaLfo]) { try { s.start(t); } catch (e) { /* ignore */ } }
     W.lockNext = 0; W.rwrNext = 0; W.rwrHigh = false; W.puNext = 0;
   }
 
@@ -1035,6 +1046,17 @@ export class AudioFX {
     if (on) this._ensureScheduler(); else glideTo(W.puGate.gain, this.ctx.currentTime, 0);
   }
 
+  /** AOA limiter soft tone on/off (held while the limiter is off). Idempotent. */
+  aoaTone(on) {
+    if (!this.ready) return;
+    on = !!on;
+    if (on === this._aoaToneOn) return;
+    this._aoaToneOn = on;
+    const g = this._nodes.warn.aoaGate.gain, now = this.ctx.currentTime;
+    g.cancelScheduledValues(now); g.setValueAtTime(g.value, now);
+    g.setTargetAtTime(on ? 0.11 : 0, now, on ? 0.06 : 0.08);
+  }
+
   /** Master volume 0..1 (default 0.6). Remembered if called before unlock. */
   /** Effects volume (engine, weapons, explosions, warnings), 0..1; remembered before unlock. */
   setSfxVolume(v) {
@@ -1057,7 +1079,7 @@ export class AudioFX {
     if (this._nodes) {
       const E = this._nodes.engine, W = this._nodes.warn, srcs = [];
       if (E) srcs.push(E.whineOsc1, E.whineOsc2, E.whistle, E.roarSrc, E.abSrc, E.crackleSrc, E.subSrc, E.windSrc, E.sRoarSrc, E.sTurbSrc, E.sAbSrc);
-      if (W) srcs.push(W.lockOsc, W.lfo, W.rwrOsc, W.puOsc);
+      if (W) srcs.push(W.lockOsc, W.lfo, W.rwrOsc, W.puOsc, W.aoaOsc1, W.aoaOsc2, W.aoaLfo);
       if (this._nodes.gun) srcs.push(this._nodes.gun.src);
       for (const s of srcs) { if (s) { try { s.stop(); } catch (e) { /* ignore */ } } }
       try { this._nodes.master.disconnect(); } catch (e) { /* ignore */ }
@@ -1066,7 +1088,7 @@ export class AudioFX {
     this._voices.length = 0;
     this._nodes = null; this._buffers = null; this.ctx = null; this._sfx = null; this._engineSamples = false;
     if (this._sfxState === 'none') this._sfxResolve({ decoded: 0, failed: 0 });
-    this._lockState = 'none'; this._missileWarnOn = false; this._pullUpOn = false; this._gunOn = false;
+    this._lockState = 'none'; this._missileWarnOn = false; this._pullUpOn = false; this._gunOn = false; this._aoaToneOn = false;
     if (ctx) { try { const p = ctx.close(); if (p && typeof p.catch === 'function') p.catch(() => {}); } catch (e) { /* ignore */ } }
   }
 }

@@ -1510,7 +1510,7 @@ class Game {
     if (this.audio.setPaused) this.audio.setPaused(true);   // ...every other game sound stops; the music and the radio's call play on
     this.deadTimer = 0; this.deadReason = reason;
     this.comms.playerDown(this.mainspringInFight());   // "Typical." while Mainspring is in the fight, else AWACS; nothing after it
-    this.audio.lockTone('none'); this.audio.missileWarning(false); this.audio.pullUpWarning(false); this.audio.gunLoop(false);
+    this.audio.lockTone('none'); this.audio.missileWarning(false); this.audio.pullUpWarning(false); this.audio.aoaTone(false); this.audio.gunLoop(false);
   }
   message(text, big = false, duration = 2.5) {
     // a repeat of a message still on screen refreshes it and shows a count instead of stacking another line
@@ -1909,6 +1909,7 @@ class Game {
     this.audio.missileWarning(this.missileIncoming);
     this.audio.trackMissiles(ms, p, this.camera);   // pass-by whoosh for missiles crossing close to the player
     this.audio.pullUpWarning(pullUp);
+    this.audio.aoaTone(p.alive && p.aoaOff);
     this.audio.lockTone(!p.alive || !this.target ? 'none' : this.locked ? 'locked' : this.inCone ? 'seeking' : 'none');
     this.audio.setEngine({ throttle: p.throttle, speedFrac: THREE.MathUtils.clamp(p.speed / FLIGHT.AB_SPEED, 0, 1), afterburner: p.afterburner, alive: p.alive });
     if (this.state === 'complete') this.stopWarnings();   // just entered the debrief: no tones left running behind it
@@ -2125,6 +2126,7 @@ class Game {
       case 'gunPrecision': if (this.input.setGunPrecision) this.input.setGunPrecision(v); break;   // stick / mouse fine aim while firing
       case 'padLayout': if (this.input.setPadLayout) this.input.setPadLayout(v); break;               // js/bindings.js layouts
       case 'bindings': if (this.input.setBindings) this.input.setBindings(v); break;                  // { pad, keys } from the binding screens
+      case 'aoaCamLock': this.chase.aoaLock = v !== false; break;   // camera holds still while the AOA limiter is off
       case 'cameraShake': this.chase.shakeScale = v === false ? 0 : 1; break;
       case 'fov': this.chase.baseFov = THREE.MathUtils.clamp(Number(v) || 66, 50, 100); break;   // chase, padlock and rear views
       case 'screenFlash': this.post.flashEnabled = v === true; break;   // white PostFX flash (explosions, flak, shot down)
@@ -2208,12 +2210,12 @@ class Game {
     const a = this.audio;
     if (a.setPaused) { a.setPaused(true); return; }
     a.setEngine({ throttle: 0, speedFrac: 0, afterburner: false, alive: false });
-    a.lockTone('none'); a.missileWarning(false); a.pullUpWarning(false); a.gunLoop(false);
+    a.lockTone('none'); a.missileWarning(false); a.pullUpWarning(false); a.aoaTone(false); a.gunLoop(false);
   }
   /** Warning and lock tones (and the HUD warnings) off: leaving the flight loop for the title or the debrief. */
   stopWarnings() {
     const a = this.audio;
-    a.lockTone('none'); a.missileWarning(false); a.pullUpWarning(false); a.gunLoop(false);
+    a.lockTone('none'); a.missileWarning(false); a.pullUpWarning(false); a.aoaTone(false); a.gunLoop(false);
     this.missileIncoming = false; this.pullUp = false; this.stall = false;
   }
   /** Hidden tab: the loop stops, so game audio goes quiet the way pause silences it, and the music with it. Back in
