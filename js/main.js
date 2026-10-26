@@ -4,7 +4,7 @@ import { PostFX } from './post.js';
 import { Input } from './input.js';
 import { HUD } from './hud.js';
 import { AudioFX } from './audio.js';
-import { Aircraft, AIRCRAFT_RADIUS, FLIGHT } from './aircraft.js';
+import { Aircraft, AIRCRAFT_RADIUS, FLIGHT, AOA_OFF } from './aircraft.js';
 import { airframeForType, AIRFRAME_IDS, getAirframeTopology } from './airframes.js';
 import { Weapons } from './weapons.js';
 import { ChaseCamera } from './camera.js';
@@ -2312,8 +2312,17 @@ class Game {
       // AOA limiter off (engaged: the cooldown can refuse a press): no bank-to-turn, the nose slews straight onto the aim
       // (pitch and rudder along the shortest rotation, both fast in this mode; dead astern: pull). Keyboard roll / rudder
       // still add on top; thrust is ignored.
-      pitch = this._aoaStick.y + (this.settings.mouseKeys === 'advanced' ? kb.pitch : 0); yaw = this._aoaStick.x;   // (simple keys: W / S are thrust, ignored here)
-      roll = kb.roll - r.roll * 0.05;
+      // the virtual stick turns the nose in screen terms (up = up on screen, right = right, whatever the jet's attitude):
+      // the turn about the camera's axes, taken into the jet's frame, becomes pitch / yaw / roll commands (scaled as one,
+      // so the direction holds when a rate saturates). Keyboard pitch (advanced keys), roll and yaw add on top.
+      const S = this._aoaStick, rate = FLIGHT.PITCH_RATE * AOA_OFF.PITCH, e = this.camera.matrixWorld.elements;
+      _v.set(e[0], e[1], e[2]).multiplyScalar(S.y * rate).addScaledVector(_v2.set(e[4], e[5], e[6]), -S.x * rate);
+      _v.applyQuaternion(this._qInv.copy(p.quaternion).invert());     // world turn -> the jet's frame
+      pitch = _v.x / (FLIGHT.PITCH_RATE * AOA_OFF.PITCH * (_v.x < 0 ? AOA_OFF.PUSH : 1));
+      yaw = -_v.y / AOA_OFF.YAW_RATE; roll = -_v.z / (FLIGHT.ROLL_RATE * AOA_OFF.ROLL);
+      const big = Math.max(1, Math.abs(pitch), Math.abs(yaw), Math.abs(roll)); pitch /= big; yaw /= big; roll /= big;
+      pitch += this.settings.mouseKeys === 'advanced' ? kb.pitch : 0;   // (simple keys: W / S are thrust, ignored here)
+      roll += kb.roll;
       this._aimPush = false; this._behindDir = 0; this._rollSide = 0;
       p.setControls({ pitch: THREE.MathUtils.clamp(pitch, -1, 1), roll: THREE.MathUtils.clamp(roll, -1, 1), yaw: THREE.MathUtils.clamp(yaw + kb.yaw, -1, 1), throttleDelta: 0, aoaOff: this.input.aoaOff });
       return;
