@@ -36,7 +36,7 @@ export const FLIGHT = {
   RESPONSE: 0.15,        // s, time constant to reach the commanded rate (PW "Response")
   BRAKE_TURN: 0.25,      // extra pitch authority at full airbrake (tighter turns while braking)
   MIN_SPEED: 60,         // m/s, stall speed (~215 km/h): nose drops, controls go mushy
-  BRAKE_SPEED: 70,       // m/s, full airbrake target (just above the stall: braking in a climb stalls you)
+  BRAKE_SPEED: 70,       // m/s, the AI's full airbrake target (the player's brake has no floor: Aircraft._integrate)
   CRUISE_SPEED: 200,     // m/s, throttle stick centered (~720 km/h)
   MAX_SPEED: 330,        // m/s, light boost (kept for HUD/AI references)
   AB_SPEED: 420,         // m/s, full boost (~1510 km/h)
@@ -72,6 +72,9 @@ export const PSM = { DRAG: 2.4, FLOOR: 1.35, LIFT: 1.25 };
 export const AOA_OFF = { PITCH: 3.9, PUSH: 0.85, ROLL: 2.0, YAW_RATE: 156 * RAD_PER_DEG, RESPONSE: 0.1, DRAG0: 0.03, DRAG: 0.17,
   RELEASE: 0.3, TV_PITCH: 0.3, TV_YAW: 0.18 };
 export const AOA_COOLDOWN = 2.5;   // s
+// Stalled (freeStall, and the AOA limiter when slow): horizontal velocity bleed per s, BASE always, BRAKE instead with the
+// airbrake out, plus BROADSIDE x sin^2 of the angle between the nose and the path. Lets the jet stop over the ground.
+export const STALL_HBLEED = { BASE: 0.15, BRAKE: 0.8, BROADSIDE: 0.6 };
 
 // ---------------------------------------------------------------------------------------------
 // Scratch objects (no per-frame allocation in hot paths)
@@ -1268,6 +1271,9 @@ export class Aircraft {
     sp *= Math.exp(-(AO.DRAG0 + AO.DRAG * (1 - ca)) * dt);
     if (v.lengthSq() > 1e-8) v.setLength(sp); else v.set(0, 0, 0);
     const vStall = F.MIN_SPEED * Math.min(1, (this.speedScale || 1) * 1.2);
+    // slow (toward and past the stall): the ground speed dies away too, more so broadside (STALL_HBLEED)
+    const hb = Math.exp(-(1 - smoothstep(vStall, vStall * 2, sp)) * (STALL_HBLEED.BASE + STALL_HBLEED.BROADSIDE * (1 - ca * ca)) * dt);
+    v.x *= hb; v.z *= hb;
     v.y -= 9.81 * (1 - smoothstep(vStall * 1.2, vStall * 2.5, sp)) * dt;
     this.speed = clamp(finite(v.length(), 0), 0, F.AB_SPEED * 1.15);
     this.stalled = sp < vStall * 1.1;                                       // (stall warning still shows; no nose drop here)
@@ -1385,14 +1391,16 @@ export class Aircraft {
     // ---- speed: settle toward the thrust axis target; gravity along the path; mild bleed when pulling hard ----
     const fwd = this.getForward(_v1);
     const ss = this.speedScale || 1;
-    const vTarget = (t >= 0 ? lerp(F.CRUISE_SPEED, F.AB_SPEED, t) : lerp(F.CRUISE_SPEED, F.BRAKE_SPEED, -t)) * ss;
+    const braking = t < -0.05;
+    // freeStall (the player): the airbrake has no floor: held, it keeps slowing the jet (harder the further it's pulled)
+    // through the stall toward zero; the AI's brake settles at BRAKE_SPEED
+    const vTarget = braking && this.freeStall ? 0 : (t >= 0 ? lerp(F.CRUISE_SPEED, F.AB_SPEED, t) : lerp(F.CRUISE_SPEED, F.BRAKE_SPEED, -t)) * ss;
     const dv = vTarget - this.speed;
     // Energy: the engine compensates less the steeper you climb, and drag holds you back less in a dive, so long
     // vertical climbs bleed speed (even on afterburner) and dives build it. The airbrake always bites.
     const climb = Math.max(0, fwd.y), dive = Math.max(0, -fwd.y);
     const accUp = (t > 0.05 ? F.BOOST_ACCEL : F.CRUISE_ACCEL) * (1 - 0.85 * climb);
-    const braking = t < -0.05;
-    const accDown = braking ? F.BRAKE_DECEL : F.DRAG_DECEL * (1 - 0.9 * dive);
+    const accDown = braking ? F.BRAKE_DECEL * (this.freeStall ? 0.3 + 0.7 * Math.min(1, -t) : 1) : F.DRAG_DECEL * (1 - 0.9 * dive);
     const acc = dv > 0 ? Math.min(dv * 1.2, accUp) : Math.max(dv * (braking ? 1.4 : 1 - 0.8 * dive), -accDown);
     this.speed += acc * dt;
     this.speed -= 9.81 * fwd.y * dt * F.GRAVITY_FACTOR;
@@ -1413,14 +1421,20 @@ export class Aircraft {
     if (this.freeStall && speed < vStall * 1.2) {
       // stalled (freeStall): ballistic. Engine thrust along the nose (weaker the steeper the climb, as above; none on the
       // airbrake, so a stall on the brake falls out of the sky until the throttle comes back or the dive builds speed), drag
-      // (a broadside fall is draggy), full gravity; wing lift pulls the path back onto the nose as the airspeed returns
-      const L = smoothstep(vStall * 0.75, vStall * 1.2, speed);
+      // (a broadside fall is draggy), full gravity; wing lift turns the path toward the nose, at most 1 g x
+      // (airspeed along the nose / stall speed)^2, so below the stall speed it can't hold the jet up and it sinks
       const sp0 = v.length(), ca = sp0 > 1e-3 ? clamp(fwd.dot(v) / sp0, -1, 1) : 1;
       const thr = braking ? 0 : clamp((vTarget - speed) * 1.2, 0, accUp);    // airbrake out: idle, no thrust
       v.multiplyScalar(Math.exp(-(0.02 + 0.25 * (1 - ca * ca)) * dt)).addScaledVector(fwd, thr * dt);
+      // ground speed dies away (STALL_HBLEED): hard on the airbrake or falling belly first, so the jet can come to a
+      // standstill over the ground and drop straight down
+      const hb = Math.exp(-((braking ? STALL_HBLEED.BRAKE : STALL_HBLEED.BASE) + STALL_HBLEED.BROADSIDE * (1 - ca * ca)) * dt);
+      v.x *= hb; v.z *= hb;
       v.y -= 9.81 * dt;
-      _v4.copy(path).multiplyScalar(this.speed);
-      v.lerp(_v4, 1 - Math.exp(-dt * 25 * L * L));
+      const along = v.dot(fwd);
+      _v4.copy(v).addScaledVector(fwd, -along);                             // path off the nose (sink / slip)
+      const off = _v4.length();
+      if (along > 0 && off > 1e-4) v.addScaledVector(_v4, -Math.min(off, 9.81 * (along / vStall) ** 2 * dt) / off);
       this.speed = clamp(finite(v.length(), 0), 0, F.AB_SPEED * 1.15);
     } else v.copy(path).multiplyScalar(this.speed);
     if (!Number.isFinite(v.x + v.y + v.z)) v.copy(fwd).multiplyScalar(this.speed);

@@ -146,7 +146,7 @@ for (let i = 0; i < Math.round(FF / DT); i++) step();
   d0.copy(t.velocity).normalize(); const s0 = t.speed;
   run(0.1, { aoaOff: true });
   check('AOA engages on press', t.aoaOff === true);
-  run(1.0, { aoaOff: true, pitch: 1 });                                     // ~2.4x the pitch rate: well past 90 deg
+  run(0.45, { aoaOff: true, pitch: 1 });                                    // AOA_OFF.PITCH x the pitch rate: well past 90 deg
   t.getForward(f);
   check('AOA: nose swings far off the path', ang(f, d0) > 120, ang(f, d0));
   check('AOA: momentum kept (path within 3 deg)', ang(t.velocity, d0) < 3, ang(t.velocity, d0));
@@ -196,6 +196,31 @@ for (let i = 0; i < Math.round(FF / DT); i++) step();
   console.log(`[aoa] stall: min speed ${minSp.toFixed(1)} m/s, max sink ${maxFall.toFixed(0)} m/s, alt at throttle-up ${y0.toFixed(0)} m, lowest ${minY.toFixed(0)} m, flying again ${recT.toFixed(1)} s, end ${t.speed.toFixed(0)} m/s at ${t.position.y.toFixed(0)} m`);
   check('stall: speed bleeds to ~0', minSp < 8, minSp);
   check('stall: the jet falls (not held at a floor speed)', maxFall > 30, maxFall);
+  {
+    // level, nose high on the airbrake into the stall: the ground speed dies away to a standstill and the jet drops
+    const g = new Aircraft(scene, { team: 'player', position: new THREE.Vector3(0, 4000, 0), heading: 0, freeStall: true });
+    let gs = 1e9;
+    for (let i = 0; i < 12 / DT; i++) {
+      g.getForward(f);
+      g.setControls({ pitch: Math.asin(Math.max(-1, Math.min(1, f.y))) < 0.35 ? 0.5 : 0, throttleDelta: -1 });
+      g.update(DT);
+      if (i * DT > 4) gs = Math.min(gs, Math.hypot(g.velocity.x, g.velocity.z));
+    }
+    console.log(`[aoa] braked stall: ground speed ${gs.toFixed(1)} m/s, sink ${(-g.velocity.y).toFixed(0)} m/s, alt ${g.position.y.toFixed(0)} m`);
+    check('stall on the airbrake: ground speed to ~0', gs < 3, gs);
+    g.dispose && g.dispose();
+    // level on the airbrake, hands off: no floor, the jet slows into the stall, stops over the ground and drops
+    const b = new Aircraft(scene, { team: 'player', position: new THREE.Vector3(0, 3000, 0), heading: 0, freeStall: true });
+    let bgs = 1e9, bStall = -1;
+    for (let i = 0; i < 12 / DT; i++) {
+      b.setControls({ throttleDelta: -1 }); b.update(DT);
+      if (bStall < 0 && b.stalled) bStall = i * DT;
+      bgs = Math.min(bgs, Math.hypot(b.velocity.x, b.velocity.z));
+    }
+    console.log(`[aoa] level airbrake: stalled at ${bStall.toFixed(1)} s, min ground speed ${bgs.toFixed(1)} m/s, sink ${(-b.velocity.y).toFixed(0)} m/s, alt ${b.position.y.toFixed(0)} m`);
+    check('level airbrake held: stalls, stops over the ground, falls', bStall > 0 && bStall < 5 && bgs < 3 && b.position.y < 2900, [bStall, bgs, b.position.y]);
+    b.dispose && b.dispose();
+  }
   check('stall: recoverable on full throttle', recT > 0 && t.speed > FLIGHT.MIN_SPEED * 1.6 && t.position.y > 500, [recT, t.speed, t.position.y]);
   // the AI keeps the arcade stall
   const ai = new Aircraft(scene, { team: 'enemy', position: new THREE.Vector3(0, 3000, 0) });
