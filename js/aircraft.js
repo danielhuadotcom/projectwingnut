@@ -69,7 +69,7 @@ export const PSM = { DRAG: 2.4, FLOOR: 1.35, LIFT: 1.25 };
 // at full stick). On release the path swings onto the nose over RELEASE s (rotated, not lerped), carrying the speed left.
 // After each use the limiter is locked back on for AOA_COOLDOWN s (no chaining flips): it engages only on a fresh press
 // once the cooldown is over, so holding the button through the cooldown does nothing.
-export const AOA_OFF = { PITCH: 6.0, PUSH: 0.85, ROLL: 3.1, YAW_RATE: 240 * RAD_PER_DEG, RESPONSE: 0.1, DRAG0: 0.03, DRAG: 0.17,
+export const AOA_OFF = { PITCH: 3.9, PUSH: 0.85, ROLL: 2.0, YAW_RATE: 156 * RAD_PER_DEG, RESPONSE: 0.1, DRAG0: 0.03, DRAG: 0.17,
   RELEASE: 0.3, TV_PITCH: 0.3, TV_YAW: 0.18 };
 export const AOA_COOLDOWN = 2.5;   // s
 
