@@ -331,6 +331,7 @@ let _baseMat = null;
 const _inv = new THREE.Matrix4();
 const _cam = new THREE.Vector3();
 const _v2 = new THREE.Vector2();
+const _eul = new THREE.Euler(0, 0, 0, 'YXZ');
 
 function layoutKey(nozzles) {
   return nozzles.map((n) => [n.position.x, n.position.y, n.position.z, n.halfWidth, n.halfHeight].map((v) => v.toFixed(4)).join(',')).join('|');
@@ -583,6 +584,16 @@ export class AfterburnerFX {
 
     // nothing visible (cold, idle, burner out): skip the draw entirely
     this.mesh.visible = this.debugHull || thr > 0.03 || this._heat > 0.03 || ab > 0.002;
+  }
+
+  /** Thrust vectoring look: swing the whole exhaust (every nozzle, still one draw) by `pitch` rad about the nozzles' x
+   *  axis and `yaw` rad about y, pivoting on the exit-plane centre. +pitch turns the plume down, +yaw toward +x. */
+  setDeflection(pitch = 0, yaw = 0) {
+    if (!this.mesh) return;
+    const o = this.object3d;
+    if (pitch === 0 && yaw === 0) { o.quaternion.identity(); o.position.set(0, 0, 0); return; }
+    o.quaternion.setFromEuler(_eul.set(pitch, yaw, 0, 'YXZ'));
+    o.position.copy(this._center).applyQuaternion(o.quaternion).negate().add(this._center);   // pivot: c - R c
   }
 
   setQuality(q) {

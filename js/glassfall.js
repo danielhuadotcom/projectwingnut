@@ -329,6 +329,7 @@ export class Glassfall {
     if (!m) return;
     // a fast, agile, long-legged shot (the game's launch hook gave it the enemy profile)
     m.maxSpeed = 1050; m.boostTime = 3; m.life = 11; m.turnScale = 1.8; m.fuse = 16;
+    m.carry = 0; m.blindMinTime = 0; m.termTime = g.weapons.missileTermTime;   // none of the enemy profile's dodgeability
     s.m = m; s.id = m.id; s.v = v; s.d = m.position.distanceTo(v.position);
     v._shot = s; this.shotT = SHOT_GAP; this.stats.shots++;
   }

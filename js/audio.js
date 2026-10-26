@@ -805,6 +805,20 @@ export class AudioFX {
     this._finish(v, n);
   }
 
+  /** AOA limiter off (on = true) / back on: a short airy gust, a low rising one going in, a softer falling one out. */
+  aoaLimiter(on) {
+    if (!this.ready || this._paused) return;
+    const t0 = this.ctx.currentTime, d = on ? 0.55 : 0.4;
+    const v = this._voice(t0 + d);
+    if (!v) return;
+    const n = this._noise(v, 'white', t0, t0 + d, 1);
+    const bp = this._filter(v, 'bandpass', on ? 380 : 700, 1.1);
+    bp.frequency.exponentialRampToValueAtTime(on ? 900 : 320, t0 + d * 0.9);
+    const g = this._gain(v, 0); chain(n, bp, g, this._nodes.sfxBus);
+    env(g.gain, t0, on ? 0.5 : 0.3, on ? 0.12 : 0.05, d - (on ? 0.14 : 0.07));
+    this._finish(v, n);
+  }
+
   /** Player took a hit: metallic thud. */
   hit() {
     if (!this.ready || this._paused) return;

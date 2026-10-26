@@ -17,8 +17,8 @@
 <div id="wrap">
   <h1>PROJECT WINGNUT — js/input.js live test</h1>
   <div class="note">Keys: W/S or Up/Down = pitch (S/Down = nose up) · A/D or Left/Right = roll · Q/E = yaw · Shift,+ = boost / H,- = airbrake (no Ctrl)
-Space = gun · F / Enter = missile · X = flares · Tab = target (hold = padlock) · V = look back · C = free look · Esc / P = pause · I = invert-pitch edge · R = restart · U = fullscreen callback
-Gamepad (standard mapping, Mode 2 layout; Ace Combat / Custom: Settings › Controls): L-stick X yaw, L-stick Y throttle, R-stick roll/pitch, LT missile, RT gun, RB target, LB look back, L3 flares, Start pause, Back invert edge, Y restart</div>
+Space = gun · F / Enter = missile · X = flares · Tab = target (hold = padlock) · V = look back · C = free look · Z = AOA limiter off (hold) · Esc / P = pause · I = invert-pitch edge · R = restart · U = fullscreen callback
+Gamepad (standard mapping, Mode 2 layout; Ace Combat / Custom: Settings › Controls): L-stick X yaw, L-stick Y throttle, R-stick roll/pitch, LT missile, RT gun, RB target, LB look back, L3 flares, R3 AOA limiter off (hold), Start pause, Back invert edge, Y restart</div>
   <pre id="log"></pre>
   <pre id="out">loading…</pre>
 </div>
@@ -118,6 +118,9 @@ function selfTest() {
   key('keydown', 'KeyV'); t.update(DT); check('V: lookBack', t.lookBack === true); key('keyup', 'KeyV'); t.update(DT); check('V up: lookBack off', t.lookBack === false);
   key('keydown', 'KeyX'); t.update(DT); check('X: flaresPressed', t.flaresPressed === true); t.update(DT); check('flaresPressed one frame', t.flaresPressed === false); key('keyup', 'KeyX'); t.update(DT);
   key('keydown', 'KeyC'); t.update(DT); check('C held: freeLook', t.freeLook === true); key('keyup', 'KeyC'); t.update(DT); check('C up: freeLook off', t.freeLook === false);
+  key('keydown', 'KeyZ'); t.update(DT); check('Z held: aoaOff', t.aoaOff === true); t.update(DT); check('Z still held: aoaOff stays', t.aoaOff === true);
+  key('keyup', 'KeyZ'); t.update(DT); check('Z up: aoaOff off', t.aoaOff === false);
+  key('keydown', 'KeyZ'); key('keyup', 'KeyZ'); t.update(DT); check('Z tapped between frames: aoaOff for one frame', t.aoaOff === true); t.update(DT); check('Z tap: then off', t.aoaOff === false);
   key('keydown', 'KeyQ'); steps(10); check('Q: yaw -1', t.yaw === -1); key('keyup', 'KeyQ'); key('keydown', 'KeyE'); steps(20); check('E: yaw +1', t.yaw === 1); key('keyup', 'KeyE'); steps(6);
 
   // held arrows (OS key repeat) keep stepping the menu edges, flagged menuRepeat (menus don't wrap on a repeat)
@@ -322,6 +325,7 @@ function selfTest() {
       pad([0, 0, 0.5, 1]); check('mode2: right stick roll + pull = nose up', near(b.roll, shapeAxis(0.5)) && b.pitch === (b.invertPitch ? -1 : 1));
       pad(Z, { 7: 0.8, 6: 0.6, 5: 1, 4: 1 }); check('mode2: RT gun, LT missile, RB target, LB look back', b.gun && b.missile && b.targetButton && b.lookBack);
       pad(Z); pad(Z, { 10: 1 }); check('mode2: L3 flares', b.flaresPressed === true);
+      pad(Z, { 11: 1 }); check('mode2: R3 held = AOA limiter off', b.aoaOff === true && !b.flaresPressed); pad(Z); check('mode2: R3 released = limiter back on', b.aoaOff === false);
       pad(Z); pad(Z, { 3: 1 }); check('mode2: Y still raises the restart edge (unbound)', b.restartPressed === true);
       pad(Z);
 
@@ -340,6 +344,7 @@ function selfTest() {
       pad([0, 0, 0, 0.9]); check('ace: right stick down = look back', b.lookBack === true && b.pitch === 0);
       pad([0, 0, 0, -0.9]); check('ace: right stick up is not look back', b.lookBack === false);
       pad(Z, { 10: 1 }); check('ace: L3 flares', b.flaresPressed === true);
+      pad(Z, { 11: 1 }); check('ace: R3 held = AOA limiter off', b.aoaOff === true); pad(Z);
       pad(Z, { 9: 1 }); check('ace: Start pauses', b.pausePressed === true);
       pad(Z);
 
@@ -410,12 +415,14 @@ function selfTest() {
     check('wiz: LB for look back conflicts with rudder left', w.phase === 'conflict' && w.conflict.with === 'yawLeft');
     w.resolveConflict(false); rest(); feed(snap({}, { 11: 1 })); rest();
     feed(snap({}, { 10: 1 })); rest();
-    check('wiz: last step done -> test screen', w.phase === 'test' && w.map.lookBack.i === 11 && w.map.flares.i === 10);
+    check('wiz: AOA limiter step last; its default R3 went to look back', w.action.id === 'aoaOff' && w.phase === 'step' && !w.map.aoaOff);
+    feed(snap({}, { 2: 1 })); rest();
+    check('wiz: last step done -> test screen', w.phase === 'test' && w.map.lookBack.i === 11 && w.map.flares.i === 10 && w.map.aoaOff.i === 2);
     const vals = w.values(snap({ 3: -1 }, { 7: 0.7 }));
     check('wiz: test values per action', near(vals.pitchUp, 1, 0.05) && vals.pitchDown === 0 && near(vals.gun, 0.7));
     const saved = sanitizePadMap(w.map);
     check('wiz: result is conflict-free', new Set(PAD_IDS.map((id) => bindingKey(saved[id])).filter(Boolean)).size === PAD_IDS.filter((id) => saved[id]).length);
-    w.back(); check('wiz: back from the test screen -> last step', w.phase === 'step' && w.action.id === 'flares');
+    w.back(); check('wiz: back from the test screen -> last step', w.phase === 'step' && w.action.id === 'aoaOff');
     // Start held 1 s cancels
     const w2 = new PadWizard(PAD_PRESETS.ace);
     check('wiz: starts from the given preset (custom = copy of the active one)', w2.map.gun.i === 0 && w2.map.yawRight.i === 5);

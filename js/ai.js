@@ -15,6 +15,19 @@ const _rel = new THREE.Vector3(), _vr = new THREE.Vector3(), _hf = new THREE.Vec
 const WORLD_UP = new THREE.Vector3(0, 1, 0);
 const controls = { pitch: 0, roll: 0, yaw: 0, throttleDelta: 0 };
 const EVADE_TTI = 2.2;    // s: an evasive transit (EnemyBrain.evasive) breaks hard once a missile is this close to impact
+// Ordinary bandits' missile defense (EnemyBrain without break discipline; PW's ordinary AI never times a break to the
+// impact): DEFEND_NOTICE + DEFEND_NOTICE_SKILL x (1 - skill) s (x 0.5-1.5) after the launch they turn away toward a
+// point 600 m to one side and DEFEND_AHEAD m ahead with steering gain DEFEND_GAIN + DEFEND_GAIN_SKILL x skill (a moderate
+// pull, no jinks) for DEFEND_HOLD + DEFEND_HOLD_SKILL x skill s (x 0.8-1.2), then go back to the pursuit. Their
+// guns-aspect break (a nose on them from ahead inside 1.6 km: _threatFrom) is no missile defense: off while a missile is
+// on them (an evade under way turns into this one), and otherwise begun only after GUN_REACT + GUN_REACT_SKILL x
+// (1 - skill) s (x 0.5-1.5) of the nose on them (the aces wait longer), so the 0.5 s lock before a merge shot doesn't
+// already have them in a max-G break. Squadmates (WingmanBrain) keep the timed break and their flares; aces and bosses
+// their break discipline. Harness (tools/msltest.mjs, player shots, 0.5 s nose-on lock first): a 1-2.5 km merge ~60% hit
+// (1-1.5 km ~65%, 2-2.5 km ~58%); real game (three missions, 240 shots) 55%.
+const DEFEND_NOTICE = 0.1, DEFEND_NOTICE_SKILL = 0.4, DEFEND_AHEAD = 900, DEFEND_GAIN = 0.6, DEFEND_GAIN_SKILL = 0.25;
+const DEFEND_HOLD = 1.4, DEFEND_HOLD_SKILL = 0.6;
+const GUN_REACT = 0.6, GUN_REACT_SKILL = 0.8;
 const LAUNCH_GAP = 1.5;   // s: the AI never launches at one target within this of its previous launch at it
 // Break discipline (EnemyBrain, aces and bosses): energy. PULL_MAX + PULL_MAX_SKILL x skill s of continuous max-G pull,
 // then UNLOAD + UNLOAD_SKILL x skill s unloaded with the pull capped at UNLOAD_PULL (skill 0.95: 1.95 s, then 2.4 s;
@@ -117,6 +130,7 @@ export class EnemyBrain {
     this.breakDiscipline = false;   // (resolved from the aircraft's type name in update)
     this._typeName = null; this._boss = false;
     this._mslId = -1; this._mslPlan = 2; this._mslTti = 0; this._mslNotice = 0;
+    this._defend = false;           // (evade state: an ordinary bandit's missile defense, DEFEND_*)
     this._pull = 0; this._tired = 0; this._gunT = 0; this._gunDelay = -1; this._cobraGo = false;
     this._cobraCd = 0; this._cobraTti = COBRA_TTI; this._recover = 0;   // (rerolled per Cobra)
     this.cobras = 0;                // stats: boss Cobras flown
@@ -352,8 +366,10 @@ export class EnemyBrain {
     if (watch && watch.alive) threatened = this._threatFrom(watch);
     if (this._scanned) this._scanned = false; else this._scanMissiles(weapons, false);   // (a WingmanBrain scans first)
     const missileInbound = this._inbound, minTti = this._minTti;
-    // Rookies break as soon as they see the launch (too early: the missile corrects). Better pilots wait for the moment
-    // they judge right, with skill-scaled errors (break discipline: _planBreak), and tire after a long max-G break.
+    // Ordinary bandits fly a defensive turn once they notice the launch (DEFEND_*), never a break timed to the impact.
+    // Squadmates: rookies break as soon as they see the launch, better pilots at the time to impact they judge right.
+    // Aces and bosses wait for the moment they judge right, with skill-scaled errors (break discipline: _planBreak), and
+    // tire after a long max-G break.
     let breakNow;
     if (ac.name !== this._typeName) {   // pooled airframes change type on respawn
       this._typeName = ac.name; const T = AIRCRAFT_TYPES[ac.name];
@@ -361,7 +377,29 @@ export class EnemyBrain {
       this._boss = !!T && T.bars > 0;   // bosses misjudge less and recover faster than the other aces
       if (this.breakDiscipline) this._cobraTti = COBRA_TTI + COBRA_TTI_VAR * Math.random();
     }
-    if (!this.breakDiscipline) breakNow = missileInbound && (this.skill < 0.55 || minTti < 0.9 + this.skill * 0.6);
+    if (!this.breakDiscipline) {
+      if (this instanceof WingmanBrain) breakNow = missileInbound && (this.skill < 0.55 || minTti < 0.9 + this.skill * 0.6);
+      else {
+        // ordinary bandits (PW): no break timed to the impact. Once they notice the launch (a skill-scaled reaction
+        // delay) they fly a defensive turn of moderate pull (DEFEND_*), held while the missile is in flight
+        breakNow = false;
+        if (missileInbound) {
+          const m = this._threatMsl;
+          if (m.id !== this._mslId) {
+            this._mslId = m.id; this._mslNotice = (DEFEND_NOTICE + DEFEND_NOTICE_SKILL * (1 - this.skill)) * (0.5 + Math.random());
+            this._mslTti = this._mslNotice + (DEFEND_HOLD + DEFEND_HOLD_SKILL * this.skill) * (0.8 + 0.4 * Math.random());   // (missile age the turn ends at)
+          }
+          breakNow = m.age >= this._mslNotice && m.age < this._mslTti;
+        }
+        // the guns-aspect break is no missile defense: off while a missile is on us (DEFEND flies instead), and when a
+        // nose comes on it waits a reaction delay (GUN_REACT_*), as the aces' does
+        if (missileInbound) threatened = false;
+        else if (threatened) {
+          if (this._gunDelay < 0) this._gunDelay = (GUN_REACT + GUN_REACT_SKILL * (1 - this.skill)) * (0.5 + Math.random());
+          this._gunT += dt; threatened = this._gunT >= this._gunDelay;
+        } else { this._gunT = Math.max(0, this._gunT - dt); if (this._gunT === 0) this._gunDelay = -1; }
+      }
+    }
     else {
       breakNow = false;
       if (missileInbound) {
@@ -445,6 +483,7 @@ export class EnemyBrain {
       // State transitions
       if (!this.passive && this.state !== 'evade' && (breakNow || threatened) && (this.breakDiscipline || Math.random() < 0.6 + this.skill * 0.4)) {
         this.state = 'evade'; this.stateTime = 0; this.evadeDir = Math.random() < 0.5 ? -1 : 1; this.jinkTimer = 0;
+        this._defend = breakNow && !threatened && !this.breakDiscipline && !(this instanceof WingmanBrain);
       }
       if (!this.passive && this.state === 'evade' && this.stateTime > 2.5 + this.skill * 2 && !missileInbound) { this.state = dist < 500 ? 'extend' : 'pursue'; this.stateTime = 0; }
       const alt = this._altOn && targetAlive;
@@ -485,6 +524,13 @@ export class EnemyBrain {
         _pt.copy(ac.position).addScaledVector(_tmp, 1400).addScaledVector(_tmp.set(-_tmp.z, 0, _tmp.x), 650 * this.evadeDir);
         _pt.y = (this.transitAlt || ac.position.y) + 140 * this.evadeDir;
         this.steerToward(_pt, 1);
+        this.throttleTarget = 1;
+      } else if (this.state === 'evade' && missileInbound && (this._defend || (!this.breakDiscipline && !(this instanceof WingmanBrain)))) {
+        // Ordinary bandit's missile defense: a steady turn to one side at moderate pull, no jinks, for DEFEND_HOLD s
+        if (!breakNow) { this.state = 'pursue'; this.stateTime = 0; }
+        ac.getRight(_tmp);
+        _pt.copy(ac.position).addScaledVector(_tmp, 600 * this.evadeDir).addScaledVector(_fwd, DEFEND_AHEAD);
+        this.steerToward(_pt, DEFEND_GAIN + DEFEND_GAIN_SKILL * this.skill);
         this.throttleTarget = 1;
       } else if (this.state === 'evade') {
         // Hard break turn perpendicular to the threat, with periodic jinks and a rolling component

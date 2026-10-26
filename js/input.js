@@ -40,13 +40,13 @@ const AXIS = { LX: 0, LY: 1, RX: 2, RY: 3 };
 // Actions ending in +/- are axis directions; 'fullscreen' calls onFullscreenKey inside the keydown handler.
 // Fallback for browsers / layouts where `code` is missing: KeyboardEvent.key -> code.
 const KEY_TO_CODE = {
-  w: 'KeyW', s: 'KeyS', a: 'KeyA', d: 'KeyD', q: 'KeyQ', e: 'KeyE', f: 'KeyF', v: 'KeyV', p: 'KeyP', i: 'KeyI', r: 'KeyR', g: 'KeyG', '`': 'Backquote', x: 'KeyX', c: 'KeyC', u: 'KeyU',
+  w: 'KeyW', s: 'KeyS', a: 'KeyA', d: 'KeyD', q: 'KeyQ', e: 'KeyE', f: 'KeyF', v: 'KeyV', p: 'KeyP', i: 'KeyI', r: 'KeyR', g: 'KeyG', '`': 'Backquote', x: 'KeyX', c: 'KeyC', u: 'KeyU', z: 'KeyZ',
   '=': 'Equal', '+': 'NumpadAdd', '-': 'Minus', ' ': 'Space', Shift: 'ShiftLeft', h: 'KeyH',
   Enter: 'Enter', Tab: 'Tab', Escape: 'Escape', ArrowUp: 'ArrowUp', ArrowDown: 'ArrowDown', ArrowLeft: 'ArrowLeft', ArrowRight: 'ArrowRight',
 };
 const AXES = ['pitch', 'roll', 'yaw', 'throttle'];
 const PAD_AXES = [['pitch', 'pitchUp', 'pitchDown'], ['roll', 'rollRight', 'rollLeft'], ['yaw', 'yawRight', 'yawLeft'], ['throttle', 'throttleUp', 'throttleDown']];
-const BUTTON_ACTIONS = ['gun', 'missile', 'target', 'lookBack', 'pause', 'invertPitch', 'restart', 'graphics', 'overlay', 'flares'];
+const BUTTON_ACTIONS = ['gun', 'missile', 'target', 'lookBack', 'pause', 'invertPitch', 'restart', 'graphics', 'overlay', 'flares', 'aoaOff'];
 
 /** Default gamepad stick expo for pitch, roll and yaw (Settings > Controls sliders override it per axis). The curve on the
  *  deflection m past the deadzone: e <= 1: e*m^3 + (1-e)*m (0 = linear, 1 = pure cubic; unchanged, so saved values
@@ -119,6 +119,7 @@ export class Input {
     // ---- public axes / buttons / edges / status --------------------------------------------------------------
     this.pitch = 0; this.roll = 0; this.yaw = 0; this.throttleDelta = 0;
     this.gun = false; this.missile = false; this.targetButton = false; this.lookBack = false;
+    this.aoaOff = false;                // held: AOA limiter off (R3 / Z)
     this.gunPressed = false; this.missilePressed = false; this.targetPressed = false; this.targetReleased = false;
     this.pausePressed = false; this.restartPressed = false; this.invertPitchToggled = false; this.anyPressed = false;
     this.gunReleased = false; this.missileReleased = false;            // extras (symmetry with target*)
@@ -145,7 +146,7 @@ export class Input {
     // ---- private state ----------------------------------------------------------------------------------------
     this._keys = new Set();             // currently held KeyboardEvent codes (mapped ones only)
     this._kbAxis = { pitch: 0, roll: 0, yaw: 0, throttle: 0 };      // ramped keyboard axis values
-    this._press = { gun: 0, missile: 0, target: 0, lookBack: 0, pause: 0, invertPitch: 0, restart: 0, graphics: 0, overlay: 0, flares: 0 }; // keydowns since last update
+    this._press = { gun: 0, missile: 0, target: 0, lookBack: 0, pause: 0, invertPitch: 0, restart: 0, graphics: 0, overlay: 0, flares: 0, aoaOff: 0 }; // keydowns since last update
     this._anyKeyDowns = 0;
     this._kbActivity = false;           // any keydown since last update (flips usingGamepad off)
     this._padUsed = null; this._syncPadUsed();
@@ -387,12 +388,12 @@ export class Input {
       }
     }
     const kbGun = this._kbHeld('gun'), kbMissile = this._kbHeld('missile'), kbTarget = this._kbHeld('target');
-    const kbLook = this._kbHeld('lookBack'), kbPause = this._kbHeld('pause'), kbInvert = this._kbHeld('invertPitch'), kbRestart = this._kbHeld('restart');
+    const kbLook = this._kbHeld('lookBack'), kbAoa = this._kbHeld('aoaOff'), kbPause = this._kbHeld('pause'), kbInvert = this._kbHeld('invertPitch'), kbRestart = this._kbHeld('restart');
     this.keyboardActive = this._keys.size > 0;
 
     // ---- gamepad -----------------------------------------------------------------------------------------------
     let gpPitch = 0, gpRoll = 0, gpYaw = 0, gpThr = 0, gpGunV = 0, gpMisV = 0;
-    let gpTarget = false, gpLook = false, gpPause = false, gpInvert = false, gpRestart = false, gpDL = false, gpDR = false, gpDU = false, gpL3 = false;
+    let gpTarget = false, gpLook = false, gpAoa = false, gpPause = false, gpInvert = false, gpRestart = false, gpDL = false, gpDR = false, gpDU = false, gpL3 = false;
     let gpDD = false, gpA = false, gpB = false, gpLB = false, gpRB = false;
     const LS = this._lsMenu;
     let gpActive = false;
@@ -431,6 +432,7 @@ export class Input {
       gpTarget = padValue(map.target, R) > 0.5;
       gpLook = padValue(map.lookBack, R) > 0.5;
       gpL3 = padValue(map.flares, R) > 0.5;
+      gpAoa = padValue(map.aoaOff, R) > 0.5;
       gpPause = isPressed(b[BTN.START]);
       const used = this._padUsed;
       gpInvert = !used.has(BTN.BACK) && isPressed(b[BTN.BACK]);
@@ -450,7 +452,7 @@ export class Input {
       gpYaw = clamp1(gpYaw + expoOnly(T.lx || 0)); gpThr = clamp1(gpThr + (T.ly || 0));        // left stick: ↑ boost, ↔ rudder
       gpRoll = clamp1(gpRoll + expoOnly(T.rx || 0)); gpPitch = clamp1(gpPitch + expoOnly(T.ry || 0));  // right stick: pull (↓) = nose up
       if (tb.gun) gpGunV = 1; if (tb.missile) gpMisV = 1;
-      gpTarget = gpTarget || !!tb.target; gpLook = gpLook || !!tb.lookBack; gpPause = gpPause || !!tb.pause; gpL3 = gpL3 || !!tb.flares;
+      gpTarget = gpTarget || !!tb.target; gpLook = gpLook || !!tb.lookBack; gpPause = gpPause || !!tb.pause; gpL3 = gpL3 || !!tb.flares; gpAoa = gpAoa || !!tb.aoaOff;
       gpA = gpA || !!tb.confirm; gpB = gpB || !!tb.back;
     }
     // ---- menu navigation edges ----------------------------------------------------------------------------------
@@ -524,6 +526,7 @@ export class Input {
     const tgtHeld = kbTarget || gpTarget || P.target > 0;
     this.gun = gunHeld; this.missile = misHeld; this.targetButton = tgtHeld;
     this.lookBack = kbLook || gpLook || P.lookBack > 0;
+    this.aoaOff = kbAoa || gpAoa || P.aoaOff > 0;
     this.gunPressed = gunHeld && !prev.gun;        this.gunReleased = !gunHeld && prev.gun;
     this.missilePressed = misHeld && !prev.missile; this.missileReleased = !misHeld && prev.missile;
     this.targetPressed = tgtHeld && !prev.target;  this.targetReleased = !tgtHeld && prev.target;
@@ -549,7 +552,7 @@ export class Input {
     // (invert pitch is changed from the settings menu; the toggle edge is only reported, never applied mid-flight)
 
     // consume per-frame counters
-    P.gun = P.missile = P.target = P.lookBack = P.pause = P.invertPitch = P.restart = P.graphics = P.overlay = P.flares = 0;
+    P.gun = P.missile = P.target = P.lookBack = P.pause = P.invertPitch = P.restart = P.graphics = P.overlay = P.flares = P.aoaOff = 0;
     this._anyKeyDowns = 0;
   }
 
@@ -614,7 +617,7 @@ export class Input {
     this._clearKeys();
     this._dropGamepad();
     this.pitch = this.roll = this.yaw = this.throttleDelta = 0;
-    this.gun = this.missile = this.targetButton = this.lookBack = false;
+    this.gun = this.missile = this.targetButton = this.lookBack = this.aoaOff = false;
     this.gunPressed = this.missilePressed = this.targetPressed = this.targetReleased = false;
     this.pausePressed = this.restartPressed = this.invertPitchToggled = this.anyPressed = false;
     this.graphicsNextPressed = this.graphicsPrevPressed = this.overlayToggled = this.flaresPressed = false;

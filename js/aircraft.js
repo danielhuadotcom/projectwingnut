@@ -60,6 +60,18 @@ export const FLIGHT = {
 // PSM.LIFT x sin(AoA) x v^2 / 250 m/s^2 pushes the path toward the nose (a pop-up away from the old line), full gravity.
 // Starts and ends exactly on the normal attitude (no snap); abortPostStall blends straight onto the path in 0.4 s.
 export const PSM = { DRAG: 2.4, FLOOR: 1.35, LIFT: 1.25 };
+// AOA limiter off (the player's held post-stall mode, Project Wingman style; setControls({ aoaOff }), Aircraft._integrateAoa):
+// the attitude turns freely at PITCH x the pitch rate (PUSH of that pushing), ROLL x the roll rate and YAW_RATE, while the
+// flight path keeps the momentum it had: speed bleeds by DRAG0 + DRAG x (1 - cos AoA) per s (exponential; tail first
+// bleeds twice as fast as broadside), gravity fades in as the speed drops toward the stall. It keeps working through a
+// stall, down to zero speed: the nose stays free (no stall nose drop) while the jet falls. Throttle and airbrake are
+// ignored; the engine runs lit and follows the stick (plume deflection: AfterburnerFX.setDeflection, TV_PITCH / TV_YAW rad
+// at full stick). On release the path swings onto the nose over RELEASE s (rotated, not lerped), carrying the speed left.
+// After each use the limiter is locked back on for AOA_COOLDOWN s (no chaining flips): it engages only on a fresh press
+// once the cooldown is over, so holding the button through the cooldown does nothing.
+export const AOA_OFF = { PITCH: 2.4, PUSH: 0.85, ROLL: 1.25, YAW_RATE: 95 * RAD_PER_DEG, RESPONSE: 0.1, DRAG0: 0.03, DRAG: 0.17,
+  RELEASE: 0.3, TV_PITCH: 0.3, TV_YAW: 0.18 };
+export const AOA_COOLDOWN = 2.5;   // s
 
 // ---------------------------------------------------------------------------------------------
 // Scratch objects (no per-frame allocation in hot paths)
@@ -985,7 +997,7 @@ void main() {
   float front = smoothstep(-1.0, -0.3, vLocal.z);               // leading edge fades in
   vec2 q = vec2(vLocal.x * 2.2, vLocal.z * 1.4 - uTime * 6.0);  // streams backward
   float n = vnoise(q) * 0.65 + vnoise(q * 2.3 + 7.1) * 0.35;
-  float a = uStrength * body * base * front * (0.25 + 0.75 * n) * 0.7;
+  float a = uStrength * body * base * front * (0.25 + 0.75 * n) * 0.32;   // a light veil: it sits right in front of the chase camera
   if (a < 0.003) discard;
   gl_FragColor = vec4(vec3(1.05, 1.08, 1.12), a);
 }`;
@@ -1004,7 +1016,9 @@ function makeVapor() {
 
 export class Aircraft {
   /** airframe: 'f22' (the detailed jet: player, squadmates, default) or a js/airframes.js family id (airframeForType). */
-  constructor(scene, { team = 'enemy', bodyColor, accentColor, position = new THREE.Vector3(), heading = 0, fxQuality = 'high', airframe = 'f22' } = {}) {
+  /** freeStall (the player): a stall lets the speed bleed to zero and the jet falls ballistically (the AI keeps the
+   *  arcade stall: the path stays on the nose at a floor speed). */
+  constructor(scene, { team = 'enemy', bodyColor, accentColor, position = new THREE.Vector3(), heading = 0, fxQuality = 'high', airframe = 'f22', freeStall = false } = {}) {
     this.scene = scene;
     this.team = team;
     const isPlayer = team === 'player';
@@ -1030,6 +1044,7 @@ export class Aircraft {
     this.health = 100; this.alive = true; this.stalled = false;
     this.handling = isPlayer ? { pitch: 1, roll: 1, yaw: 1 } : { pitch: 0.8, roll: 0.85, yaw: 1 };
     this.thrust = 0;                                     // spring-loaded thrust axis (-1 brake .. 0 cruise .. +1 boost)
+    this.freeStall = !!freeStall;                        // velocity is free of the nose below the stall (see constructor)
     this.speedScale = 1;                                 // per-type speed multiplier (helicopters, cruise missiles...)
     this.sizeScale = 1;                                  // life-size scale of the type (cruise missiles 0.45; gameplay sizes)
     this.larger = false;                                 // drawn larger than life (enemies; setSize)
@@ -1037,7 +1052,7 @@ export class Aircraft {
     this.hitRadius = 0;                                  // round hit sphere (m) when larger, else 0 = the shooter's gun radius
     this.maxMissiles = FLIGHT.MAX_MISSILES; this.missiles = FLIGHT.MAX_MISSILES; this.ammo = FLIGHT.AMMO;
     this.time = Math.random() * 7;                       // desyncs exhaust noise between aircraft
-    this.controls = { pitch: 0, roll: 0, yaw: 0, throttleDelta: 0 };
+    this.controls = { pitch: 0, roll: 0, yaw: 0, throttleDelta: 0, aoaOff: false };
     this._rates = { pitch: 0, roll: 0, yaw: 0 };         // smoothed achieved angular rates (rad/s)
     this._surf = { ail: 0, elev: 0, rud: 0 };            // smoothed control inputs (-1..1)
     /** Current control-surface deflections (radians), see setJetSurfaces() for the sign convention. */
@@ -1060,18 +1075,27 @@ export class Aircraft {
     }
     // post-stall maneuver state (startPostStall); fx = 0..1 vapor / contrail envelope while it runs
     this._psm = { active: false, t: 0, dur: 2, pitch: 2, spins: 1, dir: 1, abort: -1, fx: 0, up: new THREE.Vector3(), q0: new THREE.Quaternion() };
+    // AOA limiter off (AOA_OFF): on = held; rel = s since release (>= RELEASE: done), dir = path direction at release;
+    // tvp / tvy = smoothed plume deflection (rad), ab = engine lit by the stick (hysteresis); cd = cooldown s left,
+    // prev = the control's state last step (engage on a press edge only)
+    this._aoa = { on: false, rel: 1e9, dir: new THREE.Vector3(0, 0, -1), tvp: 0, tvy: 0, ab: false, cd: 0, prev: false };
     scene.add(this.mesh);
     this.reset({ position, heading, health: 100 });
   }
 
   // ---- controls ------------------------------------------------------------------------------
-  setControls({ pitch = 0, roll = 0, yaw = 0, throttleDelta = 0 } = {}) {
+  setControls({ pitch = 0, roll = 0, yaw = 0, throttleDelta = 0, aoaOff = false } = {}) {
     const c = this.controls;
     c.pitch = clamp(finite(pitch), -1, 1);
     c.roll = clamp(finite(roll), -1, 1);
     c.yaw = clamp(finite(yaw), -1, 1);
     c.throttleDelta = clamp(finite(throttleDelta), -1, 1);
+    c.aoaOff = !!aoaOff;
   }
+  /** True while the AOA limiter is off (held): the nose turns freely on the momentum (AOA_OFF). */
+  get aoaOff() { return this._aoa.on; }
+  /** AOA limiter cooldown left, 0 (ready) .. 1 (just released): AOA_COOLDOWN after each use. */
+  get aoaCooldown() { return this._aoa.cd > 0 ? this._aoa.cd / AOA_COOLDOWN : 0; }
 
   // ---- frame vectors (world space) ------------------------------------------------------------
   getForward(out) { return out.set(0, 0, -1).applyQuaternion(this.quaternion); }
@@ -1144,6 +1168,8 @@ export class Aircraft {
     if (heading !== undefined) this.quaternion.setFromAxisAngle(Y_AXIS, -finite(heading));
     this.quaternion.normalize();
     this.health = health; this.alive = true; this.stalled = false; this._psm.active = false; this._psm.fx = 0;
+    const A = this._aoa; A.on = false; A.rel = 1e9; A.tvp = A.tvy = 0; A.ab = false; A.cd = 0; A.prev = false; this.controls.aoaOff = false;
+    if (this.engineFX && this.engineFX.setDeflection) this.engineFX.setDeflection(0, 0);
     this.speed = FLIGHT.CRUISE_SPEED; this.throttle = 0.6; this.afterburner = false; this.gLoad = 1; this.thrust = 0;
     this.missiles = this.maxMissiles; this.ammo = FLIGHT.AMMO;
     this._rates.pitch = this._rates.roll = this._rates.yaw = 0;
@@ -1218,6 +1244,43 @@ export class Aircraft {
     if (this.position.y < -5) { this.position.y = -5; if (v.y < 0) v.y = 0; }
   }
 
+  /** AOA limiter off (AOA_OFF): free attitude at high rates on a fixed momentum vector; throttle ignored. */
+  _integrateAoa(dt) {
+    const c = this.controls, F = FLIGHT, AO = AOA_OFF, A = this._aoa, r = this._rates, q = this.quaternion, v = this.velocity;
+    // engine: lit whatever the throttle says, and the stick drives it (the plume swings with it, _animate)
+    const mag = Math.min(1, Math.hypot(c.pitch, c.yaw, c.roll * 0.5));
+    A.ab = A.ab ? mag > 0.3 : mag > 0.5;
+    this.thrust = 0; this.afterburner = A.ab;
+    this.throttle += (0.72 + 0.28 * mag - this.throttle) * (1 - Math.exp(-dt / 0.15));
+    // attitude: full authority at any speed (no stall drop, no wallow)
+    const k = 1 - Math.exp(-dt / AO.RESPONSE);
+    r.pitch += (c.pitch * F.PITCH_RATE * AO.PITCH * (c.pitch < 0 ? AO.PUSH : 1) - r.pitch) * k;
+    r.roll += (c.roll * F.ROLL_RATE * AO.ROLL - r.roll) * k;
+    r.yaw += (c.yaw * AO.YAW_RATE - r.yaw) * k;
+    q.multiply(_q1.setFromAxisAngle(X_AXIS, r.pitch * dt));
+    q.multiply(_q1.setFromAxisAngle(Y_AXIS, -r.yaw * dt));
+    q.multiply(_q1.setFromAxisAngle(Z_AXIS, -r.roll * dt));
+    q.normalize();
+    if (!Number.isFinite(q.x + q.y + q.z + q.w)) q.set(0, 0, 0, 1);
+    // momentum: the path holds; drag grows with the angle off the nose; gravity fades in toward the stall
+    let sp = v.length();
+    const n = this.getForward(_v2), ca = sp > 1e-3 ? clamp(n.dot(v) / sp, -1, 1) : 1;
+    sp *= Math.exp(-(AO.DRAG0 + AO.DRAG * (1 - ca)) * dt);
+    if (v.lengthSq() > 1e-8) v.setLength(sp); else v.set(0, 0, 0);
+    const vStall = F.MIN_SPEED * Math.min(1, (this.speedScale || 1) * 1.2);
+    v.y -= 9.81 * (1 - smoothstep(vStall * 1.2, vStall * 2.5, sp)) * dt;
+    this.speed = clamp(finite(v.length(), 0), 0, F.AB_SPEED * 1.15);
+    this.stalled = sp < vStall * 1.1;                                       // (stall warning still shows; no nose drop here)
+    this.gLoad = this.getUp(_v3).y;                                          // no wing lift: just gravity on the frame
+    // vapor blanket while the nose is well off the path at speed
+    this._psm.fx = smoothstep(0.12, 0.6, 1 - ca) * smoothstep(50, 130, this.speed);
+    this.position.addScaledVector(v, dt);
+    if (this.position.y < -5) { this.position.y = -5; if (v.y < 0) v.y = 0; }
+    const p = this.position;
+    if (!Number.isFinite(p.x + p.y + p.z)) p.set(0, 800, 0);
+    if (!Number.isFinite(v.x + v.y + v.z)) this.getForward(v).multiplyScalar(F.CRUISE_SPEED);
+  }
+
   // ---- per frame ------------------------------------------------------------------------------
   update(dt) {
     dt = finite(dt, 0);
@@ -1235,10 +1298,31 @@ export class Aircraft {
     this.thrust = t;
     this.afterburner = t > F.AB_THRESHOLD;
     const throttleTarget = t >= 0 ? 0.6 + 0.4 * t : 0.6 + 0.5 * t;          // engine setting for HUD/audio/FX
+    if (this._psm.active) { this.throttle += (throttleTarget - this.throttle) * (1 - Math.exp(-dt / 0.25)); this._integratePsm(dt); return; }
+    // AOA limiter: held = free attitude on the momentum; release = the path swings onto the nose (A.rel, below) and
+    // the cooldown starts; it engages again only on a fresh press after the cooldown
+    const A = this._aoa, AO = AOA_OFF, press = c.aoaOff && !A.prev;
+    A.prev = c.aoaOff;
+    if (A.cd > 0 && !A.on) A.cd = Math.max(0, A.cd - dt);
+    if (!A.on && press && A.cd <= 0) { A.on = true; this._psm.fx = 0; }
+    else if (A.on && !c.aoaOff) {
+      A.on = false; A.cd = AOA_COOLDOWN;
+      this.speed = this.velocity.length(); A.rel = 0; A.ab = false; this._psm.fx = 0;
+      if (this.speed > 1e-3) A.dir.copy(this.velocity).multiplyScalar(1 / this.speed); else this.getForward(A.dir);
+    }
+    if (A.on) { this._integrateAoa(dt); return; }
     this.throttle += (throttleTarget - this.throttle) * (1 - Math.exp(-dt / 0.25));
-    if (this._psm.active) { this._integratePsm(dt); return; }
+    const rel = A.rel < AO.RELEASE;
+    if (rel) A.rel += dt;
 
-    const speed = this.speed;
+    // freeStall: the velocity is the state (it can leave the nose in a stall); authority, the stall and the nose drop
+    // go by the airspeed along the nose (the full speed while the path swings onto the nose after the AOA limiter)
+    const v = this.velocity;
+    let speed = this.speed;
+    if (this.freeStall) {
+      this.speed = v.length();
+      speed = rel ? this.speed : Math.max(0, v.dot(this.getForward(_v1)));
+    }
     const right = this.getRight(_v3);
     // ---- authority: weak only near stall; pitch eases off slightly at the very top of the speed range ----
     const vStall = F.MIN_SPEED * Math.min(1, (this.speedScale || 1) * 1.2);
@@ -1269,7 +1353,27 @@ export class Aircraft {
 
     // ---- stall: below stall speed the nose falls toward the ground until speed recovers ----
     const slow = 1 - smoothstep(vStall * 0.8, vStall * 1.15, speed);
-    if (slow > 0.001) {
+    if (slow > 0.001 && this.freeStall) {
+      // freeStall: the nose weathervanes into the airflow (the path) while there is some, and only with next to no
+      // airspeed does it fall toward the ground (a vertical zoom slows to ~0, then tail-slides and falls through
+      // nose first; above the horizon it never hangs on the engine)
+      _q2.copy(q).invert();
+      const sp = v.length();
+      if (sp > 1e-3) {
+        _v4.copy(v).multiplyScalar(1 / sp).applyQuaternion(_q2);     // path in the local frame
+        const ax = _v4.y, ay = -_v4.x, len = Math.hypot(ax, ay);     // cross((0,0,-1), path)
+        if (len > 1e-4) q.multiply(_q1.setFromAxisAngle(_v4.set(ax / len, ay / len, 0), slow * 2.5 * Math.min(1, sp / vStall) * len * dt));
+      }
+      const still = slow * (1 - smoothstep(0, vStall * 0.35, sp));
+      if (still > 0.001) {
+        _v4.set(0, -1, 0).applyQuaternion(_q2);                      // world down in the local frame
+        const ax = _v4.y, ay = -_v4.x, len = Math.hypot(ax, ay);
+        if (_v4.z > 0) {                                             // nose above the horizon: falls through even from vertical
+          if (len > 1e-4) _v4.set(ax / len, ay / len, 0); else _v4.set(-1, 0, 0);
+          q.multiply(_q1.setFromAxisAngle(_v4, still * 1.2 * Math.max(len, 0.5) * dt));
+        } else if (len > 1e-4) q.multiply(_q1.setFromAxisAngle(_v4.set(ax / len, ay / len, 0), still * 1.2 * len * dt));
+      }
+    } else if (slow > 0.001) {
       _v4.set(0, -1, 0).applyQuaternion(_q2.copy(q).invert());      // world down in the local frame
       const ax = _v4.y, ay = -_v4.x;                                  // cross((0,0,-1), down)
       const len = Math.hypot(ax, ay);
@@ -1294,14 +1398,32 @@ export class Aircraft {
     this.speed -= 9.81 * fwd.y * dt * F.GRAVITY_FACTOR;
     const pull = Math.abs(r.pitch) / Math.max(F.PITCH_RATE, 1e-3);
     this.speed -= pull * pull * F.TURN_BLEED * dt;
-    this.speed = clamp(finite(this.speed, F.CRUISE_SPEED), 20, F.AB_SPEED * 1.15);
+    this.speed = clamp(finite(this.speed, F.CRUISE_SPEED), this.freeStall ? 0 : 20, F.AB_SPEED * 1.15);
     // cosmetic g for the HUD and contrails (arcade: ~9 g at a full pull at cruise speed)
     const up = this.getUp(_v2);
     this.gLoad = up.y + (r.pitch / F.PITCH_RATE) * 7 * clamp(this.speed / 230, 0.25, 1.3);
     if (!Number.isFinite(this.gLoad)) this.gLoad = 1;
 
-    // ---- velocity follows the nose (arcade) ----
-    this.velocity.copy(fwd).multiplyScalar(this.speed);
+    // ---- velocity follows the nose (arcade); after the AOA limiter it swings from the old path onto the nose ----
+    let path = fwd;
+    if (rel) {
+      _q2.setFromUnitVectors(A.dir, fwd);
+      path = _v2.copy(A.dir).applyQuaternion(_q1.identity().slerp(_q2, smoothstep(0, AO.RELEASE, A.rel)));
+    }
+    if (this.freeStall && speed < vStall * 1.2) {
+      // stalled (freeStall): ballistic. Engine thrust along the nose (weaker the steeper the climb, as above; none on the
+      // airbrake, so a stall on the brake falls out of the sky until the throttle comes back or the dive builds speed), drag
+      // (a broadside fall is draggy), full gravity; wing lift pulls the path back onto the nose as the airspeed returns
+      const L = smoothstep(vStall * 0.75, vStall * 1.2, speed);
+      const sp0 = v.length(), ca = sp0 > 1e-3 ? clamp(fwd.dot(v) / sp0, -1, 1) : 1;
+      const thr = braking ? 0 : clamp((vTarget - speed) * 1.2, 0, accUp);    // airbrake out: idle, no thrust
+      v.multiplyScalar(Math.exp(-(0.02 + 0.25 * (1 - ca * ca)) * dt)).addScaledVector(fwd, thr * dt);
+      v.y -= 9.81 * dt;
+      _v4.copy(path).multiplyScalar(this.speed);
+      v.lerp(_v4, 1 - Math.exp(-dt * 25 * L * L));
+      this.speed = clamp(finite(v.length(), 0), 0, F.AB_SPEED * 1.15);
+    } else v.copy(path).multiplyScalar(this.speed);
+    if (!Number.isFinite(v.x + v.y + v.z)) v.copy(fwd).multiplyScalar(this.speed);
     this.position.addScaledVector(this.velocity, dt);
     if (this.position.y < -5) { this.position.y = -5; if (this.velocity.y < 0) this.velocity.y = 0; }
     const p = this.position;
@@ -1325,7 +1447,15 @@ export class Aircraft {
     this._brk = (this._brk || 0) + (brk - (this._brk || 0)) * (dt > 0 ? 1 - Math.exp(-dt / 0.15) : 1);
     if (this._brk > 0.01) { a.aileronL -= this._brk * 0.5; a.aileronR -= this._brk * 0.5; a.flaperonL += this._brk * 0.45; a.flaperonR += this._brk * 0.45; }
     setJetSurfaces(this.mesh, a);
-    // exhaust (AfterburnerFX)
+    // exhaust (AfterburnerFX); AOA limiter off: the plume swings with the stick (thrust vectoring look), eased back after
+    const A = this._aoa;
+    if ((A.on || A.tvp !== 0 || A.tvy !== 0) && this.engineFX && this.engineFX.setDeflection) {
+      const on = A.on && this.alive, kt = dt > 0 ? 1 - Math.exp(-dt / 0.08) : 1;
+      A.tvp += ((on ? -c.pitch * AOA_OFF.TV_PITCH : 0) - A.tvp) * kt;      // nose up: exhaust up (tail pushed down)
+      A.tvy += ((on ? c.yaw * AOA_OFF.TV_YAW : 0) - A.tvy) * kt;           // nose right: exhaust right
+      if (!on && Math.abs(A.tvp) + Math.abs(A.tvy) < 1e-3) A.tvp = A.tvy = 0;
+      this.engineFX.setDeflection(A.tvp, A.tvy);
+    }
     const fp = this._fxParams;
     fp.throttle = this.alive ? this.throttle : 0; fp.afterburner = this.alive && this.afterburner && !this._fxMil;
     fp.speed = this.speed; fp.time = this.time;
@@ -1340,7 +1470,7 @@ export class Aircraft {
       strength = Math.max(strength, this._psm.fx);   // post-stall maneuver: full wingtip vortices whatever the speed
     }
     // wing vapor fades in with hard pulls at speed (and blankets the wings through a post-stall maneuver)
-    const vT = this.alive && !this.fxLite && this.vapor ? Math.max(smoothstep(4.6, 7.6, this.gLoad) * smoothstep(110, 190, this.speed), this._psm.fx) : 0;
+    const vT = this.alive && !this.fxLite && this.vapor ? Math.max(smoothstep(6, 8.5, this.gLoad) * smoothstep(130, 210, this.speed), this._psm.fx * 0.6) : 0;
     if (dt > 0) this._vaporS += (vT - this._vaporS) * (1 - Math.exp(-dt / (vT > this._vaporS ? 0.12 : 0.35)));
     const vOn = this._vaporS > 0.01;
     if (this.vapor) this.vapor.visible = vOn;

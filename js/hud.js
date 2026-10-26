@@ -42,7 +42,7 @@ const BANK_TICKS = [-60, -45, -30, -20, -10, 0, 10, 20, 30, 45, 60];
 const ALLY_MAX = 8;                        // squadmate markers drawn per frame
 const ALLY_NEAR = 1500, ALLY_FAR = 8000;   // m: squadmate markers shrink and fade between these distances
 const ARC_A = 0.95, ARC_C = Math.cos(ARC_A), ARC_S = Math.sin(ARC_A);   // half-angle of the "( )" bracket arcs
-const TOUCH_KEYS = ['lt', 'lb', 'rb', 'rt', 'flr', 'pause'];           // touch buttons (frame.touchRects) labels avoid
+const TOUCH_KEYS = ['lt', 'lb', 'rb', 'rt', 'flr', 'aoa', 'pause'];           // touch buttons (frame.touchRects) labels avoid
 // Hostile markers frame the drawn model: half-size = max(the fixed size, r * MK_GROW + MK_PAD * s) for a projected model
 // radius of r px (frame contact / target .r), capped at MK_MAX * min(w, h)
 const MK_GROW = 1.1, MK_PAD = 3, MK_MAX = 0.4;
@@ -244,6 +244,8 @@ export class HUD {
     ctx.font = L.fPill;
     L.pillW1 = Math.round(ctx.measureText('PADLOCK').width + 22 * s);
     L.pillW2 = Math.round(ctx.measureText('REAR VIEW').width + 22 * s);
+    L.pillW3 = Math.round(ctx.measureText('AOA LIMIT OFF').width + 22 * s);
+    L.pillW4 = Math.round(ctx.measureText('AOA').width + 22 * s);
     ctx.font = L.fSmall;
     L.chSmall = ctx.measureText('0000000000').width / 10;   // monospace advance: squadmate and target labels are laid out by length
     try {
@@ -1199,14 +1201,27 @@ export class HUD {
   }
 
   _drawPills(f) {
-    const p1 = !!f.padlock, p2 = !!f.lookBack;
-    if (!p1 && !p2) return;
+    const p1 = !!f.padlock, p2 = !!f.lookBack, p3 = !!f.aoaOff, cd = !p3 && f.aoaCooldown > 0 ? Math.min(1, f.aoaCooldown) : 0;
+    if (!p1 && !p2 && !p3 && !cd) return;
     const L = this.L, s = L.s, gap = 8 * s, hgt = L.pillH, y = L.pillY + (this._bossOff || 0);
-    const total = (p1 ? L.pillW1 : 0) + (p2 ? L.pillW2 : 0) + (p1 && p2 ? gap : 0);
+    const w3 = p3 ? L.pillW3 : cd ? L.pillW4 : 0;
+    const n = (p1 ? 1 : 0) + (p2 ? 1 : 0) + (w3 ? 1 : 0);
+    const total = (p1 ? L.pillW1 : 0) + (p2 ? L.pillW2 : 0) + w3 + (n - 1) * gap;
     let x = Math.round(L.cx - total / 2);
     this.ctx.font = L.fPill;
     if (p1) { this._pill(x, y, L.pillW1, hgt, 'PADLOCK', COL.green); x += L.pillW1 + gap; }
-    if (p2) this._pill(x, y, L.pillW2, hgt, 'REAR VIEW', COL.amber);
+    if (p2) { this._pill(x, y, L.pillW2, hgt, 'REAR VIEW', COL.amber); x += L.pillW2 + gap; }
+    if (p3) this._pill(x, y, L.pillW3, hgt, 'AOA LIMIT OFF', COL.orange);   // AOA limiter off (held)
+    else if (cd) {
+      // AOA limiter cooling down: a dim AOA tag that fills left to right as it recharges
+      const ctx = this.ctx, w = L.pillW4;
+      ctx.save(); ctx.beginPath(); this._rrectPath(x, y, w, hgt, hgt / 2); ctx.clip();
+      ctx.fillStyle = COL.panel; ctx.fillRect(x, y, w, hgt);
+      ctx.globalAlpha = this.alpha * 0.35; ctx.fillStyle = COL.orange; ctx.fillRect(x, y, w * (1 - cd), hgt);
+      ctx.restore();
+      ctx.beginPath(); this._rrectPath(x, y, w, hgt, hgt / 2); this._stroke(COL.greenSoft, L.lwThin);
+      this._text('AOA', x + w / 2, y + hgt / 2 + 0.5, COL.greenSoft, 'center', 'middle');
+    }
   }
   _pill(x, y, w, h, text, color) {
     const ctx = this.ctx;

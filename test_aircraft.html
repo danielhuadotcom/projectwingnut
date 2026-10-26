@@ -17,7 +17,7 @@
 //   sun=game      the game's 22 deg sun (default 35 deg for clearer shape reading)
 //   perf=1        GPU timing (EXT_disjoint_timer_query_webgl2): whole frame with jets shown vs hidden
 import * as THREE from 'https://cdnjs.cloudflare.com/ajax/libs/three.js/0.170.0/three.module.min.js';
-import { Aircraft, FLIGHT, AIRCRAFT_RADIUS, getJetStats } from './js/aircraft.js';
+import { Aircraft, FLIGHT, AIRCRAFT_RADIUS, getJetStats, AOA_COOLDOWN } from './js/aircraft.js';
 import { PostFX } from './js/post.js';
 
 const params = new URLSearchParams(location.search);
@@ -133,6 +133,77 @@ function step() {
   }
 }
 for (let i = 0; i < Math.round(FF / DT); i++) step();
+
+// ---- AOA limiter + free stall (player flight model) self-test: logs AOA_OK or AOA_FAIL lines ----------------------------
+{
+  const fails = [];
+  const check = (name, ok, info) => { if (!ok) { fails.push(name); console.error('AOA_FAIL ' + name + (info !== undefined ? ' :: ' + JSON.stringify(info) : '')); } };
+  const t = new Aircraft(scene, { team: 'player', position: new THREE.Vector3(0, 3000, 0), heading: 0, freeStall: true });
+  const f = new THREE.Vector3(), d0 = new THREE.Vector3();
+  const run = (secs, ctl) => { for (let i = 0; i < Math.round(secs / DT); i++) { t.setControls(ctl); t.update(DT); } };
+  const ang = (a, b) => Math.acos(Math.max(-1, Math.min(1, a.dot(b) / (a.length() * b.length())))) * 180 / Math.PI;
+  run(1, {});
+  d0.copy(t.velocity).normalize(); const s0 = t.speed;
+  run(0.1, { aoaOff: true });
+  check('AOA engages on press', t.aoaOff === true);
+  run(1.0, { aoaOff: true, pitch: 1 });                                     // ~2.4x the pitch rate: well past 90 deg
+  t.getForward(f);
+  check('AOA: nose swings far off the path', ang(f, d0) > 120, ang(f, d0));
+  check('AOA: momentum kept (path within 3 deg)', ang(t.velocity, d0) < 3, ang(t.velocity, d0));
+  check('AOA: speed bleeds, slowly', t.speed < s0 - 5 && t.speed > s0 * 0.6, [s0, t.speed]);
+  run(0.5, { aoaOff: true, throttleDelta: 1 });
+  check('AOA: throttle ignored', t.thrust === 0);
+  const sRel = t.speed;
+  run(0.5, {});                                                            // release: path swings onto the nose
+  t.getForward(f);
+  check('AOA released: flying along the new nose', t.aoaOff === false && ang(t.velocity, f) < 2, ang(t.velocity, f));
+  check('AOA released: keeps its momentum (no snap back to the old speed)', Math.abs(t.speed - sRel) < 25, [sRel, t.speed]);
+  check('AOA cooldown running', t.aoaCooldown > 0 && t.aoaCooldown < 1, t.aoaCooldown);
+  run(0.5, { aoaOff: true });
+  check('AOA: a press during the cooldown does nothing', t.aoaOff === false);
+  run(AOA_COOLDOWN, { aoaOff: true });
+  check('AOA: held through the cooldown does not re-trigger', t.aoaOff === false && t.aoaCooldown === 0);
+  run(0.1, {}); run(0.1, { aoaOff: true });
+  check('AOA: a fresh press after the cooldown engages', t.aoaOff === true);
+  // held into a stall: no cancel, the nose stays free, gravity takes over
+  let minA = 1e9;
+  for (let i = 0; i < 10 / DT; i++) { t.setControls({ aoaOff: true, yaw: 1, pitch: 0.3 }); t.update(DT); minA = Math.min(minA, t.speed); }
+  t.getForward(f);
+  check('AOA held through a stall: still engaged, falling', t.aoaOff === true && t.velocity.y < -15 && t.stalled === (t.speed < FLIGHT.MIN_SPEED * 1.1), [t.velocity.y, t.speed]);
+  const q0 = t.quaternion.clone();
+  run(0.3, { aoaOff: true, pitch: 1 });
+  check('AOA held in the stall: the nose still turns on the stick', q0.angleTo(t.quaternion) > 0.5, q0.angleTo(t.quaternion));
+  run(0.1, {});
+  // free stall: zoom climb on the airbrake, speed to ~0, falls, then recovers by diving
+  t.reset({ position: new THREE.Vector3(0, 3000, 0), heading: 0 });
+  let minSp = 1e9, maxFall = 0, y0 = 0, recT = -1, minY = 1e9, vert = false;
+  const rt = new THREE.Vector3();
+  for (let i = 0; i < 40 / DT; i++) {
+    t.getForward(f);
+    const pitchUp = Math.asin(Math.max(-1, Math.min(1, f.y)));
+    const climbing = i * DT < 16;
+    // pull to vertical, then hands off on the airbrake (zoom, tail slide, fall); then full throttle, wings level, and
+    // pull out of the dive once there is flying speed
+    vert = vert || pitchUp > 1.4;
+    t.setControls(climbing ? { pitch: vert ? 0 : 0.6, throttleDelta: -1 }
+      : { pitch: t.speed > FLIGHT.MIN_SPEED * 1.6 && f.y < 0.05 ? 0.8 : 0, roll: Math.max(-1, Math.min(1, t.getRight(rt).y * 3)), throttleDelta: 1 });
+    t.update(DT);
+    minSp = Math.min(minSp, t.speed);
+    if (!climbing && !y0) y0 = t.position.y;
+    maxFall = Math.max(maxFall, -t.velocity.y); minY = Math.min(minY, t.position.y);
+    if (!climbing && recT < 0 && t.speed > FLIGHT.MIN_SPEED * 1.6 && t.velocity.y > -0.2 * t.speed) recT = i * DT;
+  }
+  console.log(`[aoa] stall: min speed ${minSp.toFixed(1)} m/s, max sink ${maxFall.toFixed(0)} m/s, alt at throttle-up ${y0.toFixed(0)} m, lowest ${minY.toFixed(0)} m, flying again ${recT.toFixed(1)} s, end ${t.speed.toFixed(0)} m/s at ${t.position.y.toFixed(0)} m`);
+  check('stall: speed bleeds to ~0', minSp < 8, minSp);
+  check('stall: the jet falls (not held at a floor speed)', maxFall > 30, maxFall);
+  check('stall: recoverable on full throttle', recT > 0 && t.speed > FLIGHT.MIN_SPEED * 1.6 && t.position.y > 500, [recT, t.speed, t.position.y]);
+  // the AI keeps the arcade stall
+  const ai = new Aircraft(scene, { team: 'enemy', position: new THREE.Vector3(0, 3000, 0) });
+  for (let i = 0; i < 15 / DT; i++) { ai.setControls({ pitch: 0.6, throttleDelta: -1 }); ai.update(DT); }
+  check('AI stall unchanged (speed floored at 20)', ai.speed >= 20);
+  t.dispose(); ai.dispose();
+  console.log(fails.length ? `AOA_FAIL ${fails.length} failed` : 'AOA_OK');
+}
 
 const CAM_ASPECT = params.get('cam') === 'grid' ? (W / 3) / (H / 2) : W / H;
 const fwd = new THREE.Vector3(), up = new THREE.Vector3(), right = new THREE.Vector3(), look = new THREE.Vector3(), WUP = new THREE.Vector3(0, 1, 0);

@@ -30,8 +30,10 @@ import * as THREE from 'https://cdnjs.cloudflare.com/ajax/libs/three.js/0.170.0/
 // target). Aircraft with `holdFire === true` never fire (fireGun / fireMissile refuse: the game's attack slots). An
 // optional damageFilter(target, damage, shooter, kind, missile) lets the game adjust damage before it is applied.
 //
-// Missiles carry per-shot kinematics, fuse and seeker blind range (maxSpeed, boostTime, drag, life, fuse, blind, blindTime;
-// like turnScale), reset to the missile* settings on every launch: the onMissileLaunch callback may give a shot its own profile (the game's player-team missiles).
+// Missiles carry per-shot kinematics, fuse, seeker blind range and guidance (maxSpeed, carry, boostTime, drag, life, fuse,
+// blind, blindTime, blindMinTime, blindJitter, gMax, headTermTime, headGMax, pursuit, leadFrac, termTime, termNav; like
+// turnScale), reset to the missile* settings (ground launches: sam*) on every launch: the onMissileLaunch callback may
+// give a shot its own profile (the game's player-team missiles). Launch aspect and the seeker roll are applied after it.
 // At low frame rates (dt > 1/50 s) missiles fly in up to 3 substeps of <= 1/60 s (guidance, motion and the swept fuse per
 // substep, targets placed back along their velocity to where they were at each substep's end), so steering and hit rates
 // match 60 fps.
@@ -817,6 +819,12 @@ export class Missile {
     this.fuse = 14;                              // m proximity fuse radius
     this.blind = 90;                             // m, seeker blind range (per shot, like fuse)...
     this.blindTime = 0;                          //   or, when > 0, at most this many s of closure (min of the two)
+    this.blindMinTime = 0;                       //   else, when > 0, at least this many s of closure (max of the two)
+    this.gMax = 0;                               // m/s^2 cap on the lateral acceleration (0 = none; on top of the rad/s cap)
+    this.carry = 0;                              // share of the launch speed added to maxSpeed (at ignition)
+    this.blindJitter = 0;                        // seeker roll range: blindMinTime x (1 + roll), headTermTime x (1 - roll)
+    this.headTermTime = 0; this.headGMax = 0;    // > 0: termTime / gMax for a non-tail launch (fireMissile)
+    this.pursuit = 3.2; this.leadFrac = 0.2; this.termTime = 1; this.termNav = 4;   // guidance (Weapons missile* defaults)
     this.dud = false;                            // scripted miss: homes on a point missBy m beside its target, never fuses
     this.missBy = 0;
     this.missSide = 1;                           // which side of the target the dud passes (+1 / -1)
@@ -922,33 +930,65 @@ export class Weapons {
     this.missileCooldown = 0.6;              // s, per aircraft
     this.missileDropTime = 0.15;             // s free fall off the rail before motor ignition
     this.missileBoostTime = 2.2;             // s
-    this.missileMaxSpeed = 620;              // m/s at burnout
+    this.missileMaxSpeed = 480;              // m/s at burnout, plus missileCarry x the launch speed:
+    this.missileCarry = 0.6;                 //   a faster launch flies a faster missile the whole way (PW / Ace Combat)
     this.missileMinSpeed = 140;              // m/s floor while coasting
     this.missileDrag = 1.1e-4;               // coast drag: dv/dt = -k v^2
     // Air-launched guidance is pursuit-dominant (Ace Combat / Project Wingman feel): midcourse the nose chases a point
     // only a fraction of the way along the target's flight path (lagged lead pursuit), so missiles arc in behind the
-    // target and a hard turn across their path makes them overshoot; over the last missileTermTime s before the blind
-    // range the lead ramps to full and PN fades in, so good shots (tail chases, gentle turns, head-on) still connect.
+    // target and a hard turn across their path makes them overshoot; over the last termTime s before the blind range the
+    // lead ramps to full and PN fades in. How long that terminal phase is decides most head-on outcomes, so a shot's
+    // launch aspect picks it (fireMissile): a tail shot (target flying away) gets missileTermTime, every other shot the
+    // shorter missileHeadTermTime (x 1 -+ the seeker roll, below), which leaves head-on and crossing shots at a target
+    // that so much as turns gently to miss often (PW: a merge shot is a coin flip, a stable tail shot a near-sure kill).
     // Ground launches (SAM sites, ships) fly the same law: under true PN they were near-perfect interceptors that a late
     // break could not beat (2% defeated vs ~50% for an air launch, in the same late-break window).
-    //   a = N Vc (Omega x lambda) + kp v (pursuit dir - nose dir)     (tuned with the headless missile harness)
+    //   a = N Vc (Omega x lambda) + kp v (pursuit dir - nose dir)     (tuned with tools/msltest.mjs)
     this.missileNavGain = 0;                 // PN constant N for air launches midcourse (0: pure lead pursuit)
     this.missilePursuitGain = 3.2;           // 1/s, pursuit gain: nose turn rate per radian of aim error
     this.missileLeadFrac = 0.2;              // midcourse: fraction of the full time-to-go lead the pursuit point uses
     this.missileTermTime = 1.0;              // s to the blind range: over this the lead ramps up to full (terminal homing)
     this.missileTermNavGain = 4;             //   and N ramps up to this (set course by the blind range; the turn cap rules it)
+    this.missileHeadTermTime = 0.45;         // s: the same for a non-tail launch
     this.missileTurnRateBoost = 7;           // rad/s max while the motor burns
     this.missileTurnRateCoast = 2.5;         // rad/s asymptotic max while coasting
+    // lateral-acceleration cap (m/s^2 at missileGRef m/s, x (speed / missileGRef)^2 like lift; 0 = none), for non-tail
+    // launches only (missileHeadGMax; a shot's own gMax applies to every aspect): low and slow off the rail the missile
+    // flies a wide curve, and a faster launch turns tighter. The player's shots use it (PLAYER_MISSILE.headGMax);
+    // enemy air launches and ground launches don't (the harness: it only made them miss targets flying straight on)
+    this.missileGMax = 0;
+    this.missileHeadGMax = 0;
+    this.missileGRef = 600;                  // m/s
     this.missileSeekerCos = 0;               // cos(max off-boresight angle) = cos(90°)
     this.missileLife = 6;                    // s
     this.missileFuse = 14;                   // m proximity fuse
     this.missileLag = 0.18;                  // s, airframe response lag on the guidance command (late breaks overshoot)
-    this.missileBlindRange = 90;             // m, the seeker stops steering this close (last-instant jinks cause misses)
-    // ground launches (SAM sites, ships) closing head-on at ~1000 m/s: a tighter fuse and a longer blind range than the
-    // air launches' so a late break beats them about as often (~55-60% vs ~45-50% in the same window; break + flares
-    // always); a target flying on is still hit every time
-    this.samFuse = 9;                        // m
-    this.samBlindRange = 120;                // m
+    // Seeker blind range: the seeker stops steering this close (last-instant jinks cause misses). A fixed distance is a
+    // fixed time only at one closing speed (90 m: ~0.07 s head-on at ~1300 m/s, 0.3 s in a slow tail chase), so it also
+    // has a floor in time: missileBlindMinTime s of closure, ramped in from blindCloseLo to blindCloseHi m/s of closing
+    // speed (a slow tail chase on a jet in a sustained turn keeps steering to the end: an early break that turns into a
+    // stern chase still gets caught, a well-timed one against a fast head-on closure leaves the missile coasting blind
+    // into where the jet was). Each shot rolls a seeker quality in [-blindJitter, +blindJitter] at launch: the blind
+    // time x (1 + roll) and the head-on terminal phase x (1 - roll), so hit rates fall off smoothly with the break timing
+    // instead of a cliff at one time to impact
+    this.missileBlindRange = 90;             // m
+    this.missileBlindMinTime = 0.2;          // s (0 = metres only)
+    this.missileBlindJitter = 0.5;           // seeker roll range
+    this.blindCloseLo = 300; this.blindCloseHi = 650;   // m/s
+    // Ground launches (SAM sites, ships: m.groundLaunch) have their own: no launch-speed carry, a time-based blind range
+    // (0.24-0.56 s at fast closure; the old 120 m was only ~0.12 s head-on, so a break had to land in a ~0.4 s window)
+    // with a bigger fuse, a longer life (a target flying on, or crossing near, is caught; one turning tail outruns it) and
+    // no head-on terminal cut. Harness, flying straight at the site from 3-3.9 km: no maneuver 100% hit; a hard break
+    // 0.8-1.2 s before impact ~50% defeated; 0.15-0.3 s 0% defeated; 2.6-3.2 s ~60% (a held max-G turn: one that rolls out
+    // is caught); break + flares always. (A lateral g cap was tried: it only stopped hits on targets flying straight on.)
+    this.samMaxSpeed = 620;                  // m/s
+    this.samFuse = 16;                       // m
+    this.samBlindRange = 20;                 // m
+    this.samBlindTime = 0.4;                 // s (closure time, ramped in like missileBlindMinTime)
+    this.samBlindJitter = 0.4;
+    this.samLife = 9;                        // s
+    this.samGMax = 0;                        // m/s^2 (0 = none)
+    this.samTermTime = 1; this.samTermNav = 4; this.samLeadFrac = 0.2;
     this.missileBlindTime = 0;               // s: when > 0, the blind range is at most this many s of closure (0 = metres only)
     this.missileBlindTailCos = 0.3;          //   (tail-aspect launches only: target velocity within ~70 deg of the line of sight,
     this.missileBlindTailRange = 1800;       //   launched within this many m)
@@ -1648,24 +1688,37 @@ export class Weapons {
     m.turnScale = 1;                       // per-shot multiplier on the turn limit (game balance hook)
     m.maxSpeed = this.missileMaxSpeed; m.boostTime = this.missileBoostTime; m.drag = this.missileDrag; m.life = this.missileLife;   // per-shot kinematics
     m.fuse = this.missileFuse;             //   and fuse (likewise)
-    m.blind = this.missileBlindRange; m.blindTime = this.missileBlindTime;   //   and seeker blind range (likewise)
-    if (m.groundLaunch) { m.fuse = this.samFuse; m.blind = this.samBlindRange; }   //   (ground launches: their own)
+    m.blind = this.missileBlindRange; m.blindTime = this.missileBlindTime;   //   and seeker blind range,
+    m.blindMinTime = this.missileBlindMinTime; m.blindJitter = this.missileBlindJitter;
+    m.gMax = this.missileGMax; m.carry = this.missileCarry;   //   lateral g cap, launch-speed carry
+    m.pursuit = this.missilePursuitGain; m.leadFrac = this.missileLeadFrac; m.termTime = this.missileTermTime; m.termNav = this.missileTermNavGain;   // and guidance
+    m.headTermTime = this.missileHeadTermTime; m.headGMax = this.missileHeadGMax;   // (non-tail launches)
+    if (m.groundLaunch) {                  // ground launches: their own (header of the sam* settings)
+      m.maxSpeed = this.samMaxSpeed; m.carry = 0; m.life = this.samLife; m.fuse = this.samFuse; m.gMax = this.samGMax;
+      m.blind = this.samBlindRange; m.blindMinTime = this.samBlindTime; m.blindJitter = this.samBlindJitter;
+      m.termTime = this.samTermTime; m.termNav = this.samTermNav; m.leadFrac = this.samLeadFrac; m.headTermTime = 0; m.headGMax = 0;
+    }
     m.dud = false; m.missBy = 0; m.missSide = 1; m.lethal = false;   // pooled: the launch callback may set these
     m.ax = 0; m.ay = 0; m.az = 0;          // pooled: guidance lag state (_guide's own reset never fires: it starts after the rail drop)
     m.mesh.updateMatrix(); m.mesh.matrixWorld.copy(m.mesh.matrix);
     this.missiles.push(m);
     if (this.onMissileLaunch) this.onMissileLaunch(m);
-    // the closure-time blind range (blindTime) is for good tail shots only: launched within missileBlindTailRange with the
-    // target flying away from the missile (its velocity within acos(missileBlindTailCos) of the line of sight). Crossing,
-    // head-on and long-range shots keep the fixed blind range, so they still overshoot a hard turn
-    if (m.blindTime > 0) {
+    // seeker roll (header of the missileBlind* settings): a long blind time goes with a short head-on terminal phase.
+    // Launch aspect: a tail shot has the target flying away from the missile (its velocity within
+    // acos(missileBlindTailCos) of the line of sight); every other shot (head-on, crossing, a slow or parked target) takes
+    // the profile's head* guidance. The closure-time cap on the blind range (blindTime) is for good tail shots only (also
+    // within missileBlindTailRange): the rest keep the fixed one, so they still overshoot a hard turn
+    const q = m.blindJitter > 0 ? m.blindJitter * (2 * rnd() - 1) : 0;
+    m.blindMinTime *= 1 + q;
+    if (m.blindTime > 0 || m.headTermTime > 0 || m.headGMax > 0) {
       const T0 = m.target, tv = T0 && T0.velocity, sp = tv ? tv.length() : 0;
-      if (!T0 || !T0.position || sp < 1) m.blindTime = 0;
-      else {
-        _v0.subVectors(T0.position, m.position);
-        const d = _v0.length();
-        if (d < 1 || d > this.missileBlindTailRange || _v0.dot(tv) / (d * sp) < this.missileBlindTailCos) m.blindTime = 0;
+      let tail = false, d = 0;
+      if (T0 && T0.position && sp >= 1) {
+        _v0.subVectors(T0.position, m.position); d = _v0.length();
+        tail = d >= 1 && _v0.dot(tv) / (d * sp) >= this.missileBlindTailCos;
       }
+      if (!tail || d > this.missileBlindTailRange) m.blindTime = 0;
+      if (!tail) { if (m.headTermTime > 0) m.termTime = m.headTermTime * (1 - q); if (m.headGMax > 0) m.gMax = m.headGMax; }
     }
     // launched into a fresh flare burst (within flareProtectTime): the target's flares spoof this one too. Done after
     // the launch callback so that it still reports the intended target.
@@ -1832,6 +1885,7 @@ export class Weapons {
     m.boosting = true;
     m.forward.normalize();
     m.speed = Math.max(m.velocity.length(), 60);
+    if (m.carry > 0) m.maxSpeed += m.carry * m.speed;            // launch speed carried into the whole flight
     m.boostAccel = Math.max(60, (m.maxSpeed - m.speed) / Math.max(0.1, m.boostTime));   // per-shot profile
     const f = m.forward, v = m.velocity, t = this.time - this._tOff;
     const nx = m.position.x - f.x * NOZZLE_OFFSET, ny = m.position.y - f.y * NOZZLE_OFFSET, nz = m.position.z - f.z * NOZZLE_OFFSET;
@@ -1842,7 +1896,7 @@ export class Weapons {
     }
   }
 
-  /** Lagged lead pursuit blending into terminal PN (every launch, air or ground) with airframe lag and a turn-rate cap;
+  /** Lagged lead pursuit blending into terminal PN (every launch, air or ground) with airframe lag, a turn-rate cap and an optional lateral-g cap;
    *  the seeker drops the track beyond missileSeekerCos off boresight. */
   _guide(m) {
     const T = m.target, dt = this._dt, boostEnd = this.missileDropTime + m.boostTime;
@@ -1862,25 +1916,30 @@ export class Weapons {
     const vrx = tv.x - m.velocity.x, vry = tv.y - m.velocity.y, vrz = tv.z - m.velocity.z;
     // closing speed Vc = -(r · v_rel) / |r|
     const vc = Math.max(-(rx * vrx + ry * vry + rz * vrz) / dist, 150);
-    // blind range: m.blind metres, or with m.blindTime set, no more than that many seconds of closure. A fixed distance
-    // is a fixed time only at one closing speed: 90 m is ~0.07 s head-on but 0.25-0.35 s in a close tail chase (a slow
-    // missile closing at 250-400 m/s), long enough for a bandit's ordinary turn to carry it out of the fuse radius
-    const blind = m.blindTime > 0 ? Math.min(m.blind, vc * m.blindTime) : m.blind;
+    // blind range: m.blind metres; with m.blindTime set (good tail shots) no more than that many seconds of closure (90 m
+    // is 0.25-0.35 s in a close tail chase, long enough for a bandit's ordinary turn to carry it out of the fuse radius);
+    // else no less than m.blindMinTime s of closure, ramped in between blindCloseLo and blindCloseHi m/s of closing speed
+    let blind = m.blind;
+    if (m.blindTime > 0) blind = Math.min(blind, vc * m.blindTime);
+    else if (m.blindMinTime > 0 && vc > this.blindCloseLo) {
+      const ramp = Math.min(1, (vc - this.blindCloseLo) / (this.blindCloseHi - this.blindCloseLo));
+      blind = Math.max(blind, vc * m.blindMinTime * ramp);
+    }
     if (dist < blind) return;                                     // terminal: no more corrections
     // LOS rotation rate  Ω = (r × v_rel) / |r|²
     const ox = (ry * vrz - rz * vry) / r2, oy = (rz * vrx - rx * vrz) / r2, oz = (rx * vry - ry * vrx) / r2;
-    // lagged lead pursuit (N, lead fraction) blending into terminal PN over the missileTermTime s before the blind range
+    // lagged lead pursuit (N, lead fraction) blending into terminal PN over the m.termTime s before the blind range
     // (so the endgame course is set by the time the seeker stops steering)
     const tg = dist / vc, tb = (dist - blind) / vc;
-    const w = tb >= this.missileTermTime ? 0 : 1 - tb / this.missileTermTime;   // 0 midcourse .. 1 at blind range
-    const k = (this.missileNavGain + (this.missileTermNavGain - this.missileNavGain) * w) * vc;
+    const w = tb >= m.termTime ? 0 : 1 - tb / m.termTime;   // 0 midcourse .. 1 at blind range
+    const k = (this.missileNavGain + (m.termNav - this.missileNavGain) * w) * vc;
     // pursuit point: the target's position plus a fraction of its travel over the estimated time-to-go
-    const tgo = Math.min(tg, 2.5) * (this.missileLeadFrac + (1 - this.missileLeadFrac) * w);
+    const tgo = Math.min(tg, 2.5) * (m.leadFrac + (1 - m.leadFrac) * w);
     let qx = rx + tv.x * tgo, qy = ry + tv.y * tgo, qz = rz + tv.z * tgo;
     const ql = 1 / (Math.sqrt(qx * qx + qy * qy + qz * qz) || 1);
     qx *= ql; qy *= ql; qz *= ql;
     // commanded acceleration a = N Vc (Ω × λ)  + a pursuit term toward that point
-    const kp = this.missilePursuitGain * m.speed;
+    const kp = m.pursuit * m.speed;
     let ax = k * (oy * lz - oz * ly) + (qx - dir.x) * kp;
     let ay = k * (oz * lx - ox * lz) + (qy - dir.y) * kp;
     let az = k * (ox * ly - oy * lx) + (qz - dir.z) * kp;
@@ -1897,7 +1956,11 @@ export class Weapons {
     let rate = alat / Math.max(m.speed, 50);
     const maxRate = m.boosting ? this.missileTurnRateBoost
       : this.missileTurnRateCoast + (this.missileTurnRateBoost - this.missileTurnRateCoast) * Math.exp(-(m.age - boostEnd) / 1.5);
-    const lim = maxRate * (m.turnScale || 1);
+    let lim = maxRate * (m.turnScale || 1);
+    if (m.gMax > 0) {                                             // lateral g cap, x (speed / missileGRef)^2 (like lift)
+      const sp = Math.max(m.speed, 50), q = sp / this.missileGRef, gl = m.gMax * q * q / sp;
+      if (gl < lim) lim = gl;
+    }
     if (rate > lim) rate = lim;
     const ang = rate * dt, c = Math.cos(ang), s = Math.sin(ang) / alat;
     dir.set(dir.x * c + ax * s, dir.y * c + ay * s, dir.z * c + az * s).normalize();

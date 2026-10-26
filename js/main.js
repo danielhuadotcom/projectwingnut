@@ -74,27 +74,38 @@ const MAX_ENEMIES = 6;
 // (js/targets.js, header: Flak): aaGuns = most land AA guns firing at the player at once (the nearest in sight; the
 // others throw an occasional harmless barrage), shipGuns = the same for ships' AA mounts, aaError = their aim error (x the
 // shells' spread; guns never lead). samCap = most SAM / ship missiles after the player at once (within playerMissiles,
-// which counts them too). Missiles fly
+// which counts them too); samRearm = s after one of those ends (hit, flared, outrun) before any site may fire at the
+// player again, half that after a launch (js/targets.js): flaring a SAM buys a breather instead of drawing the next
+// site's missile at once. Missiles fly
 // the same on every difficulty (ENEMY_MISSILE_TURN, PLAYER_MISSILE): harder ones only put more of them in the air.
 const DIFFICULTY = {
-  easy:      { armor: 0.35, enemyHp: 0.8,  skill: -0.15, aggressors: 1,        groups: [],                      playerShare: 0.3, flightCap: 1, stagger: 30, playerMissiles: 1, aaGuns: 2,  aaError: 1.6, shipGuns: 2,  samCap: 1 },
-  normal:    { armor: 0.5,  enemyHp: 1.0,  skill: 0,     aggressors: 2,        groups: [],                      playerShare: 0.4, flightCap: 2, stagger: 20, playerMissiles: 2, aaGuns: 5,  aaError: 1.3, shipGuns: 6,  samCap: 2 },
-  hard:      { armor: 0.7,  enemyHp: 1.15, skill: 0.1,   aggressors: 4,        groups: ['hard'],                playerShare: 0.5, flightCap: 2, stagger: 15, playerMissiles: 3, aaGuns: 7,  aaError: 1.1, shipGuns: 8,  samCap: 2 },
-  mercenary: { armor: 1.0,  enemyHp: 1.3,  skill: 0.2,   aggressors: Infinity, groups: ['hard', 'mercenary'], playerShare: 0.6, flightCap: 3, stagger: 10, playerMissiles: 4, aaGuns: 10, aaError: 1.0, shipGuns: 10, samCap: 2 },
+  easy:      { armor: 0.35, enemyHp: 0.8,  skill: -0.15, aggressors: 1,        groups: [],                      playerShare: 0.3, flightCap: 1, stagger: 30, playerMissiles: 1, aaGuns: 2,  aaError: 1.6, shipGuns: 2,  samCap: 1, samRearm: 8 },
+  normal:    { armor: 0.5,  enemyHp: 1.0,  skill: 0,     aggressors: 2,        groups: [],                      playerShare: 0.4, flightCap: 2, stagger: 20, playerMissiles: 2, aaGuns: 5,  aaError: 1.3, shipGuns: 6,  samCap: 2, samRearm: 5 },
+  hard:      { armor: 0.7,  enemyHp: 1.15, skill: 0.1,   aggressors: 4,        groups: ['hard'],                playerShare: 0.5, flightCap: 2, stagger: 15, playerMissiles: 3, aaGuns: 7,  aaError: 1.1, shipGuns: 8,  samCap: 2, samRearm: 3.5 },
+  mercenary: { armor: 1.0,  enemyHp: 1.3,  skill: 0.2,   aggressors: Infinity, groups: ['hard', 'mercenary'], playerShare: 0.6, flightCap: 3, stagger: 10, playerMissiles: 4, aaGuns: 10, aaError: 1.0, shipGuns: 10, samCap: 2, samRearm: 2.5 },
 };
-const ENEMY_MISSILE_TURN = 0.6;  // enemy shots: turn-limit scale, the same on every difficulty (harder ones only fire more)
-// Player-team missiles (the player's and the squadmates'): a lock means the target is reachable. Faster and longer-legged
-// than the global (enemy, dodgeable) profile: from the 2.8 km lock range they run down a bandit fleeing straight at full
-// speed in ~6 s. turnScale 1.3 keeps the old turn radius at the higher speed (1000 / 760 m/s), so close crossing shots
-// don't get worse; a 13 m fuse (enemy missiles are cut to 11 m to stay dodgeable). With the pursuit-style guidance
-// (js/weapons.js _guide) tail chases (an evading bandit included), gentle turns and head-ons inside ~1.5 km connect,
-// while high crossing angles and long shots at a hard turner or an evading bandit mostly miss; aces and bosses beat
-// good shots with a post-stall Cobra that breaks the lock of every missile close to impact (js/ai.js COBRA_*). blindTime: on a tail-aspect launch inside 1.8 km the seeker's blind
-// range is at most 0.05 s of closure (15-25 m) instead of the flat 90 m, which in a close tail chase (a missile still
-// accelerating, closing at 250-450 m/s) left 0.2-0.35 s unguided: long enough for an ordinary evasive turn to slip the
-// 13 m fuse. Crossing, head-on and long shots keep 90 m (js/weapons.js fireMissile). Per-shot values on the Missile,
-// set in onMissileLaunch.
-const PLAYER_MISSILE = { maxSpeed: 1000, boostTime: 2.4, drag: 0.7e-4, life: 8.5, turnScale: 1.3, fuse: 13, blindTime: 0.05 };
+// Enemy shots: turn-limit scale, the same on every difficulty (harder ones only fire more). Air launches otherwise fly the
+// js/weapons.js defaults (480 m/s + 0.6 x the launch speed, a 0.45 s head-on terminal phase, 0.2 s blind time): at the
+// player in a 1-2.5 km merge ~87% hit flying straight, ~75% in a gentle turn, ~50-60% against a hard break 0.8-1.2 s
+// before impact. Ground launches (SAM sites, ships) have their own sam* settings there.
+const ENEMY_MISSILE_TURN = 0.6;
+// Player-team missiles (the player's and the squadmates'), PW-style: a stable tail shot is a near-sure kill, a merge shot a
+// coin flip, and launch speed matters. maxSpeed 350 + carry 1.9 x the launch speed (js/weapons.js missileCarry): ~770 m/s
+// fired at cruise, ~1150 m/s at full boost, so a fast launch reaches farther and turns tighter (headGMax: a 1800 m/s^2
+// lateral cap at 600 m/s, x (speed / 600)^2, on non-tail launches; off the rail it flies a visible curve). Tail shots
+// keep the full 1 s terminal homing; head-on and crossing launches get headTermTime 0.3 s (x 1 -+ the seeker roll,
+// blindJitter) and a blind range of at least blindMinTime 0.2 s of fast closure (x 1 +- the roll). Harness
+// (tools/msltest.mjs), launched at 220 m/s: merge 1-2.5 km at a bandit flying straight ~70% hit (~67% launched at
+// 250 m/s, ~78% at 420), in a gentle turn ~45-55%, flying the ordinary bandit's missile defense (js/ai.js DEFEND_*) ~60%
+// (real game ~55%); a clean tail chase within the 2.8 km lock range ~85% (99% launched at 250 m/s), an evading bandit
+// 1.5-2.5 km ahead ~45%, inside 1.5 km 100%; a parked ground target 100%. Aces and bosses beat good shots with a
+// post-stall Cobra that breaks the lock of every missile close to impact (js/ai.js COBRA_*). blindTime: on a tail-aspect
+// launch inside 1.8 km the seeker's blind range is at most 0.05 s of closure (15-25 m) instead of the flat 90 m, which in
+// a close tail chase (a missile still accelerating, closing at 250-450 m/s) left 0.2-0.35 s unguided: long enough for an
+// ordinary evasive turn to slip the 13 m fuse (js/weapons.js fireMissile). Per-shot values on the Missile, set in
+// onMissileLaunch.
+const PLAYER_MISSILE = { maxSpeed: 350, carry: 1.9, boostTime: 2.4, drag: 0.7e-4, life: 6, turnScale: 1.3, fuse: 13, blindTime: 0.05,
+  blindMinTime: 0.2, blindJitter: 0.5, headTermTime: 0.3, headGMax: 1800 };
 const WORLD_UP = new THREE.Vector3(0, 1, 0);
 const PARAMS = new URLSearchParams(location.search);
 
@@ -228,7 +239,7 @@ class Game {
     this.comms = new Radio(this.awacs, this.music, { wso: this.settings.wso !== false, onSubtitle: (label, text, secs) => { if (this.settings.subtitles !== false) this.radio = { speaker: label, text, age: 0, duration: Math.max(2.6, (secs || 2) + 0.9) }; } });
     this.chase = new ChaseCamera(this.camera);
 
-    this.player = new Aircraft(this.scene, { team: 'player', accentColor: 0xff6a1a, position: new THREE.Vector3(0, 800, 0), heading: 0, fxQuality: PRESETS[this.quality].sub });
+    this.player = new Aircraft(this.scene, { team: 'player', accentColor: 0xff6a1a, position: new THREE.Vector3(0, 800, 0), heading: 0, fxQuality: PRESETS[this.quality].sub, freeStall: true });
     const baseDamage = this.player.applyDamage.bind(this.player);
     this.armor = PLAYER_ARMOR; this.skillOffset = 0;
     this.player.applyDamage = (amount) => baseDamage(amount * this.armor);
@@ -1561,8 +1572,7 @@ class Game {
   }
   onMissileLaunch(m) {
     if (m.owner && m.owner.team === 'player') {   // the player's and the squadmates' shots: the fast profile
-      const P = PLAYER_MISSILE;
-      m.maxSpeed = P.maxSpeed; m.boostTime = P.boostTime; m.drag = P.drag; m.life = P.life; m.turnScale = P.turnScale; m.fuse = P.fuse; m.blindTime = P.blindTime;
+      Object.assign(m, PLAYER_MISSILE);
     }
     if (this.flights && m.target && m.target.brain && m.owner && m.owner.team === 'player') this.flights.attacked(m.target, this.time);
     if (m.owner !== this.player) this.audio.missileLaunchAt(m.position, this.camera);   // others' launches, heard by distance (player's: missileLaunch at the trigger)
@@ -1713,8 +1723,12 @@ class Game {
     if (p.alive) {
       if (this.bench) this.benchAutopilot(dt);
       else if (this.isMouseMode()) this.mouseAimControl(dt);
-      else p.setControls({ pitch: input.pitch, roll: input.roll, yaw: input.yaw, throttleDelta: input.throttleDelta });
+      else p.setControls({ pitch: input.pitch, roll: input.roll, yaw: input.yaw, throttleDelta: input.throttleDelta, aoaOff: input.aoaOff });
       p.update(dt);
+      if (p.aoaOff !== !!this._aoaWas) {   // AOA limiter cue (the release one only for a real release, not a respawn)
+        this._aoaWas = p.aoaOff;
+        if (this.audio.aoaLimiter && (p.aoaOff || p._aoa.rel < 0.3)) this.audio.aoaLimiter(p.aoaOff);
+      }
       const h = Math.max(world.getHeight(p.position.x, p.position.z), 0);
       if (p.position.y < h + 2.5) { p.position.y = h + 2.5; if (!this.bench) this.die(h > 0.5 ? 'TERRAIN IMPACT' : 'HIT THE WATER'); }
       if (this.tunnel && p.alive) {
@@ -2270,6 +2284,18 @@ class Game {
     // upright and steady (a nose-down attitude alone doesn't count); it takes a clear move away (past ~108 deg, or off
     // to the side) to switch back. Pushing 60 deg is faster than the old half-roll-and-pull (1.45 s vs 1.72 s).
     const pullErr = Math.atan2(lx, ly);
+    if (p.aoaOff) {
+      // AOA limiter off (engaged: the cooldown can refuse a press): no bank-to-turn, the nose slews straight onto the aim
+      // (pitch and rudder along the shortest rotation, both fast in this mode; dead astern: pull). Keyboard roll / rudder
+      // still add on top; thrust is ignored.
+      const h = Math.hypot(lx, ly), m = Math.min(1, ang * 2.5);
+      pitch = (h > 1e-4 ? ly / h : 1) * m - r.pitch * 0.07;
+      yaw = (h > 1e-4 ? lx / h : 0) * m - r.yaw * 0.12;
+      roll = kb.roll - r.roll * 0.05;
+      this._aimPush = false; this._behindDir = 0; this._rollSide = 0;
+      p.setControls({ pitch: THREE.MathUtils.clamp(pitch, -1, 1), roll: THREE.MathUtils.clamp(roll, -1, 1), yaw: THREE.MathUtils.clamp(yaw + kb.yaw, -1, 1), throttleDelta: 0, aoaOff: this.input.aoaOff });
+      return;
+    }
     if (this._aimPush) { if (ang > 1.88 || Math.abs(pullErr) < 1.8 || lz > 0.75) this._aimPush = false; }
     else if (ly < 0 && ang < 1.7 && Math.abs(pullErr) > 2.2) this._aimPush = true;
     if (lz > 0.75) {
@@ -2338,7 +2364,7 @@ class Game {
     roll += (kb.roll - roll) * this._ovRoll;
     pitch += (manualPitch - pitch) * this._ovPitch;
     yaw += kb.yaw;                                                    // Q/E rudder
-    p.setControls({ pitch: THREE.MathUtils.clamp(pitch, -1, 1), roll: THREE.MathUtils.clamp(roll, -1, 1), yaw: THREE.MathUtils.clamp(yaw, -1, 1), throttleDelta: thrust });
+    p.setControls({ pitch: THREE.MathUtils.clamp(pitch, -1, 1), roll: THREE.MathUtils.clamp(roll, -1, 1), yaw: THREE.MathUtils.clamp(yaw, -1, 1), throttleDelta: thrust, aoaOff: this.input.aoaOff });
   }
 
   // ---------- benchmark mode (?bench=1&dur=16&warm=4) ----------
@@ -2426,7 +2452,7 @@ class Game {
       radar: { range: RADAR_RANGE, blips: [], _pool: Array.from({ length: HUD_CONTACTS }, () => ({ dx: 0, dz: 0, type: 'enemy', isTarget: false, relAlt: 0 })) },
       warnings: { missileIncoming: false, pullUp: false, stall: false, overG: false },
       messages: this.messages, score: 0, wave: 0, round: 0, enemiesRemaining: 0, kills: 0,
-      padlock: false, lookBack: false,
+      padlock: false, lookBack: false, aoaOff: false, aoaCooldown: 0,
       input: { gamepadConnected: false, gamepadName: null, gamepadBlocked: false, usingGamepad: false },
       hitFlash: 0, damageFlash: 0,
     };
@@ -2629,7 +2655,7 @@ class Game {
     } else { f.touchRects = null; f._touchKey = -1; }
     f.messages = this.messages; f.score = this.score; f.wave = this.wave; f.kills = this.kills; f.mission = this.mission ? this.mission.id : 0;
     f.round = this.infinity ? this.infinity.round : 0;   // INFINITY: the HUD shows ROUND n in place of PHASE n
-    f.padlock = this.camMode === 'padlock'; f.lookBack = this.camMode === 'rear';
+    f.padlock = this.camMode === 'padlock'; f.lookBack = this.camMode === 'rear'; f.aoaOff = p.alive && p.aoaOff; f.aoaCooldown = p.alive ? p.aoaCooldown : 0;
     if (this.camMode === 'mouseaim' && p.alive) {
       const M = f._mouseAim || (f._mouseAim = { aimX: 0, aimY: 0, aimVisible: true, noseX: 0, noseY: 0, noseVisible: true, _a: {}, _n: {} });
       _v2.copy(p.position).addScaledVector(this.aimDir, 2000); this.project(_v2, M._a);

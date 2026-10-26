@@ -28,6 +28,7 @@ The in-game **Controls** screen (Main menu › Controls) shows the same list.
 | RB | Tap: next target. Hold: padlock view |
 | LB | Look back |
 | L3 (click left stick) | Flares |
+| R3 (click right stick, hold) | AOA limiter off: the nose swings freely while the jet keeps its momentum |
 | Start | Pause |
 
 ### Mouse and keyboard (mouse aim)
@@ -45,6 +46,7 @@ The jet flies toward the aim circle. The key preset is under Settings › Contro
 | Shift | Hard pull | Boost |
 | H | – | Airbrake |
 | X | Flares | Flares |
+| Z (hold) | AOA limiter off (the nose swings to the aim) | same |
 | Tab | Tap: next target. Hold: padlock view | same |
 | C (hold) | Free look | Free look |
 | V | Look back | Look back |
@@ -57,7 +59,7 @@ On phones and tablets, on-screen sticks and buttons mirror the gamepad:
 
 - Left stick: up to boost, down for airbrake, left and right for rudder.
 - Right stick: pitch and roll.
-- Buttons: missile, cannon, target (tap for the next target, hold for padlock view), flares, look back and pause.
+- Buttons: missile, cannon, target (tap for the next target, hold for padlock view), flares, AOA limiter off (hold), look back and pause.
 
 You can show or hide them under Settings › Controls › Touch controls.
 

@@ -5,10 +5,11 @@
 //   right stick  ↕ pitch (pull ↓ toward you = nose up) · ↔ roll                          → rx, ry  (ry: down = +1)
 //   top-left     LT "MSL" missile · LB "LOOK" look back (hold)
 //   top-right    RB "TGT" tap = next target, hold = padlock · RT "GUN" cannon (hold, big)
-//   FLR (= L3 flares) above the left stick · pause (= Start) in the top band, just right of the HUD heading tape
+//   FLR (= L3 flares) above the left stick · AOA (= R3 AOA limiter off, hold) above the right stick · pause (= Start)
+//   in the top band, just right of the HUD heading tape
 //
 // Large screens (tablets, landscape): the shoulder buttons move off the top corners into a thumb-reach cluster around
-// each stick (left: LOOK, MSL, FLR · right: TGT, GUN), sized and placed in estimated physical units (cm) so everything
+// each stick (left: LOOK, MSL, FLR · right: TGT, GUN, AOA), sized and placed in estimated physical units (cm) so everything
 // sits within ~9 cm of the bottom corners where the hands hold the device. Phones keep the top-corner layout.
 //
 // input.js reads `input.touch = instance` every frame ({ active, lx, ly, rx, ry, buttons, used }) and owns the
@@ -58,6 +59,7 @@ const CL = {
   flr: { at: [95, 2.9], size: [1.4, 1.4] },   // FLR: straight above the stick
   rb: { at: [8, 3.1], size: [1.5, 1.3] },     // TGT
   rt: { at: [48, 3.4], size: [2.4, 1.7] },    // GUN (the big one)
+  aoa: { at: [95, 2.9], size: [1.4, 1.4] },   // AOA: straight above the stick (mirrors FLR)
 };
 const STYLE_ID = 'wn-touch-style';
 const INTERACTIVE = 'a,button,input,select,textarea,label,summary,[role="button"],[role="link"],' +
@@ -71,7 +73,7 @@ const CSS = `
   --wn-fm:var(--mono,"JetBrains Mono","SF Mono",Menlo,Consolas,monospace);
   --wn-sl:env(safe-area-inset-left,0px);--wn-sr:env(safe-area-inset-right,0px);--wn-st:env(safe-area-inset-top,0px);
   --wn-m:8px;--wn-g:8px;--wn-bph:64px;--wn-pz:46px;   /* the rest are set in px by _layout() on resize: */
-  --wn-ltw:101px;--wn-lth:70px;--wn-rtw:118px;--wn-rth:78px;--wn-bpw:72px;--rest-lx:135px;--flr-y:133px;--pause-x:549px;
+  --wn-ltw:101px;--wn-lth:70px;--wn-rtw:118px;--wn-rth:78px;--wn-bpw:72px;--rest-lx:135px;--rest-rx:665px;--flr-y:133px;--pause-x:549px;
   color:var(--wn-hi);font-family:var(--wn-fd)}
 .wn-touch.wn-on{visibility:visible}
 .wn-touch *{box-sizing:border-box}
@@ -98,12 +100,14 @@ const CSS = `
 .wn-rt b{font-size:20px}
 .wn-rb{right:calc(var(--wn-sr) + var(--wn-m) + var(--wn-rtw) + var(--wn-g));width:var(--wn-bpw);height:var(--wn-bph)}
 .wn-flr{top:var(--flr-y);left:calc(var(--rest-lx) - 34px);width:68px;height:68px;border-radius:50%}
+.wn-aoa{top:var(--flr-y);left:calc(var(--rest-rx) - 34px);width:68px;height:68px;border-radius:50%}
 /* large screens: thumb-reach clusters around the sticks (positions and sizes in px from _layout) */
 .wn-cl .wn-lt{left:var(--lt-x);top:var(--lt-y);border-radius:14px}
 .wn-cl .wn-lb{left:var(--lb-x);top:var(--lb-y)}
 .wn-cl .wn-rb{left:var(--rb-x);right:auto;top:var(--rb-y)}
 .wn-cl .wn-rt{left:var(--rt-x);right:auto;top:var(--rt-y);border-radius:14px}
 .wn-cl .wn-flr{left:var(--fl-x);top:var(--fl-y);width:var(--wn-flz);height:var(--wn-flz)}
+.wn-cl .wn-aoa{left:var(--aoa-x);top:var(--aoa-y);width:var(--wn-flz);height:var(--wn-flz)}
 /* pause: in the top band beside the HUD heading tape (x computed in _layout) */
 .wn-pause{top:calc(var(--wn-st) + var(--wn-m) + 2px);left:var(--pause-x);width:var(--wn-pz);height:var(--wn-pz);border-radius:23px;
   flex-direction:row;gap:7px}
@@ -163,6 +167,7 @@ const HTML =
   '<div class="wn-b wn-rb" data-b="target"><b>TGT</b><i>RB</i></div>' +
   '<div class="wn-b wn-rt" data-b="gun"><b>GUN</b><i>RT</i></div>' +
   '<div class="wn-b wn-flr" data-b="flares"><b>FLR</b><i>L3</i></div>' +
+  '<div class="wn-b wn-aoa" data-b="aoaOff"><b>AOA</b><i>R3</i></div>' +
   '<div class="wn-b wn-pause" data-b="pause">' + SVG_PAUSE + SVG_PLAY + '<b>RESUME</b></div>' +
   stickHTML('wn-stl', 'BOOST', 'BRAKE') + stickHTML('wn-str', 'DIVE', 'CLIMB') +
   '<div class="wn-rot">' + SVG_ROT + '<span>Rotate to landscape</span></div>' +
@@ -205,7 +210,7 @@ export class TouchControls {
     this.active = false;                 // touch controls in use (coarse pointer / touch seen / forced on)
     this.lx = 0; this.ly = 0;            // left stick: rudder, boost(+)/airbrake(-)
     this.rx = 0; this.ry = 0;            // right stick: roll, pull(+) = nose up
-    this.buttons = { gun: false, missile: false, target: false, lookBack: false, flares: false, pause: false, confirm: false, back: false };
+    this.buttons = { gun: false, missile: false, target: false, lookBack: false, flares: false, aoaOff: false, pause: false, confirm: false, back: false };
     this.used = false;                   // set on every change; input.js clears it each frame
     // ---- extras ---------------------------------------------------------------------------------------------------
     this.mode = 'auto';                  // 'auto' | 'on' | 'off'
@@ -240,7 +245,7 @@ export class TouchControls {
     this._sink = root.querySelector('.wn-sink');
     this._probe = root.querySelector('.wn-probe');
     const q = (s) => root.querySelector(s);
-    this._els = { lt: q('.wn-lt'), lb: q('.wn-lb'), rb: q('.wn-rb'), rt: q('.wn-rt'), flr: q('.wn-flr'), pause: q('.wn-pause') };
+    this._els = { lt: q('.wn-lt'), lb: q('.wn-lb'), rb: q('.wn-rb'), rt: q('.wn-rt'), flr: q('.wn-flr'), aoa: q('.wn-aoa'), pause: q('.wn-pause') };
     const mk = (side, cls) => {
       const el = q(cls);
       // bx, by: the fixed base center (container px, written by _layout only) · fx, fy: the holding finger (client px)
@@ -452,7 +457,7 @@ export class TouchControls {
         return z;
       };
       [ltw, lth] = place('lt', 'l'); [bpw, bph] = place('lb', 'l'); place('rb', 'r'); [rtw, rth] = place('rt', 'r');
-      st.setProperty('--wn-flz', px(place('flr', 'l')[0]));
+      st.setProperty('--wn-flz', px(place('flr', 'l')[0])); place('aoa', 'r');
       flrY = 0;
       lbRight = sf.l + EDGE_M; rbLeft = w - sf.r - EDGE_M;   // the top corners are free
     } else {
@@ -460,7 +465,7 @@ export class TouchControls {
       const inset = Math.max(RING_R + 26, 0.16 * w);
       const restY = Math.round(h - sf.b - RING_R - Math.max(16, 0.06 * h));   // whole px: crisp rings, exact centers
       L.bx = Math.round(sf.l + inset); R.bx = Math.round(w - sf.r - inset); L.by = R.by = restY;
-      // FLR: above the left stick's resting ring (more clearance on tall screens so a high thumb landing doesn't hit it),
+      // FLR / AOA: above the left / right stick's resting ring (more clearance on tall screens so a high thumb landing doesn't hit it),
       // but no higher than the top of the stick zone
       flrY = Math.max(h * this._zoneTop - 10, restY - RING_R - Math.max(34, 0.08 * h) - 68);
       // shoulder buttons grow a little on bigger screens (hit targets never under 64 px)
@@ -480,7 +485,7 @@ export class TouchControls {
     st.setProperty('--wn-ltw', px(ltw)); st.setProperty('--wn-lth', px(lth));
     st.setProperty('--wn-rtw', px(rtw)); st.setProperty('--wn-rth', px(rth));
     st.setProperty('--wn-bpw', px(bpw)); st.setProperty('--wn-bph', px(bph));
-    st.setProperty('--rest-lx', px(L.bx)); st.setProperty('--flr-y', px(flrY)); st.setProperty('--pause-x', px(pauseX));
+    st.setProperty('--rest-lx', px(L.bx)); st.setProperty('--rest-rx', px(R.bx)); st.setProperty('--flr-y', px(flrY)); st.setProperty('--pause-x', px(pauseX));
     root.classList.toggle('wn-cl', cluster);
     this.cluster = cluster;
     // Where an overlay of the page (the perf readout) can sit without covering a control: top center, under the HUD

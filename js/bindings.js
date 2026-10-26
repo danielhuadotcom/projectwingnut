@@ -39,6 +39,7 @@ export const PAD_ACTIONS = [
   { id: 'target', label: 'Target', prompt: 'TARGET', hint: 'Tap: next target. Hold: padlock view.' },
   { id: 'lookBack', label: 'Look back', prompt: 'LOOK BACK', hint: 'Rear view while held.' },
   { id: 'flares', label: 'Flares', prompt: 'FLARES', hint: 'Decoy incoming missiles.' },
+  { id: 'aoaOff', label: 'AOA limiter off', prompt: 'AOA LIMITER OFF', hint: 'Hold: the nose swings free while the jet keeps its momentum.' },
 ];
 export const PAD_IDS = PAD_ACTIONS.map((a) => a.id);
 export const PAD_DEF = Object.fromEntries(PAD_ACTIONS.map((a) => [a.id, a]));
@@ -53,7 +54,7 @@ export const PAD_PRESETS = Object.freeze({
   mode2: Object.freeze({
     pitchUp: A(3, 1), pitchDown: A(3, -1), rollRight: A(2, 1), rollLeft: A(2, -1),
     yawRight: A(0, 1), yawLeft: A(0, -1), throttleUp: A(1, -1), throttleDown: A(1, 1),
-    gun: B(7), missile: B(6), target: B(5), lookBack: B(4), flares: B(10),
+    gun: B(7), missile: B(6), target: B(5), lookBack: B(4), flares: B(10), aoaOff: B(11),
   }),
   // Ace Combat 7: Skies Unknown default gamepad layout ("Standard" controls, Type A), per Shacknews, "Ace Combat 7
   // controls - PlayStation 4 and Xbox One" (https://www.shacknews.com/article/109486/ace-combat-7-controls-playstation-4-and-xbox-one):
@@ -62,12 +63,13 @@ export const PAD_PRESETS = Object.freeze({
   //   LB / RB yaw left / right         -> rudder           LT decelerate / RT accelerate -> airbrake / boost
   //   A machine gun                    -> cannon           B missile / weapon             -> missile
   //   Y change target (hold: look at target) -> target (tap: next target, hold: padlock view)
-  //   L3 + R3 flare                    -> flares on L3 alone (no chorded bindings here; R3 stays free)
-  //   X change weapon, View radar map, R3 change view: no equivalent (left unbound). Menu pauses in both games.
+  //   L3 + R3 flare                    -> flares on L3 alone (no chorded bindings here)
+  //   R3 change view                   -> AOA limiter off (hold; Project Wingman's R3)
+  //   X change weapon, View radar map: no equivalent (left unbound). Menu pauses in both games.
   ace: Object.freeze({
     pitchUp: A(1, 1), pitchDown: A(1, -1), rollRight: A(0, 1), rollLeft: A(0, -1),
     yawRight: B(5), yawLeft: B(4), throttleUp: B(7), throttleDown: B(6),
-    gun: B(0), missile: B(1), target: B(3), lookBack: A(3, 1), flares: B(10),
+    gun: B(0), missile: B(1), target: B(3), lookBack: A(3, 1), flares: B(10), aoaOff: B(11),
   }),
 });
 export const PRESET_NAMES = { mode2: 'Mode 2', ace: 'Ace Combat', custom: 'Custom' };
@@ -87,6 +89,7 @@ export const KEY_ACTIONS = [
   { id: 'target', label: 'Target' },
   { id: 'lookBack', label: 'Look back' },
   { id: 'flares', label: 'Flares' },
+  { id: 'aoaOff', label: 'AOA limiter off' },
   { id: 'freeLook', label: 'Free look' },
   { id: 'pause', label: 'Pause' },
   { id: 'fullscreen', label: 'Fullscreen' },
@@ -100,7 +103,7 @@ export const DEFAULT_KEYS = Object.freeze({
   'throttle+': ['ShiftLeft', 'ShiftRight', 'Equal', 'NumpadAdd'],
   'throttle-': ['KeyH', 'Minus', 'NumpadSubtract'],                             // no Ctrl: Ctrl+W would close the browser tab
   gun: ['Space', 'Mouse0'], missile: ['KeyF', 'Mouse2', 'Enter', 'NumpadEnter'],
-  target: ['Tab'], lookBack: ['KeyV'], flares: ['KeyX'], freeLook: ['KeyC'], pause: ['KeyP'], fullscreen: ['KeyU'],
+  target: ['Tab'], lookBack: ['KeyV'], flares: ['KeyX'], aoaOff: ['KeyZ'], freeLook: ['KeyC'], pause: ['KeyP'], fullscreen: ['KeyU'],
 });
 /** Fixed keys outside the bindings screen (a binding to the same code wins). Escape always pauses. */
 export const FIXED_KEYS = Object.freeze({ Escape: 'pause', KeyI: 'invertPitch', KeyR: 'restart', KeyG: 'graphics', Backquote: 'overlay', F9: 'overlay' });

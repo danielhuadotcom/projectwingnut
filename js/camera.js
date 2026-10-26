@@ -61,13 +61,15 @@ export class ChaseCamera {
     // Project Wingman-style rotational lag: the camera trails the jet's rotation by ~0.3 s, so in hard maneuvers the
     // jet visibly swings off-axis (belly or back toward the camera) and settles back when the maneuver ends.
     const chaseLike = mode === 'chase' || mode === 'padlock';   // padlock is the chase camera, orbited
-    const kRot = 1 - Math.exp(-dt / (chaseLike ? 0.3 : 0.11));
+    // AOA limiter off: the nose turns ~2.5x faster, so the lag tightens (the jet still swings visibly off-axis, but the
+    // gun line stays near the screen)
+    const kRot = 1 - Math.exp(-dt / (chaseLike ? (aircraft.aoaOff ? 0.2 : 0.3) : 0.11));
     this.sFwd.lerp(_fwd, kRot).normalize();
     // Up mostly follows the jet (the horizon tilts with it, as in PW) with a little world-up for stability
     _tmp.copy(_up).multiplyScalar(0.8).addScaledVector(WORLD_UP, 0.2).normalize();
     this.sUp.lerp(_tmp, 1 - Math.exp(-dt / (chaseLike ? 0.26 : 0.11))).normalize();
 
-    let desiredFov = this.baseFov + speedFrac * speedFrac * 14 + (aircraft.afterburner ? 4 : 0);
+    let desiredFov = this.baseFov + speedFrac * speedFrac * 14 + (aircraft.afterburner && !aircraft.aoaOff ? 4 : 0);   // (AOA off: the burner follows the stick)
     if (mode === 'orbit') {
       // Title screen: slow cinematic orbit
       this.orbit += dt * 0.12;

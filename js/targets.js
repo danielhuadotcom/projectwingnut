@@ -45,8 +45,9 @@ const LAND_DRY = 0.5, LAND_GAP = 4;
 // railguns) every cycle, uncapped: slow shells, a wide MAIN_SPREAD, MAIN_DAMAGE; mostly harmless. Units or mounts over
 // the cap keep the cadence but only throw, with chance BARRAGE_CHANCE a cycle, a harmless barrage burst
 // BARRAGE_MIN-BARRAGE_MAX m from the player. Without a difficulty, up to AA_MAX of each engage with error 1.
-// SAM sites and missile ships: launchAllowed (the player's missile cap, shared with the bandits) and at most the
-// difficulty's samCap surface-launched missiles after the player at once.
+// SAM sites and missile ships: launchAllowed (the player's missile cap, shared with the bandits), at most the
+// difficulty's samCap surface-launched missiles after the player at once, and none for its samRearm s after one of them
+// ends (half that after a launch); each launcher reloads 9-15 s after a shot.
 const AA_PICK = 0.5, AA_MAX = 32, AA_STICKY = 0.8, AA_STICKY2 = AA_STICKY * AA_STICKY;
 const AIM_LAG = 0.1;              // s: aim point trails the player's current position along their velocity
 const SHELL_SPEED = 900, MAIN_SPEED = 650;   // m/s: AA shells, heavy (main gun) shells
@@ -279,6 +280,8 @@ export class GroundForces {
     this._aaKey = new Float64Array(2 * CAPACITY);        // by squared distance (x AA_STICKY2 for guns engaged already)
     this._aaN = 0; this._aaT = 0;                 // how many; s until the next pick
     this._shipN = 0;                              // ship AA mounts engaged (_pickGuns)
+    this._samLive = 0;                            // surface launches at the player in flight (as of the last count)
+    this._samHold = 0;                            // s until another surface launch at the player is allowed (diff.samRearm)
     this._shells = [];                            // flak shells (pool; _fireShell / _updateShells)
     for (let i = 0; i < SHELL_MAX; i++) this._shells.push({ on: false, gun: null, ox: 0, oy: 0, oz: 0, dx: 0, dy: 0, dz: 0, ax: 0, ay: 0, az: 0, speed: 0, age: 0, tof: 0, dmg: 0 });
   }
@@ -458,16 +461,19 @@ export class GroundForces {
     this.targets.length = 0; this.sinking.length = 0;
     const C = this.lights.geometry.attributes.aColor; C.array.fill(0); C.needsUpdate = true; this.lights.visible = false;
     this._aaSel.fill(null); this._aaCand.fill(null); this._aaN = 0; this._aaT = 0; this._shipN = 0;
+    this._samLive = 0; this._samHold = 0;
     for (const sh of this._shells) { sh.on = false; sh.gun = null; }
   }
   aliveCount() { let n = 0; for (const t of this.targets) if (t.alive) n++; return n; }
   /**
    * Air defenses: SAM sites and missile ships fire missiles at the player inside their range, rationed like the bandits'
    * launches (js/ai.js launchAllowed: the difficulty's cap on enemy missiles after the player, 1.5 s since the last launch
-   * at them) and at most diff.samCap surface launches in flight at the player (a held launcher keeps its missile and
-   * cooldown and looks again next frame); gun units fire flak shells at the player (onFlak(position, damage, gun) lets
-   * the game spawn the puff and apply the damage, 0 / false = a miss), at most diff.aaGuns land guns and diff.shipGuns
-   * ship AA mounts at once and the rest a harmless barrage now and then (header: Flak). Allied props never fire.
+   * at them), at most diff.samCap surface launches in flight at the player, and none for diff.samRearm s after one of
+   * those ends (hit, flared, outrun or out of fuel: defeating a missile buys a breather instead of drawing the next
+   * site's launch at once), half that after a launch (a held launcher keeps its missile and cooldown and looks again
+   * next frame); gun units fire flak shells at the player (onFlak(position, damage, gun) lets the game spawn the puff
+   * and apply the damage, 0 / false = a miss), at most diff.aaGuns land guns and diff.shipGuns ship AA mounts at once
+   * and the rest a harmless barrage now and then (header: Flak). Allied props never fire.
    */
   update(dt, player, weapons, onFlak, diff) {
     this._updateShells(dt, player, onFlak);
@@ -475,7 +481,13 @@ export class GroundForces {
     const cap = diff && diff.aaGuns >= 0 ? Math.min(AA_MAX, Math.round(diff.aaGuns)) : AA_MAX;
     const shipCap = diff && diff.shipGuns >= 0 ? Math.min(AA_MAX, Math.round(diff.shipGuns)) : AA_MAX;
     const err = diff && diff.aaError > 0 ? diff.aaError : 1;
-    const samCap = diff && diff.samCap >= 0 ? diff.samCap : Infinity;
+    const samCap = diff && diff.samCap >= 0 ? diff.samCap : Infinity, rearm = diff && diff.samRearm > 0 ? diff.samRearm : 0;
+    this._samHold -= dt;
+    if (this._samLive > 0) {             // a surface launch at the player was in flight: count again, and hold on an end
+      let n = 0; for (const m of weapons.missiles) if (m.alive && m.target === player && m.groundLaunch) n++;
+      if (n < this._samLive) this._samHold = rearm;
+      this._samLive = n;
+    }
     this._aaT -= dt;
     if (this._aaT <= 0) { this._aaT = AA_PICK; this._aaN = this._pickGuns(player.position, cap, false); this._shipN = this._pickGuns(player.position, shipCap, true); }
     let surface = -1;                     // surface-launched missiles after the player (counted on the first launch try)
@@ -486,7 +498,7 @@ export class GroundForces {
       const d = t.position.distanceTo(player.position);
       if (d > (t.def.range || 3000)) { t.cool = 0.5; continue; }
       if (t.def.shoots === 'missile') {
-        if (!launchAllowed(player, weapons)) continue;   // rationed: hold the missile
+        if (this._samHold > 0 || !launchAllowed(player, weapons)) continue;   // rationed: hold the missile
         if (surface < 0) { surface = 0; for (const m of weapons.missiles) if (m.alive && m.target === player && m.groundLaunch) surface++; }
         if (surface >= samCap) continue;
       }
@@ -497,7 +509,7 @@ export class GroundForces {
         _v.subVectors(player.position, t.position).normalize(); _v.y = Math.max(_v.y, 0.25); _v.normalize();
         t.quaternion.setFromUnitVectors(FWD, _v);
         const m = weapons.fireMissile(t, player);
-        if (m) { noteLaunch(player, weapons); surface++; }
+        if (m) { noteLaunch(player, weapons); surface++; this._samLive = surface; this._samHold = Math.max(this._samHold, rearm * 0.5); }
         t.quaternion.setFromAxisAngle(UP, t.heading);
         t.cool = m ? 9 + Math.random() * 6 : 2;
       } else if (t.def.shoots === 'gun') {

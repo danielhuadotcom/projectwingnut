@@ -785,7 +785,7 @@ async function runSelfTest() {
       check('wizard opens', menu.screen === 'padwiz');
       check('no pad yet: asks for a controller', /connect a controller/i.test(prompt()), prompt());
       feed(raw(), 40);
-      check('calibrated: step 1 asks for PITCH UP', /PITCH UP/.test(prompt()) && /Step 1 of 13/.test(W.querySelector('.m-wiz-eye').textContent), prompt());
+      check('calibrated: step 1 asks for PITCH UP', /PITCH UP/.test(prompt()) && /Step 1 of 14/.test(W.querySelector('.m-wiz-eye').textContent), prompt());
       feed(raw({ 1: 0.55 }), 3);
       check('live readout shows the input below the threshold', /L stick ↓/.test(readout()) && /PITCH UP/.test(prompt()), readout());
       feed(raw(), 2); feed(raw({ 3: -0.92 }), 2);
@@ -818,7 +818,7 @@ async function runSelfTest() {
       check('Backspace goes back', /RUDDER LEFT/.test(prompt()), prompt());
       W.querySelector('[data-act="wiz-skip"]').click(); check('the Skip button skips', /BOOST/.test(prompt()), prompt());
       for (let i = 0; i < 12 && !menu._wiz.done; i++) { feed(raw({}, { 15: 1 }), 1); feed(raw(), 1); }   // D-pad → skips the rest
-      check('final step: live test screen', menu._wiz.phase === 'test' && !W.querySelector('.m-wiz-test').hidden && W.querySelectorAll('.m-wt').length === 13);
+      check('final step: live test screen', menu._wiz.phase === 'test' && !W.querySelector('.m-wiz-test').hidden && W.querySelectorAll('.m-wt').length === 14);
       check('test screen focus starts on the panel (A tests, saves nothing)', menu._focusEl === W.querySelector('.m-wiz-test'));
       calls.length = 0;
       feed(raw({ 3: -1 }, { 7: 0.5 }), 2, ['menuConfirm']); feed(raw({ 3: -1 }, { 7: 0.5 }), 1);

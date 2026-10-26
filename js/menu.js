@@ -331,6 +331,7 @@ function padCard(map, layout) {
     [[k(esc(d(m.target)), 1)], 'Tap: next target · hold: padlock view'],
     [[k(esc(d(m.lookBack)), 1)], 'Look back'],
     [[k(esc(d(m.flares)), 1)], 'Flares'],
+    [[k(esc(d(m.aoaOff)), 1)], 'AOA limiter off <em>(hold: the nose swings free)</em>'],
     [[k('Start', 1)], 'Pause'],
   ]);
 }
@@ -340,6 +341,7 @@ const TOUCH_CARD = '<h3>Touch <small>On screen</small></h3><p class="m-cnote">Th
   [[k('Fire buttons', 1)], 'Missile · cannon'],
   [[k('Target', 1)], 'Tap: next target · hold: padlock view'],
   [[k('Flares', 1)], 'Decoy incoming missiles'],
+  [[k('AOA', 1)], 'AOA limiter off <em>(hold: the nose swings free)</em>'],
   [[k('Look back', 1)], 'Rear view while held'],
   [[k('Pause', 1)], 'This menu'],
 ]) + '<p class="m-cfoot">Show or hide them in Settings › Controls › Touch controls.</p>';
@@ -358,6 +360,7 @@ function kbCard(simple, keys) {
       [first('throttle+'), simple ? 'Hard pull' : 'Boost'],
       ...(simple ? [] : [[first('throttle-'), 'Airbrake']]),
       [first('flares'), 'Flares'],
+      [first('aoaOff'), 'AOA limiter off <em>(hold: the nose swings to the aim)</em>'],
       [first('target'), 'Tap: next target · hold: padlock view'],
       [first('freeLook'), 'Free look <em>(hold)</em>'],
       [first('lookBack'), 'Look back'],
