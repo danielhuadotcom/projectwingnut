@@ -2112,6 +2112,7 @@ class Game {
       case 'padLayout': if (this.input.setPadLayout) this.input.setPadLayout(v); break;               // js/bindings.js layouts
       case 'bindings': if (this.input.setBindings) this.input.setBindings(v); break;                  // { pad, keys } from the binding screens
       case 'cameraShake': this.chase.shakeScale = v === false ? 0 : 1; break;
+      case 'fov': this.chase.baseFov = THREE.MathUtils.clamp(Number(v) || 66, 50, 100); break;   // chase, padlock and rear views
       case 'screenFlash': this.post.flashEnabled = v === true; break;   // white PostFX flash (explosions, flak, shot down)
       case 'master': this.audio.setMaster(Number(v)); break;
       case 'music': if (this.music && this.music.setVolume) this.music.setVolume(Number(v)); break;

@@ -120,7 +120,7 @@ const SOURCES = {
     file: 'oga_minesare_rocket/rocket_engine.001.wav',
   },
   synth: {
-    title: 'Procedural synthesis in tools/build_sfx.mjs (SYNTH: ignition crack/thump, crackling rocket motor, coloured noise; no recorded source)',
+    title: 'Procedural synthesis in tools/build_sfx.mjs (SYNTH: ignition thump, rocket motor roar, air-rush whoosh, coloured noise; no recorded source)',
     author: 'PROJECT WINGNUT', ...CC0, page: 'tools/build_sfx.mjs',
   },
 };
@@ -133,21 +133,30 @@ const SOURCES = {
 // `gain` on a sound is the runtime mixing level written into js/sfx_data.js (AudioFX multiplies by it).
 // ---------------------------------------------------------------------------------------------------------------------
 // --- missile launch candidates. One ships as SFX.missile (MISSILE_DEFAULT; override with --missile=<key>); all of them
-//     render with --preview=<dir>. Each: release clunk / ignition crack + sub thump at t=0, then a roaring, crackling
-//     motor that tears away: a doppler pitch drop (playback-rate curve), a 4-pole lowpass closing as it recedes (air
-//     absorption), a falling level, and a terrain slap echo for space. AudioFX adds stereo (hardpoint side + Haas width).
+//     render with --preview=<dir>. Each: release clunk / ignition + sub thump at t=0, then a roaring motor that tears
+//     away: a doppler pitch drop (playback-rate curve), a 4-pole lowpass closing as it recedes (air absorption), a
+//     falling level, and a terrain slap echo for space. AudioFX adds stereo (hardpoint side + Haas width).
 const MSL_DOPPLER = [[0, 1.04], [0.18, 1.0], [0.9, 0.86], [2.4, 0.74]];
 const MSL_LP = [[0, 15000], [0.2, 11000], [0.7, 4200], [1.4, 1900], [2.4, 900]];
 const MSL_ENV = [[0, -24], [0.035, 0], [0.32, -1.5], [0.9, -8], [1.6, -16], [2.4, -30]];
 const MSL_COMMON = { kbps: 64, maxDur: 2.4, fadeOut: 0.55, trim: -40, loudness: { mode: 'momentary', target: -17 },
   post: 'aecho=in_gain=1:out_gain=0.9:delays=95|230:decays=0.2|0.11' };
 const IGNITION = { src: 'synth', synth: 'ignition', seed: 7, dur: 0.55, crack: 0.9, chuff: 0.7, thump: 1.0, f0: 90, f1: 38, gain: -3 };
+// Default launch is a smooth, bass-heavy whoosh (no crack, no crackle): a deeper doppler fall and a darker recession
+// (little above ~5 kHz even at t=0), with the low-mid roar and sub rumble carrying the level.
+const MSL_DOPPLER_DEEP = [[0, 1.03], [0.2, 1.0], [0.9, 0.8], [2.4, 0.64]];
+const MSL_LP_DARK = [[0, 4800], [0.25, 4000], [0.8, 2100], [1.5, 1050], [2.4, 520]];
 const MISSILE_CANDIDATES = {
-  // A: all-procedural (CC0, no recordings): ignition + crackling motor, the cleanest "Ace Combat" tear-away.
-  synth: { out: 'missile', ...MSL_COMMON, layers: [
-    IGNITION,
-    { src: 'synth', synth: 'motor', seed: 11, dur: 3.4, rate: 520, crackle: 0.85, roar: 1, rumble: 0.55, roarHz: 620, flutter: 0.4,
-      delay: 0.012, doppler: MSL_DOPPLER, lpSweep: MSL_LP, env: MSL_ENV, gain: -1 },
+  // A: all-procedural (CC0, no recordings): soft ignition thump (no shock crack), a dark crackle-free roar over a sub
+  //    rumble, and a resonant air rush whose band glides down as the missile pulls away.
+  synth: { out: 'missile', ...MSL_COMMON, post: `lowshelf=f=140:g=2.5,${MSL_COMMON.post}`, layers: [
+    { src: 'synth', synth: 'ignition', seed: 7, dur: 0.7, crack: 0, chuff: 0.5, chuffHz: 210, thump: 1.15, f0: 72, f1: 33, thumpTau: 0.2,
+      af: 'lowpass=f=1800', gain: -2 },
+    { src: 'synth', synth: 'motor', seed: 11, dur: 3.4, crackle: 0, roar: 1, rumble: 0.9, roarHz: 300, roarLp: 1700, flutter: 0.3, flutterHz: 5, af: 'highpass=f=30',
+      delay: 0.012, doppler: MSL_DOPPLER_DEEP, lpSweep: MSL_LP_DARK, env: MSL_ENV, gain: -1 },
+    { src: 'synth', synth: 'whoosh', seed: 13, dur: 2.6, sweep: [[0, 1300], [0.14, 1600], [0.6, 650], [1.5, 300], [2.4, 190]], q: 1.3,
+      body: 0.9, swell: 0.35, swellHz: 2.2, af: 'highpass=f=30', delay: 0.02, lpSweep: MSL_LP_DARK,
+      env: [[0, -30], [0.07, -3], [0.28, 0], [0.9, -7], [1.8, -18], [2.4, -32]], gain: -1 },
   ] },
   // B: hybrid: Kenney metal clunk (rail release) + ignition, dklon's comb-swept receding rocket whoosh (CC BY 3.0) as the
   //    tearing body, procedural crackle on top and a CC0 low rocket rumble for weight.
@@ -173,20 +182,23 @@ const MISSILE_CANDIDATES = {
   ] },
 };
 const MISSILE_DEFAULT = (process.argv.find((a) => a.startsWith('--missile=')) || '').slice(10) || 'synth';
-// Pass-by: a missile (anyone's but the player's) crossing within ~70 m. Crackling motor approaching (pitch high, dull)
-// -> closest approach at FLYBY_PEAK s (lowpass wide open, loudest) -> receding (pitch drops ~0.6x, dulls fast), over a
-// band-passed air "tear". AudioFX schedules the sample so its peak lands on the predicted closest approach.
+// Pass-by: a missile (anyone's but the player's) crossing within ~70 m. Dark roar approaching (pitch high, dull)
+// -> closest approach at FLYBY_PEAK s (lowpass most open, loudest) -> receding (pitch drops ~0.6x, dulls fast), over a
+// resonant air rush gliding up into the peak and down after it. No crackle and little above ~5 kHz: a whoosh, not a
+// fizz. AudioFX schedules the sample so its peak lands on the predicted closest approach.
 const FLYBY_PEAK = 0.42;
 const flybyRate = (t) => 0.78 + 0.5 * (1 - Math.tanh((t - FLYBY_PEAK) / 0.09)) * 0.5;   // 1.28 -> 0.78
-const MISSILE_FLYBY = { out: 'missile_flyby', kbps: 56, maxDur: 1.35, fadeIn: 0.02, fadeOut: 0.5, trim: false, softClip: 0.45, loudness: { mode: 'momentary', target: -17 },
+const MISSILE_FLYBY = { out: 'missile_flyby', kbps: 56, maxDur: 1.35, fadeIn: 0.02, fadeOut: 0.5, trim: false, loudness: { mode: 'momentary', target: -17 },
+  post: 'highpass=f=30,lowshelf=f=140:g=2.5',
   layers: [
-    { src: 'synth', synth: 'motor', seed: 41, dur: 2.2, rate: 650, crackle: 0.9, roar: 1, rumble: 0.35, roarHz: 800, flutter: 0.45,
+    { src: 'synth', synth: 'motor', seed: 41, dur: 2.2, crackle: 0, roar: 1, rumble: 0.8, roarHz: 380, roarLp: 2000, flutter: 0.35, flutterHz: 7,
       doppler: Array.from({ length: 28 }, (_, i) => [i * 0.05, flybyRate(i * 0.05)]),
-      lpSweep: [[0, 1800], [FLYBY_PEAK - 0.12, 5000], [FLYBY_PEAK, 13000], [FLYBY_PEAK + 0.15, 3500], [1.35, 900]],
+      lpSweep: [[0, 900], [FLYBY_PEAK - 0.12, 2200], [FLYBY_PEAK, 4800], [FLYBY_PEAK + 0.15, 1800], [1.35, 550]],
       env: [[0, -26], [FLYBY_PEAK - 0.2, -13], [FLYBY_PEAK - 0.05, -3], [FLYBY_PEAK, 0], [FLYBY_PEAK + 0.12, -6], [FLYBY_PEAK + 0.45, -18], [1.35, -36]] },
-    { src: 'synth', synth: 'noise', color: 'pink', seed: 43, dur: 1.4, af: 'highpass=f=700,lowpass=f=9000', gain: -9,
-      lpSweep: [[0, 2500], [FLYBY_PEAK, 11000], [FLYBY_PEAK + 0.3, 2500]],
-      env: [[0, -36], [FLYBY_PEAK - 0.1, -10], [FLYBY_PEAK, 0], [FLYBY_PEAK + 0.1, -10], [FLYBY_PEAK + 0.5, -36]] },
+    { src: 'synth', synth: 'whoosh', seed: 43, dur: 1.4, q: 1.4, body: 0.5, swell: 0.2, swellHz: 4,
+      sweep: [[0, 450], [FLYBY_PEAK - 0.05, 1300], [FLYBY_PEAK + 0.05, 1100], [FLYBY_PEAK + 0.4, 320], [1.4, 220]],
+      lpSweep: [[0, 1600], [FLYBY_PEAK, 4500], [FLYBY_PEAK + 0.3, 1500]], gain: -4,
+      env: [[0, -36], [FLYBY_PEAK - 0.12, -10], [FLYBY_PEAK, 0], [FLYBY_PEAK + 0.12, -8], [FLYBY_PEAK + 0.5, -36]] },
   ] };
 
 const BASS_ROAR = 'equalizer=f=95:t=q:w=0.9:g=4';               // low end of the turbofan roar
@@ -392,6 +404,32 @@ const SYNTH = {
     rmsNorm(roar); rmsNorm(crk); rmsNorm(rum);
     const y = new Float32Array(n), gr = L.roar ?? 1, gc = L.crackle ?? 0.7, gu = L.rumble ?? 0.5;
     for (let i = 0; i < n; i++) y[i] = gr * roar[i] + gc * crk[i] + gu * rum[i];
+    return y;
+  },
+  /**
+   * Dark air rush: pink + brown noise through a resonant bandpass whose centre glides along L.sweep [[t, Hz], ...]
+   * (log-interpolated; the "whoosh" of a body tearing away), summed with a lowpassed body under it, and a slow
+   * random swell (L.swellHz, depth L.swell) instead of crackle. No impulses, so nothing harsh above a few kHz.
+   */
+  whoosh(L, rnd) {
+    const n = Math.round(L.dur * SR), y = new Float32Array(n), bp = bqNew('bandpass', L.sweep[0][1], L.q ?? 1.2), lpB = bqNew('lowpass', L.bodyLp ?? 420);
+    let b0 = 0, b1 = 0, b2 = 0, b3 = 0, b4 = 0, b5 = 0, b6 = 0, br = 0, s1 = 0, s2 = 0;
+    const sA = 1 - Math.exp(-2 * Math.PI * (L.swellHz ?? 2.5) / SR), sw = new Float32Array(n);
+    for (let i = 0; i < n; i++) { s1 += (rnd() * 2 - 1 - s1) * sA; s2 += (s1 - s2) * sA; sw[i] = s2; }
+    { let s = 0; for (let i = 0; i < n; i++) s += sw[i] * sw[i]; const k = 1 / (Math.sqrt(s / n) || 1);
+      for (let i = 0; i < n; i++) sw[i] = Math.max(0.3, 1 + (L.swell ?? 0.3) * Math.max(-2, Math.min(2, sw[i] * k))); }
+    const bpOut = new Float32Array(n), body = new Float32Array(n);
+    for (let i = 0; i < n; i++) {
+      const w = rnd() * 2 - 1;
+      b0 = 0.99886 * b0 + w * 0.0555179; b1 = 0.99332 * b1 + w * 0.0750759; b2 = 0.969 * b2 + w * 0.153852; b3 = 0.8665 * b3 + w * 0.3104856;
+      b4 = 0.55 * b4 + w * 0.5329522; b5 = -0.7616 * b5 - w * 0.016898; const pink = b0 + b1 + b2 + b3 + b4 + b5 + b6 + w * 0.5362; b6 = w * 0.115926;
+      br = (br + 0.02 * (rnd() * 2 - 1)) / 1.02;
+      if ((i & 31) === 0) bqCoef(bp, 'bandpass', curveAt(L.sweep, i / SR, true), L.q ?? 1.2);
+      bpOut[i] = bqRun(bp, pink); body[i] = bqRun(lpB, pink + 8 * br);
+    }
+    rmsNorm(bpOut); rmsNorm(body);
+    const gb = L.body ?? 0.8;
+    for (let i = 0; i < n; i++) y[i] = (bpOut[i] + gb * body[i]) * sw[i];
     return y;
   },
 };

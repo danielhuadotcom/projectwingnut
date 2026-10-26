@@ -20,8 +20,8 @@ modified derivatives (trimmed, mixed, pitch-shifted, EQ'd, loudness-normalised, 
 | `assets/sfx/afterburner.ogg` | `SFX.afterburner` | [cf18](#cf18) | 21.8 KB | 3.24 s (loop 0.120–3.120 s) |
 | `assets/sfx/gun_a.ogg` | `SFX.gun` | [rdBang](#rdbang) | 2.4 KB | 0.24 s |
 | `assets/sfx/gun_b.ogg` | `SFX.gun` | [rdBang](#rdbang) | 2.6 KB | 0.24 s |
-| `assets/sfx/missile.ogg` | `SFX.missile` | [synth](#synth) | 18.7 KB | 2.40 s |
-| `assets/sfx/missile_flyby.ogg` | `SFX.missile_flyby` | [synth](#synth) | 10.0 KB | 1.35 s |
+| `assets/sfx/missile.ogg` | `SFX.missile` | [synth](#synth) | 15.5 KB | 2.40 s |
+| `assets/sfx/missile_flyby.ogg` | `SFX.missile_flyby` | [synth](#synth) | 7.7 KB | 1.35 s |
 | `assets/sfx/explosion_near.ogg` | `SFX.explosion` | [chunky](#chunky) | 25.5 KB | 3.60 s |
 | `assets/sfx/explosion_mid.ogg` | `SFX.explosion` | [rdBang](#rdbang), [battleSea](#battlesea) | 9.9 KB | 1.80 s |
 | `assets/sfx/explosion_far.ogg` | `SFX.explosion` | [battleSea](#battlesea) | 10.7 KB | 2.42 s |
@@ -128,7 +128,7 @@ modified derivatives (trimmed, mixed, pitch-shifted, EQ'd, loudness-normalised, 
 
 ### synth
 
-- **Title:** Procedural synthesis in tools/build_sfx.mjs (SYNTH: ignition crack/thump, crackling rocket motor, coloured noise; no recorded source)
+- **Title:** Procedural synthesis in tools/build_sfx.mjs (SYNTH: ignition thump, rocket motor roar, air-rush whoosh, coloured noise; no recorded source)
 - **Author:** PROJECT WINGNUT
 - **License:** CC0 1.0 (public domain dedication) – https://creativecommons.org/publicdomain/zero/1.0/
 - **Source page:** tools/build_sfx.mjs

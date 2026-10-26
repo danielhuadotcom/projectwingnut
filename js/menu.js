@@ -69,7 +69,7 @@ import { fullscreenSupported, isFullscreen, setFullscreen, onFullscreenChange } 
 export const DEFAULT_SETTINGS = Object.freeze({
   quality: 'auto', perfOverlay: false, invertPitch: false, mouseSens: 1, mouseKeys: 'simple', touch: 'auto', cameraShake: true, screenFlash: false,
   master: 0.8, music: 0.7, sfx: 0.9, voice: 1.0, wso: false, subtitles: true, difficulty: 'normal',
-  expoPitch: STICK_EXPO, expoRoll: STICK_EXPO, expoYaw: STICK_EXPO, gunPrecision: GUN_PRECISION, padLayout: 'mode2',
+  expoPitch: STICK_EXPO, expoRoll: STICK_EXPO, expoYaw: STICK_EXPO, gunPrecision: GUN_PRECISION, padLayout: 'mode2', fov: 66,
 });
 const STORE_KEY = 'wingnut.settings';
 const pct = (v) => `${Math.round(v * 100)}%`;
@@ -101,6 +101,9 @@ export const SETTING_DEFS = [
   { key: 'touch', tab: 'controls', type: 'choice', label: 'Touch controls',
     options: [['auto', 'Auto'], ['on', 'On'], ['off', 'Off']],
     desc: 'On-screen sticks and buttons. Auto shows them on touch screens.' },
+  // js/camera.js baseFov (vertical degrees); speed and afterburner still widen it on top
+  { key: 'fov', tab: 'controls', type: 'slider', label: 'Field of view', min: 50, max: 100, step: 2, dragStep: 1, format: (v) => `${Math.round(v)}°`,
+    desc: 'Vertical view angle. Wider shows more around the jet, including what is behind you when you look back.' },
   { key: 'cameraShake', tab: 'controls', type: 'toggle', label: 'Camera shake',
     desc: 'Triggered by hits, flak and nearby explosions.' },
   { key: 'screenFlash', tab: 'controls', type: 'toggle', label: 'Screen flash',

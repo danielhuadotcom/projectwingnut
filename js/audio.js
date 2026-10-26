@@ -608,7 +608,7 @@ export class AudioFX {
   }
 
   /**
-   * Missile launch: release / ignition crack + sub thump, then a crackling motor tearing away (doppler drop and
+   * Missile launch: soft ignition thump, then a dark roar and air-rush whoosh tearing away (doppler drop and
    * lowpass recession baked into SFX.missile). distance 0 = the player's own shot (alternating hardpoint side, Haas
    * width); distance > 0 m = someone else's launch (attenuated, dulled, delayed by distance/340 s, low priority, panned
    * by `pan` -1..1). Launches further than REMOTE_LAUNCH_MAX are silent.
