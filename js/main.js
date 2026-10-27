@@ -104,6 +104,7 @@ const ENEMY_MISSILE_TURN = 0.6;
 // a close tail chase (a missile still accelerating, closing at 250-450 m/s) left 0.2-0.35 s unguided: long enough for an
 // ordinary evasive turn to slip the 13 m fuse (js/weapons.js fireMissile). Per-shot values on the Missile, set in
 // onMissileLaunch.
+const AOA_STICK = { SCALE: 0.78, LIN: 0.35 };   // gamepad / touch with the AOA limiter off: top rate x SCALE, curve LIN linear + rest cubic
 const AOA_MOUSE_SETTLE = 0.3;   // s the mouse aim rides the nose after the AOA limiter
 const AOA_MOUSE_STICK = 0.005;   // virtual stick deflection per mouse px while the AOA limiter is off (x mouse sensitivity): full at ~200 px
 const PLAYER_MISSILE = { maxSpeed: 350, carry: 1.9, boostTime: 2.4, drag: 0.7e-4, life: 6, turnScale: 1.3, fuse: 13, blindTime: 0.05,
@@ -1726,7 +1727,12 @@ class Game {
     if (p.alive) {
       if (this.bench) this.benchAutopilot(dt);
       else if (this.isMouseMode()) this.mouseAimControl(dt);
-      else p.setControls({ pitch: input.pitch, roll: input.roll, yaw: input.yaw, throttleDelta: input.throttleDelta, aoaOff: input.aoaOff });
+      else if (p.aoaOff) {
+        // AOA limiter off on a stick (gamepad / touch): the free rates are tamed (AOA_STICK): a softer curve so small
+        // deflections aim, and full deflection tops out at SCALE of the mouse's rates
+        const sh = (v) => Math.sign(v) * (AOA_STICK.LIN * Math.abs(v) + (1 - AOA_STICK.LIN) * Math.abs(v) ** 3) * AOA_STICK.SCALE;
+        p.setControls({ pitch: sh(input.pitch), roll: sh(input.roll), yaw: sh(input.yaw), throttleDelta: input.throttleDelta, aoaOff: input.aoaOff });
+      } else p.setControls({ pitch: input.pitch, roll: input.roll, yaw: input.yaw, throttleDelta: input.throttleDelta, aoaOff: input.aoaOff });
       p.update(dt);
       if (p.aoaOff !== !!this._aoaWas) {   // AOA limiter cue (the release one only for a real release, not a respawn)
         this._aoaWas = p.aoaOff;

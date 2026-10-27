@@ -17,7 +17,7 @@
 //   sun=game      the game's 22 deg sun (default 35 deg for clearer shape reading)
 //   perf=1        GPU timing (EXT_disjoint_timer_query_webgl2): whole frame with jets shown vs hidden
 import * as THREE from 'https://cdnjs.cloudflare.com/ajax/libs/three.js/0.170.0/three.module.min.js';
-import { Aircraft, FLIGHT, AIRCRAFT_RADIUS, getJetStats, AOA_COOLDOWN } from './js/aircraft.js';
+import { Aircraft, FLIGHT, AIRCRAFT_RADIUS, getJetStats, AOA_COOLDOWN, AOA_OFF } from './js/aircraft.js';
 import { PostFX } from './js/post.js';
 
 const params = new URLSearchParams(location.search);
@@ -146,7 +146,7 @@ for (let i = 0; i < Math.round(FF / DT); i++) step();
   d0.copy(t.velocity).normalize(); const s0 = t.speed;
   run(0.1, { aoaOff: true });
   check('AOA engages on press', t.aoaOff === true);
-  run(0.45, { aoaOff: true, pitch: 1 });                                    // AOA_OFF.PITCH x the pitch rate: well past 90 deg
+  run(0.1 + 2.6 / (FLIGHT.PITCH_RATE * AOA_OFF.PITCH), { aoaOff: true, pitch: 1 });   // ~150 deg at the AOA pitch rate (+ spin-up)
   t.getForward(f);
   check('AOA: nose swings far off the path', ang(f, d0) > 120, ang(f, d0));
   check('AOA: momentum kept (path within 3 deg)', ang(t.velocity, d0) < 3, ang(t.velocity, d0));
