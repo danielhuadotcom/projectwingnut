@@ -169,6 +169,13 @@ try {
     dir.setTrack('night', { fade: 0.4 }); dir.stop({ fade: 0 }); await new Promise((r) => setTimeout(r, 700));
     check('switch: stop() in the gap cancels the next track', !dir.playing, players()); }
   dir.setTrack('epic', { fade: 0.05 }); for (let i = 0; i < 40 && !dir.playing; i++) await new Promise((r) => setTimeout(r, 50));
+  // restart (a mission retry): the same track fades out and plays again from the top
+  { await new Promise((r) => setTimeout(r, 1500)); const before = dir._players.epic.position;
+    dir.setTrack('epic', { fade: 0.3 }); check('same track, no restart: keeps playing', dir._players.epic.position >= before);
+    dir.setTrack('epic', { restart: true, fade: 0.3 }); await new Promise((r) => setTimeout(r, 150));
+    check('restart: fading out first (not yet restarted)', !dir._players.epic.playing, dir._players.epic.position);
+    for (let i = 0; i < 40 && !dir.playing; i++) await new Promise((r) => setTimeout(r, 50));
+    check('restart: from the top', dir.playing && dir._players.epic.position < 0.6 && before > 1, { before, now: dir._players.epic.position }); }
   dir.cue({ action: 'cut', fade: 0.05 }); dir.setCustom('epic', null);
   check('no switch while a cue holds the music cut', dir.cut && !dir.wanted, { cut: dir.cut, wanted: dir.wanted });
   dir.dispose();

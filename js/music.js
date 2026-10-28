@@ -277,7 +277,8 @@ const REPLACED = '~replaced';   // setCustom: the key the audio a file replaced 
  * The soundtrack: which track plays, and the switches between tracks. Same surface as Music for the game's everyday
  * calls (play / stop / duck / setMuffled / setVolume / dispose; play() with no name is the "make sure something plays"
  * call of the first-gesture handlers, a no-op while a cue holds the music cut), plus:
- *   setTrack(name, { fade })  the mission's track: switch to it (no-op if it already plays) and remember it
+ *   setTrack(name, { fade, restart })  the mission's track: switch to it (no-op if it already plays, unless restart:
+ *                             then it fades out and starts again from the top) and remember it
  *   cue(action)               a radio-script MUSIC cue: { action: 'play', track, fade } | { action: 'cut', fade } |
  *                             { action: 'resume', fade } (back to the mission's track)
  *   prefetch(names)           fetch streamed tracks' files ahead of need (before unlock too)
@@ -396,7 +397,7 @@ export class MusicDirector {
   }
   _switch(r, fade, opts) {
     const cur = this.current && this._players[this.current];
-    if (r === this.current && cur && cur.playing && !this.wanted) return;          // already playing it
+    if (r === this.current && cur && cur.playing && !this.wanted && !opts.restart) return;   // already playing it
     const m = this._player(r);
     if (!m) return;
     this.wanted = r;
@@ -404,8 +405,9 @@ export class MusicDirector {
     // over `fade` instead)
     const go = () => {
       if (this._disposed || this.wanted !== r || this.cut) return;
-      const old = this.current && this.current !== r ? this._players[this.current] : null;
-      const oldName = old ? this.current : null;
+      const again = !!opts.restart && this.current === r && m.playing;   // restart: the same track fades out and starts over
+      const old = again ? m : this.current && this.current !== r ? this._players[this.current] : null;
+      const oldName = old && !again ? this.current : null;
       const wait = old && old.playing ? Math.max(0.05, fade) : 0;
       if (old) old.stop({ fade: Math.max(0.05, fade) });
       this.current = r; this.wanted = null;

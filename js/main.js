@@ -661,7 +661,7 @@ class Game {
     this.comms.resetMission(M, this);
     const extraTracks = M.phases.map((P) => P.music).concat(this.comms.script.filter((e) => e.music && e.music.track).map((e) => e.music.track)).filter(Boolean);
     this.music.keepOnly([missionTrack(M), ...extraTracks]);   // other tracks' decoded audio (~60 MB each) is released
-    this.music.setTrack(missionTrack(M));
+    this.music.setTrack(missionTrack(M), { restart: true, fade: 1.5 });   // every sortie (a retry too) from the top
     this.music.prefetch(extraTracks);
     this.music.predecode(extraTracks);   // phase and cue music (Mainspring's arrivals) starts the moment it is called
     this.say('sortieStart', 3);
@@ -825,7 +825,7 @@ class Game {
     this.message('INFINITY', true, 4);
     this.comms.resetMission(null, this);
     this.music.keepOnly(['epic']);
-    this.music.setTrack('epic');
+    this.music.setTrack('epic', { restart: true, fade: 1.5 });
     this.say('sortieStart', 3);
     this.nextRound();
   }
