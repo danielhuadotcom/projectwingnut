@@ -68,7 +68,9 @@ const SOLID_SPAN = 0.9, SOLID_THICK = 0.25, SOLID_MARGIN = 3;
 const HARDPOINTS = 4, HARDPOINT_RELOAD = 5;   // four standard-missile hardpoints (stands in for PW special-weapon slots), s per hardpoint
 const FLARE_RELOAD = 7;                         // s (PW: infinite flares, 7 s reload)
 const GUN_LEAD_RANGE = 1800;                    // m: lead pipper inside this (rounds reach ~2.3 km, weaker past ~1.1 km)
-const GUN_HOT_RANGE = 1200;                     // m: the red "hot" pipper and the WSO "guns" call only inside this
+const GUN_HOT_RANGE = 1200;
+const LEAD_ACC_TAU = 0.15, LEAD_ACC_MAX = 120;   // s smoothing of the target's acceleration estimate; m/s^2 cap (gun lead)
+const LEAD_SMOOTH_TAU = 0.04;                    // s: the lead direction's smoothing (in the world)                     // m: the red "hot" pipper and the WSO "guns" call only inside this
 const RADAR_RANGE = 8000;
 const TAP_TIME = 0.25;
 const PLAYER_ARMOR = 0.5;      // incoming damage multiplier for the player
@@ -2701,15 +2703,21 @@ class Game {
       _v.subVectors(p.velocity, t.velocity); T.closure = _v.dot(_v2) / Math.max(T.distance, 1e-3);
       T.r = hudRadius(t) * pxm / Math.max(1, t.position.distanceTo(cam.position));
       // Gun lead (within GUN_LEAD_RANGE, target ahead): solve from the gun muzzle. Rounds inherit our velocity and drop
-      // (weapons.bulletGravity), so the launch direction is toward T + (vT - vP)*tof, lifted by the drop; refine 3x.
+      // (weapons.bulletGravity), so the launch direction is toward T + (vT - vP)*tof + aT*tof^2/2 (aT: the target's
+      // acceleration, from its velocity's change, smoothed over LEAD_ACC_TAU s: a turning target is led along its turn),
+      // lifted by the drop; refine 3x.
       p.getForward(_fwd);
+      const L = this._lead || (this._lead = { t: null, v: new THREE.Vector3(), a: new THREE.Vector3(), dir: new THREE.Vector3(), at: -1 });
+      if (L.t !== t || this.time - L.at > 0.3) { L.t = t; L.v.copy(t.velocity); L.a.set(0, 0, 0); L.dir.set(0, 0, 0); }
+      else if (dt > 0) { _v.subVectors(t.velocity, L.v).multiplyScalar(1 / dt); L.a.lerp(_v, 1 - Math.exp(-dt / LEAD_ACC_TAU)); L.v.copy(t.velocity); }
+      if (L.a.lengthSq() > LEAD_ACC_MAX * LEAD_ACC_MAX) L.a.setLength(LEAD_ACC_MAX);   // (respawns, teleports)
       const gun = this.gunOrigin(_v3), W = this.weapons, bs = W.bulletSpeed;
       _v2.subVectors(t.position, gun);
       const gd = _v2.length();
       let tof = gd / bs;
       if (gd < GUN_LEAD_RANGE && _v2.dot(_fwd) > gd * 0.4) {
         for (let it = 0; it < 3; it++) {
-          _v.copy(t.position).addScaledVector(t.velocity, tof).addScaledVector(p.velocity, -tof);
+          _v.copy(t.position).addScaledVector(t.velocity, tof).addScaledVector(p.velocity, -tof).addScaledVector(L.a, 0.5 * tof * tof);
           tof = _v.distanceTo(gun) / bs;
         }
       }
@@ -2720,13 +2728,12 @@ class Game {
         T.leadHot = gd < GUN_HOT_RANGE && _v.dot(_fwd) > Math.cos(Math.atan2(0.85 * W.gunHitRadiusFor(p, t), gd));
         if (T.leadHot && !this._gunHot && this.state === 'playing' && p.alive && !t.isGround) this.say('gunSolution', 1, undefined, t);   // the WSO: "guns!" (rate-limited)
         this._gunHot = T.leadHot;
-        _v.multiplyScalar(gd).add(gun);
+        // smooth the aim direction in the world (target jitter), never on screen: a screen-space lag would trail the
+        // gun cross whenever the camera turns with us
+        if (L.dir.lengthSq() === 0) L.dir.copy(_v); else L.dir.lerp(_v, 1 - Math.exp(-dt / LEAD_SMOOTH_TAU)).normalize();
+        L.at = this.time;
+        _v.copy(L.dir).multiplyScalar(gd).add(gun);
         this.project(_v, T._lead);
-        // smooth the marker on screen (target jitter + camera shake)
-        const sm = T._leadS || (T._leadS = { x: T._lead.x, y: T._lead.y, t: 0 });
-        const k = this.time - sm.t > 0.3 ? 1 : 1 - Math.exp(-dt / 0.06);
-        sm.x += (T._lead.x - sm.x) * k; sm.y += (T._lead.y - sm.y) * k; sm.t = this.time;
-        T._lead.x = sm.x; T._lead.y = sm.y;
         T.lead = T._lead.onScreen ? T._lead : null;
       } else { T.lead = null; T.leadHot = false; this._gunHot = false; }
       f.target = T;
