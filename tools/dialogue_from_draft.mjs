@@ -11,7 +11,7 @@
 //   death row      typical     ("Typical.", any mission while Mainspring is in the fight)
 //   tunnel rows    tunnel_<n>  (T1..T3)
 //   WSO pool rows  wso_<n>     (W1..W13), each with the AWACS event key it may replace
-// Triggers are parsed from the draft's trigger column into { on, n?, after?, with? } (see TRIGGERS below). MUSIC rows
+// Triggers are parsed from the draft's trigger column into { on, n?, after?, with?, hold? } (see TRIGGERS below). MUSIC rows
 // become cues ({ music: { action, track?, fade } }) with no clip.
 import { readFileSync, writeFileSync } from 'node:fs';
 
@@ -39,11 +39,14 @@ const lines = [], problems = [];
 function parseTrigger(t, mission) {
   let s = t.replace(/\(NEW\)/g, '').replace(/\([^)]*\)/g, '').trim();
   const tr = {};
+  const h = s.match(/,\s*hold\b/i);   // "…, hold": the chain this line heads holds the radio (js/radio.js)
+  if (h) s = (s.slice(0, h.index) + s.slice(h.index + h[0].length)).trim();
+  const done = (r) => { if (h) r.hold = true; return r; };
   const m = s.match(/,?\s*after\s*#?\s*(\w+)\s*$/i);
   if (m) { tr.after = `m${mission}_${m[1]}`; s = s.slice(0, m.index).trim().replace(/,$/, ''); }
   const w = s.match(/^with\s*#?\s*(\w+)$/i);
   if (w) { tr.with = `m${mission}_${w[1]}`; s = ''; }
-  if (!s) { if (!tr.after && !tr.with) problems.push(`M${mission}: empty trigger "${t}"`); return tr; }
+  if (!s) { if (!tr.after && !tr.with) problems.push(`M${mission}: empty trigger "${t}"`); return done(tr); }
   let k;
   if (s === 'start') tr.on = 'start';
   else if ((k = s.match(/^phase (\d+) start$/))) { tr.on = 'phase'; tr.n = +k[1]; }
@@ -54,7 +57,7 @@ function parseTrigger(t, mission) {
   else if (s === 'first kill') tr.on = 'firstKill';
   else if ((k = s.match(/^boss (\d+)%$/))) { tr.on = 'boss'; tr.n = +k[1]; }
   else problems.push(`M${mission}: unknown trigger "${t}"`);
-  return tr;
+  return done(tr);
 }
 function parseMusic(text) {
   // "→ MAINSPRING THEME (crossfade 1 s)", "→ CUT (silence, SFX and voice only)", "→ RESUME mission track (fade in 4 s)"

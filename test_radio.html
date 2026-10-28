@@ -81,6 +81,36 @@ function noOverlap(r, name) {
   check('M11: completion line', ids(r).includes('m11_8'));
   log('RADIO_OK M11 ' + ids(r).join(' > ') + ' | cues ' + music.cues.join(', '));
 }
+// 2b) held chains (hold on the head's trigger): under steady missile calls the chain plays back to back, a call queued
+//     meanwhile waits; an unheld chain (M8) lets a call into its gap; WSO voice off skips the WSO's lines and the chain
+//     goes on (it used to stall at the first WSO line); a chain line waiting on M21's 'alone' gate holds nothing
+{
+  const underFire = (r, secs) => { for (let t = 0; t < secs; t += 0.05) { r.update(0.05); if (Math.round(t * 20) % 16 === 0) r.say('missileIncoming', { cooldown: 0 }); } };
+  const chainRun = (r, chainIds) => { const s = ids(r), i = s.indexOf(chainIds[0]); return JSON.stringify(s.slice(i, i + chainIds.length)) === JSON.stringify(chainIds); };
+  let { r } = make(11, { rand: () => 0.99 });
+  r.missionStart(); r.phaseStart(1); run(r, 8); r.phaseStart(4); underFire(r, 25);
+  check('hold: M11 chain unbroken under missile calls', chainRun(r, ['m11_3', 'm11_4', 'm11_5', 'm11_6', 'm11_7']), ids(r));
+  check('hold: calls play again once the chain is done', ids(r).slice(ids(r).indexOf('m11_7')).some((i) => i.startsWith('missileIncoming')), ids(r));
+  ({ r } = make(18, { rand: () => 0.99 }));
+  r.missionStart(); r.phaseStart(1); run(r, 8); r.phaseStart(2); r.say('missileIncoming', { cooldown: 0 }); underFire(r, 20);
+  check('hold: the held head outranks a queued critical call', ids(r).indexOf('m18_2') < ids(r).findIndex((i) => i.startsWith('missileIncoming')) || !ids(r).some((i) => i.startsWith('missileIncoming')), ids(r));
+  check('hold: M18 chain unbroken', chainRun(r, ['m18_2', 'm18_3', 'm18_4']), ids(r));
+  ({ r } = make(8, { rand: () => 0.99 }));
+  r.missionStart(); r.phaseStart(1); run(r, 8); r.phaseStart(4); underFire(r, 12); run(r, 10);
+  const s8 = ids(r), i2 = s8.indexOf('m08_2'), i3 = s8.indexOf('m08_3');
+  check('no hold: M8 lets calls into its chain', i2 >= 0 && i3 > i2 + 1 && s8.slice(i2 + 1, i3).some((i) => i.startsWith('missileIncoming')), s8);
+  ({ r } = make(11, { rand: () => 0.99 })); r.wsoOn = false;
+  r.missionStart(); r.phaseStart(1); run(r, 8); r.phaseStart(4); run(r, 25);
+  const sOff = ids(r).filter((i) => /^m11_/.test(i));
+  check('WSO off: M11 chain skips the WSO lines and goes on', JSON.stringify(sOff.filter((i) => /^m11_[3-7]$/.test(i))) === JSON.stringify(['m11_3', 'm11_4', 'm11_6']), sOff);
+  check('WSO off: nothing left stuck in the queue', !r.queue.some((q) => q.kind === 'voice' && q.story), r.queue.map((q) => q.id));
+  let g; ({ r, game: g } = make(21, { rand: () => 0.99, alone: false }));
+  r.missionStart(); r.phaseStart(1); run(r, 10); r.boss(50); run(r, 12);   // (M21: no AWACS, the WSO blacked out: no one makes calls)
+  check('hold: a gated chain line does not hold the channel', ids(r).includes('m21_3') && !ids(r).includes('m21_4') && r.holdChain === null && r._best(false) === null, { ids: ids(r), hold: r.holdChain });
+  g.alone = true; run(r, 10);
+  check('hold: the gated line plays once its gate opens', ids(r).includes('m21_4'), ids(r));
+  log('RADIO_OK held chains');
+}
 // 3) flavor dropped when its phase ends first; plot never dropped
 {
   const { r } = make(2);
@@ -224,7 +254,7 @@ function noOverlap(r, name) {
   check('expiry: a dropped call keeps its cooldown', x.say('gunSolution') && x.say('lockOn'));
   const y = make(null).r; y.say('checkSix'); run(y, 0.1);
   check('expiry: checkSix on air plays out', y.cur && y.cur.key === 'checkSix'); run(y, 3);
-  check('expiry: checkSix on air is never dropped', y.events.some((e) => e.ev === 'end' && /^checkSix|^wso_[12]$/.test(e.id)) && !y.events.some((e) => e.ev === 'drop'));
+  check('expiry: checkSix on air is never dropped', y.events.some((e) => e.ev === 'end' && /^checkSix|^wso_\d+$/.test(e.id)) && !y.events.some((e) => e.ev === 'drop'));
   check('lockOn no immediate repeat', said.every((x, i) => i === 0 || x.id !== said[i - 1].id));
   check('lockOn always the WSO', said.every((x) => x.id.startsWith('wso_')));
   log(`RADIO_OK lockOn ${said.length} calls in 400 s, ${new Set(said.map((x) => x.id)).size} variants`);

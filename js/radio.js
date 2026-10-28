@@ -12,6 +12,10 @@
 // Lines never overlap: at least GAP s from one line's end to the next start, PLOT_HOLD s more after a plot line (not for
 // a line chained "after" it). No duplicate keys in the queue. MUSIC cues ride the same queue but never take the channel:
 // "after #n" fires as line n ends, "with #n" as it starts, a triggered cue at once; cues are never dropped.
+// A held chain (its head's trigger has hold: story beats that only work back to back) outranks even critical calls, and
+// from its first line to its last nothing else takes the channel: calls queued meanwhile wait (and mostly expire). A
+// chain line still waiting on a gate (M21's 'alone') does not hold the channel. A line refused at queue time (its
+// speaker silent: WSO voice off, blackout) counts as dropped, so the lines chained after it still play.
 //
 // The scheduler runs on its own clock (update(dt)) with each clip's known length, so its decisions are the same with or
 // without audio (headless tests, a muted or locked AudioContext): a line without a decoded clip still holds the channel
@@ -93,6 +97,7 @@ export class Radio {
     this.done = {}; this.dropped = {}; this.started = {};
     this.wsoSilent = false; this.awacsSilent = false; this.noAwacs = !!(M && M.noAwacs);
     this.firstKillSaid = false; this.completed = false; this.down = false;
+    this.holdChain = null;            // id of the held chain on air (its head's id) until its last line has played
     this.bossMarks = {};
     if (M) this.load(this.script.filter((e) => e.dur).map((e) => e.id).concat(this.globalIds()));
     else this.load(this.globalIds());
@@ -245,17 +250,21 @@ export class Radio {
   }
 
   // ---------------------------------------------------------------------------------------------------------------
+  _gateOpen(q) { return q.gate !== 'alone' || !!(this.game && this.game.radioAlone && this.game.radioAlone()); }
   _best(criticalOnly) {
     const t = this.t;
+    if (this.holdChain && !this.queue.some((q) => !q._gone && q.kind === 'voice' && q.chain === this.holdChain && this._gateOpen(q))) this.holdChain = null;
+    const rank = (q) => (q.chain ? -1 : PRI[q.pri]);   // a held chain outranks every class
     let best = null, hasHigher = false;
     for (const q of this.queue) {
       if (q._gone || q.kind !== 'voice' || q.at > t) continue;
+      if (this.holdChain && q.chain !== this.holdChain) continue;                // a held chain keeps the channel
       if (q.after && !this.done[q.after] && !this.dropped[q.after]) continue;   // waits for its head
       if (q.with) continue;
-      if (q.gate === 'alone' && !(this.game && this.game.radioAlone && this.game.radioAlone())) continue;
+      if (!this._gateOpen(q)) continue;
       if (criticalOnly && q.pri !== 'critical') continue;
       if (q.pri !== 'flavor') hasHigher = true;
-      if (!best || PRI[q.pri] < PRI[best.pri] || (PRI[q.pri] === PRI[best.pri] && q.seq < best.seq)) best = q;
+      if (!best || rank(q) < rank(best) || (rank(q) === rank(best) && q.seq < best.seq)) best = q;
     }
     if (best && best.pri === 'flavor' && hasHigher) return null;
     return best;
@@ -270,6 +279,7 @@ export class Radio {
     if (buf && this.awacs && this.awacs.transmit) { const d = this.awacs.transmit(buf, { breakIn, label: q.id }); if (d > 0) dur = d; }
     this.cur = Object.assign(q, { start: t, end: t + lead + dur, audio: !!buf });
     this.started[q.id] = true;
+    if (q.chain) this.holdChain = q.chain;
     if (q.key) {                                   // cooldowns start on air
       this._cool[q.key] = t; this._lastClip[q.key] = q.id;
       if (WSO_CALLS[q.key]) { const [a, b] = WSO_CALLS[q.key]; this._next[q.key] = t + a + (b - a) * this.rand(); }
@@ -333,7 +343,8 @@ export class Radio {
     const heads = this.script.filter((e) => e.on === trig.on && (trig.n === undefined || e.n === trig.n) && !e.after && !e.with);
     if (!heads.length) return;
     this._log('trigger', trig.on + (trig.n !== undefined ? ' ' + trig.n : ''));
-    const add = (e, head) => {
+    const add = (e, head, chain = null) => {   // chain: the held chain's id (its head's), carried down to every line in it
+      if (head && e.hold) chain = e.id;
       let pri = e.pri === 'cue' ? 'plot' : e.pri;
       if (opts.promote && pri === 'flavor') pri = 'plot';
       let delay = 0;
@@ -346,9 +357,13 @@ export class Radio {
       const it = fb ? Object.assign(this._story(fb, pri, delay), { alias: e.id }) : this._story(e, pri, delay);   // WSO voice off: AWACS carries the beat
       if (opts.phase) it.phase = opts.phase;
       if (opts.exemptSilence) it.exempt = true;
+      if (chain) it.chain = chain;
       if (it.kind === 'cue' && !it.after && !it.with) { this.queue.push(Object.assign(it, { seq: this._seq++ })); this._log('queue', it.id, it); }
-      else this._enqueue(it);
-      for (const f of this.script) if (f.after === e.id || f.with === e.id) add(f, false);
+      else if (!this._enqueue(it) && it.kind === 'voice' && !this.done[it.id] && !this.started[it.id] && !this._has(it.id)) {
+        this.dropped[it.id] = true; if (it.alias) this.dropped[it.alias] = true;   // refused (speaker silent): its chain goes on
+        this._log('drop', it.id, Object.assign({}, it, { why: 'speaker silent' }));
+      }
+      for (const f of this.script) if (f.after === e.id || f.with === e.id) add(f, false, chain);
     };
     for (const h of heads) add(h, true);
   }
