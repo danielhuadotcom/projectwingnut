@@ -593,6 +593,7 @@ class Game {
   resetPlayer() {
     const p = this.player;
     p.reset({ position: new THREE.Vector3(0, 800, 0), heading: 0, health: 100 });
+    this.downed = false; this.deadReason = null;   // (die)
     p.quaternion.identity();
     p.speed = 230; p.throttle = 0.72;
     p.velocity.set(0, 0, -p.speed);
@@ -1577,10 +1578,13 @@ class Game {
     if (!this.comms) return;
     this.comms.say(key, cooldown !== undefined ? { cooldown, subject } : { subject });
   }
+  /** The player is down (once per sortie). A lethal hit has already killed the jet in applyDamage when the weapons'
+   *  onKill calls this, so the guard is its own flag, not player.alive. */
   die(reason, fxDone = false) {
-    if (!this.player.alive) return;
+    if (this.downed) return;
+    this.downed = true;
     if (!fxDone) this.weapons.aircraftDeath(this.player);
-    this.player.kill();
+    if (this.player.alive) this.player.kill();
     this.chase.addShake(1.2);
     this.post.flash(0.8); this.post.damage(1);
     if (this.audio.spareLastBlast) this.audio.spareLastBlast();   // the player's own explosion plays out...

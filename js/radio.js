@@ -149,7 +149,7 @@ export class Radio {
     this._cut('player down');
     this.down = false;
     if (mainspring && this.typical) this._enqueue(this._story(this.typical, 'plot', 0), true);
-    else this.say('playerDown');
+    else this.say('playerDown', { cooldown: 0 });   // (no cooldown: a quick retry's death gets its call too)
     this.down = true;          // the call above is the last line of the sortie: _enqueue refuses voices until resetMission
   }
 
