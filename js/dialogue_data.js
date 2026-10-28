@@ -44,6 +44,8 @@ export const DIALOGUE = [
   {"id":"m11_1","speaker":"WSO","pri":"flavor","on":"start","mission":11,"text":"I count forty contacts and two friends. Fun.","dur":2.387},
   {"id":"m11_2","speaker":"AWACS","pri":"plot","on":"phase","n":2,"mission":11,"text":"Concord reserves inbound. They're scraping the barrel.","dur":2.544},
   {"id":"m11_3","speaker":"AWACS","pri":"plot","on":"phase","n":4,"mission":11,"text":"Big group incoming!","dur":1.004},
+  {"id":"m11_3a","speaker":"MUSIC","pri":"cue","on":"phase","n":4,"mission":11,"music":{"action":"cut","fade":1}},
+  {"id":"m11_3b","speaker":"MUSIC","pri":"cue","with":"m11_4","mission":11,"music":{"action":"play","track":"mainspring","fade":0.3}},
   {"id":"m11_4","speaker":"MAINSPRING","pri":"plot","after":"m11_3","on":"phase","n":4,"mission":11,"text":"Chime strikes the hour.","dur":1.695},
   {"id":"m11_5","speaker":"WSO","pri":"plot","after":"m11_4","on":"phase","n":4,"mission":11,"text":"Oh, hell!","dur":0.659},
   {"id":"m11_6","speaker":"MAINSPRING","pri":"plot","after":"m11_5","on":"phase","n":4,"mission":11,"text":"Chime One, Tally. Chime Squadron, weapons free. Find the bent screw and pull it.","dur":5.009},

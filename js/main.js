@@ -659,7 +659,7 @@ class Game {
     this.music.keepOnly([missionTrack(M), ...extraTracks]);   // other tracks' decoded audio (~60 MB each) is released
     this.music.setTrack(missionTrack(M));
     this.music.prefetch(extraTracks);
-    this.music.predecode(M.phases.map((P) => P.music));   // a phase's music (Mainspring's arrival) starts as it spawns
+    this.music.predecode(extraTracks);   // phase and cue music (Mainspring's arrivals) starts the moment it is called
     this.say('sortieStart', 3);
     this.comms.missionStart();
     this.nextPhase();

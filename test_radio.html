@@ -63,14 +63,18 @@ function noOverlap(r, name) {
   noOverlap(r, 'M1');
   log('RADIO_OK M1 ' + ids(r).join(' > '));
 }
-// 2) M11: Chime's arrival and line order (her theme starts with the phase itself: missions.js phase music, no radio cue)
+// 2) M11: Chime's arrival: line order, the music cut under the AWACS call, her theme entering with her first line
 {
   const { r, music } = make(11);
   r.missionStart(); r.phaseStart(1); run(r, 8); r.phaseStart(2); run(r, 6); r.phaseStart(3); run(r, 2);
   r.phaseStart(4); r.say('newContacts'); run(r, 25);
   const s = ids(r).filter((i) => /^m11_[3-7]/.test(i));
   check('M11: phase 4 order 3,4,5,6,7', JSON.stringify(s) === JSON.stringify(['m11_3', 'm11_4', 'm11_5', 'm11_6', 'm11_7']), s);
-  check('M11: no music cue in the script', music.cues.length === 0, music.cues);
+  const ev = r.events, at = (kind, id) => ev.findIndex((e) => e.ev === kind && e.id === id);
+  const iCut = at('cue', 'm11_3a'), s3 = at('start', 'm11_3'), e3 = at('end', 'm11_3'), iTheme = at('cue', 'm11_3b'), s4 = at('start', 'm11_4');
+  check('M11: music cut as phase 4 starts, before the AWACS call', iCut >= 0 && iCut < s3, { iCut, s3 });
+  check('M11: her theme enters with her first line, after the AWACS call', iTheme > e3 && Math.abs(iTheme - s4) <= 1 && ev[iTheme].t === ev[s4].t, { e3, iTheme, s4 });
+  check('M11: cues = cut, play mainspring', music.cues.join() === 'cut,play mainspring', music.cues);
   check('M11: newContacts never overlaps the plot lines', true);
   noOverlap(r, 'M11');
   r.complete(4); run(r, 8);

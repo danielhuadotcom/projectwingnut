@@ -47,6 +47,8 @@ export const DIALOGUE_LINES = [
   {"id":"m11_1","mission":11,"speaker":"WSO","trigger":{"on":"start"},"text":"I count forty contacts and two friends. Fun.","note":"dry, adrenaline under it"},
   {"id":"m11_2","mission":11,"speaker":"AWACS","trigger":{"on":"phase","n":2},"text":"Concord reserves inbound. They're scraping the barrel.","note":"calm, fast"},
   {"id":"m11_3","mission":11,"speaker":"AWACS","trigger":{"on":"phase","n":4},"text":"Big group incoming!","note":"urgent"},
+  {"id":"m11_3a","mission":11,"speaker":"MUSIC","trigger":{"on":"phase","n":4},"text":"","note":"silence under the AWACS call","music":{"action":"cut","fade":1}},
+  {"id":"m11_3b","mission":11,"speaker":"MUSIC","trigger":{"with":"m11_4"},"text":"","note":"her theme enters with her first line","music":{"action":"play","track":"mainspring","fade":0.3}},
   {"id":"m11_4","mission":11,"speaker":"MAINSPRING","trigger":{"after":"m11_3","on":"phase","n":4},"text":"Chime strikes the hour.","note":"cool, commanding"},
   {"id":"m11_5","mission":11,"speaker":"WSO","trigger":{"after":"m11_4","on":"phase","n":4},"text":"Oh, hell!","note":"Fearful, exasperated"},
   {"id":"m11_6","mission":11,"speaker":"MAINSPRING","trigger":{"after":"m11_5","on":"phase","n":4},"text":"Chime One, Tally. Chime Squadron, weapons free. Find the bent screw and pull it.","note":"confident"},
