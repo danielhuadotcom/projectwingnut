@@ -112,6 +112,10 @@ export class EnemyBrain {
     this._altOn = true; this._altT = 0;   // altitude game active this spell (rerolled every 6-12 s, odds by skill)
     this._flatT = 0;                // s spent in a flat close chase (no height over the target): a long one ends in a zoom
     this._stackOff = Math.random() * 400; // m: extra height of this bandit's slot-waiting stack (spreads the stack)
+    this._ringR = 2000 + Math.random() * 1000;   // m: radius of its waiting ring, and which way round it flies it
+    this._ringDir = Math.random() < 0.5 ? -1 : 1;
+    this.sep = new THREE.Vector3();  // separation from nearby bandits (the game's separateBandits): added to its aim point
+    this._turnOf = null; this._slotStart = 0; this._slotEnd = 0; this._restUntil = 0; this._turnOver = false;   // (Game.squadSlots)
     this.burstGap = 0;              // s added between gun bursts
     this.shotAngle = 0.15; this.shotMin = 700; this.shotMax = 2500;   // missile envelope: rad off the nose, range (m)
     this.gunAngle = 0.045; this.gunRange = 650;     // gun burst starts when lined up this well (rad) this close (m)...
@@ -555,22 +559,24 @@ export class EnemyBrain {
         _pt.set(Math.sin(time * 0.05) * 6000, 1500, Math.cos(time * 0.05) * 6000);
         this.steerToward(_pt, 0.5); this.throttleTarget = 0;
       } else if (this.aggressor === false && targetAlive) {
-        // No attack slot (difficulty limit): orbit a ~2.4 km ring around the target without attacking, ready to cut in;
-        // from farther out, boost straight in (time to engagement: in the fight within seconds, weapons held)
+        // No attack slot (difficulty limit, or waiting its turn on a squadmate): orbit a 2-3 km ring around the target
+        // (radius and direction its own) without attacking, ready to cut in; from farther out, boost straight in (time to
+        // engagement: in the fight within seconds, weapons held)
         _tmp.subVectors(ac.position, target.position); _tmp.y = 0;
         const dh = _tmp.length() || 1; _tmp.multiplyScalar(1 / dh);
         // the stack: slot-waiters hold above the fight (altitude game), else 300 m over the target
         const sy = Math.min(this._altOn ? Math.max(this._wantAlt(target) + 150 + this._stackOff, 900) : Math.max(target.position.y + 300, 900), ALT_CEILING - 200);
-        if (dh > 3000) {
+        const R = this._ringR, rd = this._ringDir;
+        if (dh > R + 600) {
           // boost in at 300 m over the target or the height we have (up to the stack): no climb before the ring
           _pt.copy(target.position).addScaledVector(this.velEst, 2); _pt.y = Math.max(target.position.y + 300, 900, Math.min(sy, ac.position.y));
-          this.steerToward(_pt, 0.7); this.throttleTarget = 1;
+          _pt.add(this.sep); this.steerToward(_pt, 0.7); this.throttleTarget = 1;
         } else {   // on the ring: keep pace with the target (thrust on the speed difference and the gap to the ring)
-          const pull = THREE.MathUtils.clamp((2400 - dh) / 1200, -1, 1);
-          _pt.set(ac.position.x - _tmp.z * 1500 + _tmp.x * pull * 1500, sy,
-            ac.position.z + _tmp.x * 1500 + _tmp.z * pull * 1500);
-          this.steerToward(_pt, 0.5);
-          this.throttleTarget = THREE.MathUtils.clamp((target.speed - ac.speed) / 120 + (dh - 2400) / 800, -0.5, 1);
+          const pull = THREE.MathUtils.clamp((R - dh) / 1200, -1, 1);
+          _pt.set(ac.position.x - _tmp.z * 1500 * rd + _tmp.x * pull * 1500, sy,
+            ac.position.z + _tmp.x * 1500 * rd + _tmp.z * pull * 1500);
+          _pt.add(this.sep); this.steerToward(_pt, 0.5);
+          this.throttleTarget = THREE.MathUtils.clamp((target.speed - ac.speed) / 120 + (dh - R) / 800, -0.5, 1);
         }
       } else {
         // Pursue: lead pursuit toward where the target will be when our rounds arrive
@@ -587,6 +593,7 @@ export class EnemyBrain {
           _pt.y += yOff;
           if (this._sink > 40) _pt.y = Math.max(_pt.y, ac.position.y - this._agl + 150 + this._sink * 2);
         }
+        if (dist > 900) _pt.add(this.sep);   // spread from other bandits on the way in; never off a close shot
         const angleOff = this.steerToward(_pt, 0.55 + this.skill * 0.45);
         this.throttleTarget = dist > 3000 ? 1 : dist > 800 ? this.pursuitThrottle : THREE.MathUtils.clamp((target.speed - ac.speed) / 120, -0.8, 0.45);
         // Guns: short bursts when lined up
@@ -629,9 +636,16 @@ export class EnemyBrain {
   }
 }
 
+// Squadmate defensive turn (WingmanBrain): a bandit engaging it (brain.attackers, Game.squadSlots) inside DEF_RANGE m,
+// behind its wing line with its nose on it, makes it turn hard into that bandit's side for DEF_TIME s (random in the
+// range; DEF_REVERSE odds of one reversal halfway, a scissors), then DEF_GAP s before the next one: the bandit has to turn
+// with it, and the tail chase becomes a turning fight.
+const DEF_RANGE = 1500, DEF_TIME = [4, 7], DEF_GAP = [3, 6], DEF_REVERSE = 0.35;
+
 /**
  * Squadmate pilot (an immortal ally of the player). Priorities each frame: terrain, collision avoidance with the lead,
- * a flare break when an enemy missile closes (time to impact < 2 s or range < 1.2 km), then either engaging the bandit
+ * a flare break when an enemy missile closes (time to impact < 2 s or range < 1.2 km), a defensive turn into a bandit
+ * on its tail (DEF_*), then either engaging the bandit
  * the game assigned (EnemyBrain pursuit, guns and missiles, at a gentle rate) or loose formation on the lead. Beyond
  * `leash` from the lead it breaks off and heads back; inside `personal` it spreads out so it never crowds the player.
  */
@@ -653,6 +667,8 @@ export class WingmanBrain extends EnemyBrain {
     this.missileReload = 45;                       // s between missile shots, and only from a good position:
     this.shotAngle = 0.08; this.shotMin = 900; this.shotMax = 2000;
     this.flareBursts = 0;                          // stats: flare bursts deployed
+    this.defends = 0;                              // stats: defensive turns flown
+    this.attackers = [];                           // bandits engaging it now (the game's squadSlots)
     this.reset();
   }
 
@@ -662,6 +678,7 @@ export class WingmanBrain extends EnemyBrain {
     this.target = null; this.pickT = 0; this.standoff = false;
     this.returning = false; this.mode = 'form';
     this.flareT = 0; this.breakT = 0; this.sepT = 0; this.avoidT = 0;
+    this.defT = 0; this.defCd = 0; this.defDir = 1; this._defFlip = 0;
     this.noFlares = false;                         // (js/glassfall.js: Mainspring's shots are not decoyed)
     this.burst = 0; this.burstPause = 0;
     this.missileCooldown = 20 + Math.random() * 20;
@@ -685,7 +702,7 @@ export class WingmanBrain extends EnemyBrain {
   update(dt, target, world, weapons, time) {
     const ac = this.ac, L = this.lead;
     if (!ac.alive) return;
-    this.flareT -= dt; this.breakT -= dt; this.sepT -= dt; this.avoidT -= dt;
+    this.flareT -= dt; this.breakT -= dt; this.sepT -= dt; this.avoidT -= dt; this.defT -= dt; this.defCd -= dt;
     ac.getForward(_fwd);
     // ---- missile defense: the AI sends at most one missile our way at a time; when it closes (time to impact < 2 s or
     //      range < 1.2 km), flares and a hard break. One missile scan per frame (shared with EnemyBrain.update).
@@ -703,6 +720,22 @@ export class WingmanBrain extends EnemyBrain {
     if (this.returning && dLead < this.leash * 0.7) this.returning = false;
     else if (!this.returning && dLead > this.leash) this.returning = true;
     const engage = !!(target && target.alive && leadOk && !this.returning);
+    // defensive turn: a bandit on our tail with its nose on us (DEF_*); the leash cancels it
+    if (this.returning || !leadOk) this.defT = 0;
+    else if (this.defT <= 0 && this.defCd <= 0) {
+      for (let i = 0; i < this.attackers.length; i++) {
+        const e = this.attackers[i]; if (!e.alive) continue;
+        _rel.subVectors(e.position, ac.position); const d = _rel.length();
+        if (d > DEF_RANGE || _rel.dot(_fwd) > -0.4 * d) continue;      // behind the wing line, in range
+        e.getForward(_pFwd); if (_pFwd.dot(_rel) > -0.7 * d) continue; // its nose on us
+        ac.getRight(_tmp); this.defDir = _rel.dot(_tmp) > 0 ? 1 : -1;  // into its side
+        this.defT = DEF_TIME[0] + (DEF_TIME[1] - DEF_TIME[0]) * Math.random();
+        this._defFlip = Math.random() < DEF_REVERSE ? this.defT * 0.5 : -1;
+        this.defCd = this.defT + DEF_GAP[0] + (DEF_GAP[1] - DEF_GAP[0]) * Math.random();
+        this.defends++; break;
+      }
+    }
+    if (this.defT > 0 && this._defFlip > 0 && this.defT < this._defFlip) { this.defDir = -this.defDir; this._defFlip = -1; }   // reversal
     // collision avoidance with the lead and the other squadmates (tighter in formation, where slots are ~180 m apart);
     // once started, the escape runs at least 1 s
     let avoid = leadOk && this._onCollision(L, engage ? 150 : 60);
@@ -713,14 +746,14 @@ export class WingmanBrain extends EnemyBrain {
       _rel.subVectors(L.position, ac.position); _vr.subVectors(ac.velocity, L.velocity);
       if (_rel.dot(_vr) > 0) this.sepT = 1.2;
     }
-    if (engage && !avoid && this.breakT <= 0 && this.sepT <= 0) {
+    if (engage && !avoid && this.breakT <= 0 && this.sepT <= 0 && this.defT <= 0) {
       this.mode = 'engage';
       this._scanned = true;                        // EnemyBrain.update reuses this frame's missile scan
       super.update(dt, target, world, weapons, time);
       return;
     }
     // ---- own flying: terrain > collision avoidance > flare break > spread out > formation
-    this.mode = avoid ? 'avoid' : this.breakT > 0 ? 'break' : engage ? 'separate' : 'form';
+    this.mode = avoid ? 'avoid' : this.breakT > 0 ? 'break' : this.defT > 0 ? 'defend' : engage ? 'separate' : 'form';
     if (this._senseTerrain(world)) {
       _pt.copy(ac.position).addScaledVector(_fwd, 300).addScaledVector(WORLD_UP, 900);
       this.steerToward(_pt, 1); this.throttleTarget = 0.3;
@@ -738,6 +771,12 @@ export class WingmanBrain extends EnemyBrain {
       this.steerToward(_pt, 1);
       controls.pitch = Math.max(controls.pitch, 0.85);
       this.throttleTarget = 1;
+    } else if (this.defT > 0) {
+      // hard level turn into the attacker's side, a touch nose-low for turn rate when there is height to spend
+      ac.getRight(_tmp);
+      _pt.copy(ac.position).addScaledVector(_tmp, 700 * this.defDir).addScaledVector(_fwd, 250);
+      _pt.y = ac.position.y + (this._agl < 900 ? 120 : -40);
+      this.steerToward(_pt, 0.95); this.throttleTarget = 1;
     } else if (engage) {
       // spread away from the lead while turning toward the fight
       _away.subVectors(ac.position, L.position); _away.y = 0;

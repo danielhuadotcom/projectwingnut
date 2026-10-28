@@ -56,6 +56,10 @@ const LOS_PERIOD = 0.1;     // s: line of sight to a lockable target is re-check
 const LOCK_RANGE = 2800;
 const HOLD_COS = Math.cos(THREE.MathUtils.degToRad(70)), HOLD_RANGE = 4500;   // once locked, the lock holds this far
 const LOCK_TIME = 0.5;
+// A squadmate's fight in turns (Game.squadSlots): engaged at once, a turn's length (s), the shortest turn an overshoot
+// ends, the rest after a turn (s). Separation (Game.separateBandits): radius and the largest aim-point offset (m).
+const SQUAD_SLOTS = 2, SLOT_TURN = [12, 20], SLOT_MIN_PASS = 4, SLOT_REST = 6;
+const SEP_R = 350, SEP_PUSH = 400;
 const HARDPOINTS = 4, HARDPOINT_RELOAD = 5;   // four standard-missile hardpoints (stands in for PW special-weapon slots), s per hardpoint
 const FLARE_RELOAD = 7;                         // s (PW: infinite flares, 7 s reload)
 const GUN_LEAD_RANGE = 1800;                    // m: lead pipper inside this (rounds reach ~2.3 km, weaker past ~1.1 km)
@@ -969,6 +973,65 @@ class Game {
     if (H < D) { if (near) this.setRole(near, true, false); }
     else if (far) this.setRole(far, false, false);
   }
+  /**
+   * A squadmate's fight in turns (from the attack-slot pass; sq = the bandits hunting a squadmate). At most SQUAD_SLOTS
+   * of a squadmate's hunters engage it at once; the rest fly the waiting ring around it (EnemyBrain, aggressor false). A
+   * turn lasts SLOT_TURN s (random in the range), or ends at an overshoot (the pass is over: it extends) once it is
+   * SLOT_MIN_PASS s old; it ends only when another hunter is waiting, and then the bandit extends away and rests
+   * SLOT_REST s before it can take a slot again. Free slots go to the nearest rested waiters. Of the engaged ones, the
+   * nearest maxA may fire. The squadmate learns who is engaging it (brain.attackers: its defensive turn, js/ai.js).
+   */
+  squadSlots(sq, maxA) {
+    const now = this.time, A = this.allies;
+    for (let i = 0; i < A.length; i++) { const a = A[i]; a._slots = 0; a._fire = 0; (a.brain.attackers || (a.brain.attackers = [])).length = 0; }
+    if (!sq.length) return;
+    sq.sort(byDistance);
+    // holders keep their slot through their turn; a finished turn is let go below only if someone else takes the slot
+    for (const e of sq) {
+      const b = e.brain, t = b.target;
+      b._turnOver = false;
+      if (b._turnOf !== t) { b._turnOf = null; continue; }
+      if (now >= b._slotEnd || (b.state === 'extend' && now - b._slotStart > SLOT_MIN_PASS)) b._turnOver = true; else t._slots++;
+    }
+    for (const e of sq) {                // free slots: the nearest rested waiters
+      const b = e.brain, t = b.target;
+      if (b._turnOf || t._slots >= SQUAD_SLOTS || now < (b._restUntil || 0)) continue;
+      b._turnOf = t; b._slotStart = now; b._slotEnd = now + SLOT_TURN[0] + (SLOT_TURN[1] - SLOT_TURN[0]) * Math.random(); t._slots++;
+    }
+    for (const e of sq) {                // finished turns: another round if the slot is still free, else extend and rest
+      const b = e.brain, t = b.target;
+      if (!b._turnOver) continue;
+      if (t._slots < SQUAD_SLOTS) { b._slotStart = now; b._slotEnd = now + SLOT_TURN[0] + (SLOT_TURN[1] - SLOT_TURN[0]) * Math.random(); t._slots++; }
+      else { b._turnOf = null; b._restUntil = now + SLOT_REST; if (b.state === 'pursue') { b.state = 'extend'; b.stateTime = 0; } }
+    }
+    for (const e of sq) {
+      const b = e.brain, t = b.target, on = b._turnOf === t;
+      b.aggressor = on;
+      e.holdFire = !on || ++t._fire > maxA;
+      if (on) t.brain.attackers.push(e);
+    }
+  }
+  /** Separation: every pair of armed bandits closer than SEP_R pushes both apart (brain.sep: an offset, up to SEP_PUSH
+   *  m, their steering adds to its aim point), so bandits on one target fly their own lines instead of one stack. */
+  separateBandits() {
+    const L = this._sepList || (this._sepList = []); L.length = 0;
+    for (const e of this.enemies) {
+      const b = e.brain; if (!b) continue;
+      b.sep.set(0, 0, 0);
+      if (e.alive && !b.passive && !isHolding(e)) L.push(e);
+    }
+    const R2 = SEP_R * SEP_R;
+    for (let i = 0; i < L.length; i++) {
+      const a = L[i].position;
+      for (let j = i + 1; j < L.length; j++) {
+        const c = L[j].position, dx = a.x - c.x, dy = a.y - c.y, dz = a.z - c.z, d2 = dx * dx + dy * dy + dz * dz;
+        if (d2 >= R2 || d2 < 1) continue;
+        const d = Math.sqrt(d2), k = SEP_PUSH * (1 - d / SEP_R) / d;
+        L[i].brain.sep.x += dx * k; L[i].brain.sep.y += dy * k; L[i].brain.sep.z += dz * k;
+        L[j].brain.sep.x -= dx * k; L[j].brain.sep.y -= dy * k; L[j].brain.sep.z -= dz * k;
+      }
+    }
+  }
   /** Role setter for directBandits: hunt the player, or the squadmate with fewer hunters (its _hunters count). */
   setRole(e, hunt, isNew) {
     const b = e.brain, A = this.allies;
@@ -1262,6 +1325,7 @@ class Game {
     const skill = THREE.MathUtils.clamp((R ? R.skillBase : 0.38 + this.missionIndex * 0.06) + (type.role === 'fighter' ? 0.05 : 0) + (this.skillOffset || 0), 0.2, 0.95);
     ac.brain.skill = skill; ac.brain.state = 'pursue'; ac.brain.stateTime = 0; ac.brain.missileCooldown = 10 + Math.random() * 8;
     ac.brain.target = null; ac.brain.role = null; ac.brain.threat = null;   // pooled: the bandit director assigns a role
+    ac.brain._turnOf = null; ac.brain._restUntil = 0;                       // (and a squadmate fight's turns)
     ac.brain.flight = null; ac.escorts = null; ac.bornAt = this.time;      // pooled: spawnFlight / escorts set these
     ac.brain.missileReload = type.missileReload || 0;   // per-type override (Mainspring: a third of the player's hardpoint reload)
     if (type.missileReload) ac.missiles = 999;
@@ -1777,8 +1841,9 @@ class Game {
     this._dirT = (this._dirT || 0) - dt;
     if (this._dirT <= 0) { this._dirT = 1; this.profiler.cpuBegin('allies'); this.directBandits(); this.profiler.cpuEnd('allies'); }
     // Attack slots (every 0.5 s): only the N closest bandits hunting the player press the attack, the rest hold off (no
-    // limit on Mercenary). The same N per squadmate: its N closest hunters may fire at it, the others keep pursuing it
-    // (they still draw bandits off the player) with weapons held (holdFire: Weapons refuses their rounds and missiles)
+    // limit on Mercenary). A squadmate's fight takes turns (squadSlots): SQUAD_SLOTS of its hunters engage it at once,
+    // the others wait on the ring around it (they still draw bandits off the player); of the engaged ones the
+    // difficulty's N may fire (holdFire: Weapons refuses the others' rounds and missiles)
     this._slotT = (this._slotT || 0) - dt;
     if (this._slotT <= 0) {
       this._slotT = 0.5;
@@ -1792,12 +1857,11 @@ class Game {
       }
       armed.sort(byDistance);
       for (let i = 0; i < armed.length; i++) { armed[i].brain.aggressor = i < maxA; armed[i].holdFire = false; }
-      if (sq.length) {
-        sq.sort(byDistance);
-        for (let i = 0; i < this.allies.length; i++) this.allies[i]._slots = 0;
-        for (let i = 0; i < sq.length; i++) { const e = sq[i], t = e.brain.target; e.brain.aggressor = true; t._slots = (t._slots || 0) + 1; e.holdFire = t._slots > maxA; }
-      }
+      this.squadSlots(sq, maxA);
     }
+    // Separation (every 0.2 s): bandits closer than SEP_R to each other steer apart (no stacks on one tail)
+    this._sepT = (this._sepT || 0) - dt;
+    if (this._sepT <= 0) { this._sepT = 0.2; this.separateBandits(); }
     // Enemies
     let aliveEnemies = 0;
     for (let i = 0; i < this.enemies.length; i++) {
