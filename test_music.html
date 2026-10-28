@@ -29,7 +29,7 @@
 </div>
 <script type="module">
 import { AudioFX } from './js/audio.js';
-import { Music } from './js/music.js';
+import { Music, MusicDirector } from './js/music.js';
 import { MUSIC } from './js/music_data.js';
 
 const logEl = document.getElementById('log');
@@ -127,6 +127,37 @@ check('unmuffle', N.lp.frequency.value > 15000, N.lp.frequency.value);
 music.stop(); check('stopped', !music.playing); music.stop();
 music.play(); check('restart after stop', music.playing);
 log(`MUSIC_CONTROLS_OK position=${music.position.toFixed(2)} fails=${fails}`, fails ? 'bad' : 'ok');
+
+// 6) the director's custom-music slots: 'opener' / 'finale' stand in for 'epic' / 'mainspring' until given a file;
+//    setCustom swaps the audio live (crossfade) and null goes back to the built-in track (embedded 'ceiling' here, so
+//    the test needs no network: every streamed track's data is replaced by the embedded score)
+try {
+  const f0 = fails, own = (title) => ({ title, load: async () => { const bin = atob(MUSIC.opus), u = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i); return u.buffer; } });
+  const dir = new MusicDirector(audioFX, { volume: 0, tracks: { epic: MUSIC, mainspring: MUSIC, night: MUSIC } });
+  check('opener stands in for epic', dir.resolve('opener') === 'epic', dir.resolve('opener'));
+  check('icebreaker stands in for epic', dir.resolve('icebreaker') === 'epic', dir.resolve('icebreaker'));
+  check('finale stands in for mainspring', dir.resolve('finale') === 'mainspring', dir.resolve('finale'));
+  check('builtin title of a stand-in', dir.builtinTitle('finale') === MUSIC.title, dir.builtinTitle('finale'));
+  dir.setTrack('opener', { fade: 0.05 });
+  for (let i = 0; i < 40 && !dir.playing; i++) await new Promise((r) => setTimeout(r, 100));
+  check('no file: the opener plays epic', dir.current === 'epic' && dir.playing, dir.current);
+  dir.setCustom('opener', own('Mine'));
+  for (let i = 0; i < 40 && dir.current !== 'opener'; i++) await new Promise((r) => setTimeout(r, 100));
+  check('a file: live switch to the opener', dir.current === 'opener' && dir.title === 'Mine' && dir.resolve('opener') === 'opener', dir.log.map((l) => l.what));
+  dir.setCustom('opener', null);
+  for (let i = 0; i < 40 && dir.current !== 'epic'; i++) await new Promise((r) => setTimeout(r, 100));
+  check('cleared: back to epic', dir.current === 'epic' && dir.resolve('opener') === 'epic', dir.current);
+  dir.setCustom('epic', own('My combat'));
+  check('the replaced audio plays on while the file decodes', dir.playing, { cur: dir.current });
+  for (let i = 0; i < 40 && dir.current !== 'epic'; i++) await new Promise((r) => setTimeout(r, 100));
+  check('a stand-in follows the replaced track', dir.current === 'epic' && dir.title === 'My combat' && dir.playing, { cur: dir.current, title: dir.title });
+  await new Promise((r) => setTimeout(r, 1500));
+  check('the replaced audio is let go', Object.keys(dir._players).every((k) => !k.includes('~')), Object.keys(dir._players));
+  dir.cue({ action: 'cut', fade: 0.05 }); dir.setCustom('epic', null);
+  check('no switch while a cue holds the music cut', dir.cut && !dir.wanted, { cut: dir.cut, wanted: dir.wanted });
+  dir.dispose();
+  log(`MUSIC_SLOTS_OK fails=${fails - f0}`, fails > f0 ? 'bad' : 'ok');
+} catch (e) { fails++; console.error('MUSIC_SLOTS_FAIL ' + (e && e.stack || e)); }
 
 // --- visualisation (waveform overview, loop region, playhead, live spectrum) + manual buttons ---
 const cv = document.getElementById('cv'), g = cv.getContext('2d');

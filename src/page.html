@@ -213,6 +213,14 @@ body { margin: 0; background: var(--bg); color: var(--fg); font-family: var(--mo
 .m-linkv { font: 700 11px/1 var(--mono); letter-spacing: 0.14em; text-transform: uppercase; color: var(--hud); }
 .m-row--link .m-chev { margin-left: 0; opacity: 0.6; transform: none; }
 .m-row--link.is-focus .m-chev { opacity: 1; }
+/* Custom music slots (js/menu.js _renderMusic) under Settings › Audio */
+.m-music { margin-top: 14px; }
+.m-subh { margin: 10px 16px 4px; font: 600 12px/1.2 var(--display); letter-spacing: 0.12em; text-transform: uppercase; color: var(--hud); }
+.m-music-lede { margin: 0 16px 6px; }
+.m-row--music .m-desc { overflow-wrap: anywhere; }
+.m-row--music .m-ctl { justify-content: flex-end; }
+.m-row--music .m-btn { flex: 1 1 0; min-width: 0; }
+.m-row--music .m-btn[disabled] { opacity: 0.45; cursor: default; }
 .m-panel--wiz { width: min(640px, 100%); max-height: 100%; }
 .m-panel--wiz .m-head .m-back { display: none; }   /* Cancel sits with Back / Skip: one 'back' meaning per screen */
 .m-panel--keys { width: min(720px, 100%); height: min(760px, 100%); }

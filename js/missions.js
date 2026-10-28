@@ -56,7 +56,8 @@
 //     red (optional) = true: the preset's red Glassfall variant (js/timeofday.js glassfallPreset): only the missions right
 //     after a Glassfall, M16 (after M15) and M21 (after M20).
 //     music (optional) = the soundtrack track (js/music.js TRACKS): on a mission, its track (default 'night' for time
-//     'night', else 'epic'); on a phase, a crossfade to that track as the phase starts (Mainspring's encounters).
+//     'night', else 'epic'; 'opener', 'icebreaker' and 'finale' are M1's, M11's and
+//     M21's custom-music slots); on a phase, a crossfade to that track as the phase starts (Mainspring's encounters).
 //     noAwacs (optional) = true: AWACS stays off the radio, and the WSO takes every call it would make (M21).
 //     wsoBlackout (optional) = boss health fraction (0-1) below which the WSO says nothing more (M21: 0.5).
 //     phases[].endAtRemaining (optional) = N (1-8): the phase is won once N or fewer of its required enemies are left;
@@ -214,7 +215,7 @@ export const GROUND_TYPES = {
 // Missions in campaign order. Each phase spawns when the previous phase is cleared.
 export const MISSIONS = [
   {
-    id: 1, name: 'Salvage Rights',
+    id: 1, name: 'Salvage Rights', music: 'opener',   // plays 'epic' until the player sets a file for the slot
     briefing: 'The Saltjaw Corsairs stole a crate of League thunderglass and holed up with it at Gullrock. Flatten their sea fort: patrol boats, flak guns and those kelp-green floatplanes.',
     setting: 'sea stacks', location: 'Gullrock Stacks (Saltjaw sea fort)', clock: '16:05', time: 'golden',
     startBack: 1500,   // m behind the sortie frame: a quiet lead-in before first contact
@@ -624,7 +625,7 @@ export const MISSIONS = [
     ],
   },
   {
-    id: 11, name: 'Icebreaker',
+    id: 11, name: 'Icebreaker', music: 'icebreaker',   // plays 'epic' until the player sets a file for the slot
     briefing: "A Concord supply run over the Ice Gate has turned into the war's biggest dogfight. Pick a bandit, any bandit, and start thinning the crowd.",
     setting: 'pack ice', location: 'The Ice Gate, northern strait', clock: '13:05',
     startBack: 2000,   // m behind the sortie frame: a quiet lead-in before first contact
@@ -942,7 +943,7 @@ export const MISSIONS = [
     briefing: 'Mainspring is up in the Q12 over Lanternport, alone, waiting for you. One last duel, Wingnut: unwind the spring.',
     setting: 'city dusk', location: 'Lanternport at sundown', clock: '18:00', time: 'evening',
     red: true,   // under the Glassfall's red sky (js/timeofday.js glassfallPreset)
-    music: 'mainspring',
+    music: 'finale',   // plays 'mainspring' until the player sets a file for the slot
     noAwacs: true, wsoBlackout: 0.5,   // only the WSO and Mainspring on the radio; the WSO blacks out at half her health
     wingmen: [],   // the duel is flown alone
     startBack: 2000,   // m behind the sortie frame: a quiet lead-in before first contact
@@ -1038,7 +1039,7 @@ export function startThreatProblems(m, mi) {
 /** Lighting presets a mission may name in `time` (js/timeofday.js TIME_PRESETS keys; default 'day'). */
 export const TIMES = ['day', 'golden', 'dusk', 'overcast', 'evening', 'night'];
 /** Soundtrack tracks a mission or phase may name in `music` (js/music.js TRACKS). */
-export const TRACKS = ['ceiling', 'night', 'mainspring', 'epic'];
+export const TRACKS = ['ceiling', 'night', 'mainspring', 'epic', 'opener', 'icebreaker', 'finale'];
 const TASKS = ['engage', 'patrol', 'escort', 'scramble'];
 const SIDES = ['ahead', 'left', 'right', 'behind', 'high', 'low'];
 /** The placement fields of air group g in phase i of mission m (see MISSIONS above): a list of problems. */

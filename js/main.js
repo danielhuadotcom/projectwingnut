@@ -21,6 +21,7 @@ import { Menu, loadSettings } from './menu.js';
 import { fullscreenSupported, onFullscreenChange } from './fullscreen.js';
 import { TouchControls } from './touch.js';
 import { MusicDirector } from './music.js';
+import { MUSIC_SLOTS, loadAll as loadCustomMusic, trackData, importFile, clearSlot, fmtMin } from './custom_music.js';
 import { Radio } from './radio.js';
 import { Flights, SLOTS as FLIGHT_SLOTS, mulberry32, isHolding, orbitRadius, HOLD_MAX, SCRAMBLE_MAX } from './flights.js';
 import { InfinityRun, timeForRound } from './infinity.js';
@@ -236,6 +237,13 @@ class Game {
     // The title and menus play "Ceiling Unlimited" (from the first gesture that unlocks audio, faded in), each mission its
     // own track (missionTrack), crossfading both ways
     this.music = new MusicDirector(this.audio, { volume: this.settings.music ?? 0.7, track: 'ceiling' });
+    // the player's own tracks (Settings › Audio, js/custom_music.js) replace the built-in ones as soon as they are read
+    this.customMusic = {};
+    loadCustomMusic().then((recs) => {
+      this.customMusic = recs;
+      for (const id in recs) this.music.setCustom(id, trackData(recs[id]));
+      if (this.menu) this.menu.refreshMusic();
+    });
     // The radio (js/radio.js): one channel for AWACS Claude, the WSO and Mainspring. AWACS clips are decoded once after
     // the first user gesture unlocks audio; story clips are fetched per mission
     this.radio = null;   // current radio subtitle { speaker, text, age, duration }
@@ -2111,6 +2119,17 @@ class Game {
       onSetting: (key, value) => this.applySetting(key, value),
       onSound: (kind) => { unlock(); if (kind === 'select' || kind === 'back') this.audio.ui('select'); },
       onInfinity: () => { unlock(); this.audio.ui('start'); this.startInfinity(); this.fireGrace = 0.5; },
+      music: {
+        slots: () => MUSIC_SLOTS.map((s) => {
+          const r = this.customMusic[s.id];
+          return { ...s, file: r ? `${r.name} (${fmtMin(r.duration)})` : null, builtin: this.music.builtinTitle(s.id) };
+        }),
+        upload: (id, file) => importFile(id, file).then((res) => {
+          if (res.rec) { this.customMusic[id] = res.rec; this.music.setCustom(id, trackData(res.rec)); }
+          return res;
+        }),
+        clear: (id) => clearSlot(id).then(() => { delete this.customMusic[id]; this.music.setCustom(id, null); }),
+      },
     });
     // U toggles fullscreen inside its keydown handler (browsers grant it only to a user activation); off where the browser
     // has no fullscreen. A refusal in flight shows on the HUD (in the menus the Fullscreen row shows a note).

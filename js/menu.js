@@ -4,7 +4,7 @@
 // Usage (main.js):
 //   const settings = loadSettings();                       // merged over DEFAULT_SETTINGS, persisted in 'wingnut.settings'
 //   const menu = new Menu(document.querySelector('#ui'), { settings, missions: MISSIONS, onStart, onResume, onRestart,
-//                                                         onQuit, onNext, onSetting, onSound, onInfinity });
+//                                                         onQuit, onNext, onSetting, onSound, onInfinity, music });
 //   menu.show('title');
 //   every frame: input.update(dt); if (menu.open) menu.update(dt, input);
 // INFINITY (js/infinity.js), the endless mode: the title lists it under Start Campaign when onInfinity is given (it
@@ -300,6 +300,10 @@ const linkRow = (act, label, desc, val) => `<button type="button" class="m-row m
   `<span class="m-ctl"><span class="m-linkv">${esc(val)}</span><span class="m-chev" aria-hidden="true">›</span></span></button>`;
 const LINK_ROWS = linkRow('padwiz', 'Custom controller layout', 'Bind each action by moving a stick or pressing a button.', 'Set up') +
   linkRow('keys', 'Keyboard bindings', 'Rebind every key, plus mouse buttons for cannon and missile.', 'Edit');
+// Custom music (Settings › Audio): one row per slot, filled by Menu._renderMusic; the file picker is one hidden input
+const MUSIC_BOX = '<div class="m-music" data-music><p class="m-subh">Your music</p>' +
+  '<p class="m-desc m-music-lede">Use your own audio files in place of the soundtrack. Files stay on this device; each one loops whole.</p>' +
+  '<div class="m-music-rows"></div><input type="file" class="m-musfile" accept="audio/*,.mp3,.m4a,.aac,.ogg,.oga,.opus,.flac,.wav,.webm" hidden></div>';
 const gap = (a0, a1, b0, b1) => Math.max(0, b0 - a1, a0 - b1);   // distance between two intervals (0 = overlapping)
 function media(q) { try { return typeof matchMedia === 'function' && matchMedia(q).matches; } catch { return false; } }
 const missionNo = (m, i) => pad2(m && m.id != null ? m.id : i + 1);
@@ -388,8 +392,11 @@ export class Menu {
   /**
    * @param {HTMLElement} rootEl  #ui; the menu container is inserted as its first child (so #loading/#perf/#err stay on top)
    * @param {object} opts { settings, missions, onStart(i), onResume(), onRestart(), onQuit(), onNext(),
-   *                        onSetting(key, value, settings), onSound(kind), onInfinity() }
+   *                        onSetting(key, value, settings), onSound(kind), onInfinity(), music }
    *                        kind: 'move' | 'adjust' | 'select' | 'back'; without onInfinity the title has no INFINITY entry
+   *                        music (optional): the custom-music slots under Settings › Audio: { slots() -> [{ id, label,
+   *                        where, file (name, or null), builtin (default track's title) }], upload(id, File) ->
+   *                        Promise<{ error } | { warn }>, clear(id) -> Promise }; call refreshMusic() when slots change
    */
   constructor(rootEl, opts = {}) {
     this.root = rootEl || document.body;
@@ -634,8 +641,12 @@ export class Menu {
     const C = this._screens.confirm;
     this._cf = { title: q('.m-h2', C), text: q('.m-lede', C), yes: q('[data-act="confirm-yes"]', C) };
     this._diffItems = [...this._screens.difficulty.querySelectorAll('[data-diff]')];
+    this._musBox = q('.m-music-rows'); this._musNote = {}; this._musBusy = {};
+    const mf = this._musFile = q('.m-musfile');
+    if (mf) mf.addEventListener('change', () => { const f = mf.files && mf.files[0]; mf.value = ''; if (f && this._musSlot) this._musUpload(this._musSlot, f); });
     this._setTab(this._tab);
     this._syncAllRows();
+    this._renderMusic();
     this._renderKb();
     this.setControllerStatus('Looking for a controller…', false);
     this._inst = { btn: q('[data-act="install"]', this._screens.title) };
@@ -746,7 +757,8 @@ export class Menu {
     const tabs = SETTING_TABS.map(([id, label]) => `<button type="button" class="m-tab" role="tab" id="m-tab-${id}" aria-controls="m-tp-${id}" ` +
       `aria-selected="false" data-nav data-group="tabs" data-nohover data-tab="${id}">${esc(label)}</button>`).join('');
     const panels = SETTING_TABS.map(([id]) => `<div class="m-tabpanel" role="tabpanel" id="m-tp-${id}" aria-labelledby="m-tab-${id}" data-tabpanel="${id}" hidden>` +
-      SETTING_DEFS.filter((d) => d.tab === id).map((d) => this._htmlRow(d) + (d.key === 'expoYaw' ? EXPO_GRAPH : '') + (d.key === 'padLayout' ? LINK_ROWS : '')).join('') +
+      SETTING_DEFS.filter((d) => d.tab === id).map((d) => this._htmlRow(d) + (d.key === 'expoYaw' ? EXPO_GRAPH : '') + (d.key === 'padLayout' ? LINK_ROWS : '') +
+        (d.key === 'subtitles' && this.opts.music ? MUSIC_BOX : '')).join('') +
       '<div class="m-rowfoot"><button type="button" class="m-btn m-btn--sm" data-nav data-act="reset-tab">Restore defaults</button></div></div>').join('');
     return `<section class="m-screen" data-screen="settings" aria-labelledby="m-set-h" hidden>
       <div class="m-panel m-panel--settings">
@@ -1297,6 +1309,57 @@ export class Menu {
     }
   }
 
+  // ---------------------------------------------------------------------------------------------------------------
+  // Custom music slots (opts.music)
+  // ---------------------------------------------------------------------------------------------------------------
+  /** Redraw the slot rows (after the game read its stored files, or a change). Keeps focus on the same button. */
+  refreshMusic() { this._renderMusic(); }
+  _renderMusic() {
+    const box = this._musBox, m = this.opts.music;
+    if (!box || !m) return;
+    const f = this._focusEl, keep = f && box.contains(f) ? `[data-act="${f.dataset.act}"][data-slot="${f.dataset.slot}"]` : null;
+    box.innerHTML = m.slots().map((s) => {
+      const busy = this._musBusy[s.id], note = this._musNote[s.id];
+      const what = busy ? 'Checking the file…' : s.file ? s.file : `Default: ${s.builtin}`;
+      return `<div class="m-row m-row--music" data-slot="${esc(s.id)}"><div class="m-rowt"><span class="m-label">${esc(s.label)}</span>` +
+        `<span class="m-badge">${esc(s.where)}</span></div>` +
+        `<p class="m-desc${note && note.warn ? ' m-desc--warn' : ''}">${esc(note ? note.text : what)}</p><div class="m-ctl">` +
+        `<button type="button" class="m-btn m-btn--sm" data-nav data-act="mus-up" data-slot="${esc(s.id)}"${busy ? ' disabled' : ''}>${s.file ? 'Replace' : 'Choose file'}</button>` +
+        (s.file && !busy ? `<button type="button" class="m-btn m-btn--sm" data-nav data-act="mus-clear" data-slot="${esc(s.id)}">Use default</button>` : '') +
+        '</div></div>';
+    }).join('');
+    if (f && box.contains(f) === false && keep) {
+      const el = box.querySelector(keep) || box.querySelector(`[data-act="mus-up"][data-slot="${f.dataset.slot}"]`);
+      if (el) this._focus(el, { silent: true });
+    }
+  }
+  _musPick(slot) {
+    if (!slot || !this._musFile || this._musBusy[slot]) return;
+    this._musSlot = slot;
+    // browsers open a file picker only right after a click, tap or key press (a controller button does not count)
+    const ua = navigator.userActivation;
+    if (ua && !ua.isActive) { this._musNote[slot] = { text: 'Choose the file with a mouse, touch or the keyboard: browsers don\'t open a file picker from a controller.', warn: true }; this._renderMusic(); return; }
+    delete this._musNote[slot];
+    this._sound('select');
+    this._musFile.click();
+  }
+  _musUpload(slot, file) {
+    const m = this.opts.music; if (!m) return;
+    this._musBusy[slot] = true; delete this._musNote[slot]; this._renderMusic();
+    Promise.resolve(m.upload(slot, file)).catch(() => ({ error: 'Couldn\'t read that file.' })).then((res) => {
+      delete this._musBusy[slot];
+      if (res && res.error) this._musNote[slot] = { text: res.error, warn: true };
+      else if (res && res.warn) this._musNote[slot] = { text: res.warn, warn: true };
+      this._renderMusic();
+      this._sound(res && res.error ? 'back' : 'adjust');
+    });
+  }
+  _musClear(slot) {
+    const m = this.opts.music; if (!m || this._musBusy[slot]) return;
+    delete this._musNote[slot];
+    Promise.resolve(m.clear(slot)).catch(() => {}).then(() => { this._renderMusic(); this._sound('adjust'); });
+  }
+
   _renderCredits() {
     this._creditsEl.innerHTML = CREDITS.map((c) => `<section class="m-credit"><h3>${esc(c && c.section)}</h3><div>` +
       ((c && Array.isArray(c.lines)) ? c.lines : []).map((l) => `<p>${esc(l)}</p>`).join('') + '</div></section>').join('');
@@ -1567,6 +1630,8 @@ export class Menu {
       case 'wiz-save': this._wizSave(); break;
       case 'keys-reset': this._keysReset(); break;
       case 'install': this._install(); break;
+      case 'mus-up': this._musPick(d.slot); break;
+      case 'mus-clear': this._musClear(d.slot); break;
       default: break;
     }
   }

@@ -8,7 +8,8 @@
 // and explosions should not pump it. Use setVolume() to balance it against AudioFX.setMaster().
 //
 // Every method is safe before unlock (no context yet -> no-op), idempotent, and a no-op after dispose().
-// A track's data may instead name files (opusUrl / mp3Url: js/music_tracks.js), fetched when first needed.
+// A track's data may instead name files (opusUrl / mp3Url: js/music_tracks.js), fetched when first needed, or be the
+// player's own file (load(): js/custom_music.js), which loops whole.
 //
 // MusicDirector (below) owns one Music per named track (TRACKS) and switches between them: the mission's track, story
 // cues from the radio script (crossfade to a track, cut to silence, resume), title-screen muffling and radio ducking.
@@ -53,7 +54,8 @@ function glide(param, ctx, v, time, exp = false) {
 export class Music {
   /**
    * @param audioFX  the game's AudioFX instance (we use audioFX.ctx once unlock() has created it)
-   * @param opts     { volume = 0.5, data = MUSIC }  (data: { opus, mp3?, loopStart, loopEnd, bpm, title })
+   * @param opts     { volume = 0.5, data = MUSIC }  (data: { opus, mp3?, loopStart, loopEnd, bpm, title }, or
+   *                 { title, load() -> Promise<ArrayBuffer> } for a file of the player's own)
    */
   constructor(audioFX, opts = {}) {
     this.audioFX = audioFX || null;
@@ -131,7 +133,8 @@ export class Music {
 
   /**
    * Decode the embedded track (once). Resolves true when ready, false before unlock / on failure.
-   * Prefers Opus; falls back to MP3 if this browser cannot decode Ogg Opus.
+   * Prefers Opus; falls back to MP3 if this browser cannot decode Ogg Opus. A file of the player's own (data.load) is
+   * read again for every decode (decodeAudioData detaches the bytes).
    */
   preload() {
     if (this.buffer) return Promise.resolve(true);
@@ -139,11 +142,12 @@ export class Music {
     if (!ctx || !this.data) return Promise.resolve(false);
     if (this._decoding) return this._decoding;
     this._decoding = (async () => {
-      for (const fmt of ['opus', 'mp3']) {
+      const own = typeof this.data.load === 'function';
+      for (const fmt of own ? ['own'] : ['opus', 'mp3']) {
         const b64 = this.data[fmt], url = this.data[fmt + 'Url'];
-        if (!b64 && !url) continue;
+        if (!own && !b64 && !url) continue;
         try {
-          const bytes = b64 ? base64ToArrayBuffer(b64) : await this.fetchBytes(fmt);
+          const bytes = own ? await this.data.load() : b64 ? base64ToArrayBuffer(b64) : await this.fetchBytes(fmt);
           if (!bytes || this._disposed) throw new Error('no data');
           const buf = await decode(ctx, bytes);
           this._bytes[fmt] = null;                 // (decodeAudioData detached it)
@@ -260,10 +264,13 @@ export class Music {
 // ---------------------------------------------------------------------------------------------------------------------
 /** Named soundtrack tracks. 'ceiling' = "Ceiling Unlimited" (embedded: the title and menus, M2, M3); 'epic' = "Sortie"
  *  (the main theme: most missions and INFINITY), 'night' = "Night Shift" (night missions) and 'mainspring' (her theme)
- *  stream from assets/music/ (js/music_tracks.js). A track that cannot load (offline, the old single-file build) plays
- *  FALLBACK instead. */
-export const TRACKS = ['ceiling', 'night', 'mainspring', 'epic'];
+ *  stream from assets/music/ (js/music_tracks.js). 'opener' (M1), 'icebreaker' (M11) and 'finale' (M21) have no audio of their own: they
+ *  play the track STANDS_IN names until the player gives them a file (setCustom). A track that cannot load (offline,
+ *  the old single-file build) plays FALLBACK instead. */
+export const TRACKS = ['ceiling', 'night', 'mainspring', 'epic', 'opener', 'icebreaker', 'finale'];
+const STANDS_IN = { opener: 'epic', icebreaker: 'epic', finale: 'mainspring' };
 const FALLBACK = 'ceiling';
+const REPLACED = '~replaced';   // setCustom: the key the audio a file replaced plays under until the new audio takes over
 
 /**
  * The soundtrack: which track plays, and the switches between tracks. Same surface as Music for the game's everyday
@@ -273,6 +280,7 @@ const FALLBACK = 'ceiling';
  *   cue(action)               a radio-script MUSIC cue: { action: 'play', track, fade } | { action: 'cut', fade } |
  *                             { action: 'resume', fade } (back to the mission's track)
  *   prefetch(names)           fetch streamed tracks' files ahead of need (before unlock too)
+ *   setCustom(name, data)     the player's own file for a track (null: the built-in one again), heard at once
  * A track still loading keeps the current one playing and takes over (crossfade) once decoded, if still wanted; a track
  * that has no data or fails to load resolves to 'ceiling' (embedded), so a cue never errors and never leaves silence.
  */
@@ -281,20 +289,29 @@ export class MusicDirector {
     this.audioFX = audioFX || null;
     this._volume = clamp01(opts.volume ?? DEFAULT_VOLUME);
     this._data = Object.assign({ ceiling: MUSIC }, MUSIC_TRACKS, opts.tracks || {});
+    this._builtin = { ...this._data };   // what setCustom(name, null) goes back to
     this._players = {};          // track -> Music (created on first use)
     this._ducked = false; this._muffled = false;
     this.track = opts.track || 'epic';   // the mission's track (requested name)
+    this._req = null;            // the requested name of the latest switch (the mission's track or a cue's)
     this.current = null;         // resolved track name whose Music plays (or is starting)
     this.wanted = null;          // resolved track name we are switching to (may still be loading)
     this.cut = false;            // a cue silenced the music (Glassfall)
     this.log = [];               // recent switches { t, what } for tests and tools (capped)
     this._keep = null;           // keepOnly(): resolved track names whose decoded audio stays in memory (null = all)
+    this._keepNames = null;      // keepOnly()'s requested names (resolved again after setCustom)
     this._disposed = false;
   }
   /** Track names with data that has not failed to load. */
   get available() { return TRACKS.filter((t) => this._data[t] && !(this._players[t] && this._players[t].failed)); }
-  /** The track a name plays: itself when available, else 'ceiling'. */
-  resolve(name) { return this.available.includes(name) ? name : FALLBACK; }
+  /** The track a name plays: itself when available, else the track it stands in for (STANDS_IN), else 'ceiling'. */
+  resolve(name) {
+    const a = this.available;
+    while (!a.includes(name) && STANDS_IN[name]) name = STANDS_IN[name];
+    return a.includes(name) ? name : FALLBACK;
+  }
+  /** The built-in track a name plays when no file of the player's own is set (for the settings' "default" label). */
+  builtinTitle(name) { while (!this._builtin[name] && STANDS_IN[name]) name = STANDS_IN[name]; return (this._builtin[name] || {}).title || ''; }
   get playing() { const m = this.current && this._players[this.current]; return !!(m && m.playing); }
   get ready() { const m = this.current && this._players[this.current]; return !!(m && m.ready); }
   get title() { const d = this._data[this.current || this.resolve(this.track)]; return (d && d.title) || ''; }
@@ -307,14 +324,34 @@ export class MusicDirector {
     return m || null;
   }
   _note(what) { this.log.push({ t: Math.round(performance.now()), what }); if (this.log.length > 40) this.log.shift(); }
-  prefetch(names) { for (const n of names || []) { const r = this.resolve(n), m = this._player(r); if (m && !m.ready) m.fetchBytes('opus'); } }
+  prefetch(names) { for (const n of names || []) { const r = this.resolve(n), m = this._player(r); if (m && !m.ready && !m.data.load) m.fetchBytes('opus'); } }
   /** Memory: keep decoded audio only for these tracks (the mission's, its phases' and cues' tracks) plus whatever is
    *  playing or being switched to; every other decoded track is released now, and a track switched away from later is
    *  released once it stops (unless kept). A released track decodes again when next played (the current one keeps
    *  playing meanwhile, then crossfades). keepOnly(null) keeps everything again. */
   keepOnly(names) {
-    this._keep = names ? new Set(names.filter(Boolean).map((n) => this.resolve(n))) : null;
+    this._keepNames = names ? names.filter(Boolean) : null;
+    this._keep = names ? new Set(this._keepNames.map((n) => this.resolve(n))) : null;
     for (const k in this._players) this._trim(k);
+  }
+  /** The player's own file for a track ({ title, load() }: js/custom_music.js), or null for the built-in track. If the
+   *  change alters what plays now (that track, or a slot standing in for it), the music crossfades to the new audio. */
+  setCustom(name, data) {
+    if (this._disposed || !TRACKS.includes(name)) return;
+    const live = !this.cut && !!(this.wanted || this.playing);
+    const old = this._players[name];
+    if (data) this._data[name] = data; else if (this._builtin[name]) this._data[name] = this._builtin[name]; else delete this._data[name];
+    if (old) {
+      delete this._players[name];
+      if (this.wanted === name) this.wanted = null;
+      // the replaced audio keeps playing under a key of its own until the new audio has decoded, then crossfades out
+      if (this.current === name && live) { this.current = name + REPLACED; this._players[this.current] = old; }
+      else { if (this.current === name) this.current = null; old.dispose(); }
+    }
+    if (this._keepNames) this._keep = new Set(this._keepNames.map((n) => this.resolve(n)));
+    this._note('custom ' + name + (data ? '' : ' off'));
+    const r = this.resolve(this._req || this.track);
+    if (live && r !== this.current) this._switch(r, 1, {});
   }
   _trim(name) {
     if (!this._keep || this._keep.has(name) || name === this.current || name === this.wanted) return;
@@ -333,21 +370,21 @@ export class MusicDirector {
       if (m && !m.playing) m.play(opts);
       return;
     }
-    this.cut = false;
+    this.cut = false; this._req = name;
     this._switch(this.resolve(name), opts.fade ?? 2, opts);
   }
   setTrack(name, opts = {}) {
     this.track = name || 'epic';
     if (this._disposed) return;
-    this.cut = false;
+    this.cut = false; this._req = this.track;
     this._switch(this.resolve(this.track), opts.fade ?? 2, opts);
   }
   /** A radio-script MUSIC cue. */
   cue(c) {
     if (!c || this._disposed) return;
     if (c.action === 'cut') { this.cut = true; this.wanted = null; const m = this.current && this._players[this.current]; if (m) m.stop({ fade: c.fade ?? 0.15 }); this._note('cut'); return; }
-    if (c.action === 'resume') { this.cut = false; this._switch(this.resolve(this.track), c.fade ?? 4, { skipIntro: true, force: true }); this._note('resume ' + this.track); return; }
-    if (c.action === 'play') { this.cut = false; this._switch(this.resolve(c.track), c.fade ?? 2, {}); this._note('play ' + c.track); }
+    if (c.action === 'resume') { this.cut = false; this._req = this.track; this._switch(this.resolve(this.track), c.fade ?? 4, { skipIntro: true, force: true }); this._note('resume ' + this.track); return; }
+    if (c.action === 'play') { this.cut = false; this._req = c.track; this._switch(this.resolve(c.track), c.fade ?? 2, {}); this._note('play ' + c.track); }
   }
   _switch(r, fade, opts) {
     const cur = this.current && this._players[this.current];
@@ -361,7 +398,8 @@ export class MusicDirector {
       const oldName = old ? this.current : null;
       if (old) old.stop({ fade: Math.max(0.05, fade) });
       this.current = r; this.wanted = null;
-      if (oldName) this._trim(oldName);       // (its fading voice holds the buffer until it ends)
+      if (oldName && oldName.endsWith(REPLACED)) { delete this._players[oldName]; setTimeout(() => old.dispose(), Math.max(0.05, fade) * 1000 + 300); }
+      else if (oldName) this._trim(oldName);  // (its fading voice holds the buffer until it ends)
       if (!m.playing) m.play({ fadeIn: Math.max(0.03, fade), skipIntro: !!opts.skipIntro });
       this._note('now ' + r);
     };
