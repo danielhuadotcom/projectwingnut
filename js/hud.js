@@ -349,8 +349,11 @@ export class HUD {
     const state = frame.state || 'playing';
     if (state === 'title') return;                       // main shows DOM overlays on the title screen
     this.time = typeof frame.time === 'number' ? frame.time : this.time + (frame.dt || 1 / 60);
-    this.alpha = state === 'playing' ? 1 : 0.35;
+    this.alpha = (state === 'playing' ? 1 : 0.35) * (typeof frame.hudFlicker === 'number' ? frame.hudFlicker : 1);
     ctx.globalAlpha = this.alpha;
+    // M21's final phase (frame.knockout): the blast knocked out most of the HUD. Left: the gun cross and lead ring, the
+    // target box and lock, missile threats and warnings, the radio and the fighting-game health bars (frame.duel)
+    const ko = !!frame.knockout;
     ctx.lineCap = 'butt'; ctx.lineJoin = 'round'; ctx.setLineDash(NO_DASH);
     const p = frame.player || DEF_PLAYER;
     const radar = frame.radar || DEF_RADAR;
@@ -363,37 +366,39 @@ export class HUD {
     if (frame.mouseAim) {
       // War Thunder-style mouse aim: the circle is where you're steering, the cross is where the guns point now
       if (frame.aoaStick) this._drawAoaStick(frame.aoaStick); else this._drawAimCircle(frame.mouseAim);
-    } else {
+    } else if (!ko) {
       this._drawPitchLadder(p);
       this._drawBankScale(p);
     }
     if (gc) this._drawBoresight(gc.x, gc.y, gc.visible !== false); else this._drawBoresight();
-    this._drawVelocityVector(frame.velocityVector);
+    if (!ko) this._drawVelocityVector(frame.velocityVector);
     if (P) lap('attitude');
-    this._drawHeadingTape(p, radar);
-    if (P) lap('heading');
-    this._drawAirspeed(p);
-    this._drawAltitude(p);
-    if (P) lap('tapes');
     const compact = !!frame.compact;     // touch layout: sticks and buttons cover the corners
-    if (!compact) this._drawThrottle(p);
-    this._drawHealth(p);
-    if (compact) this._drawCompactWeapons(p); else this._drawWeapons(p);
-    if (P) lap('gauges');
-    if (!compact) { this._drawRadar(radar, p); this._drawScore(frame); }
-    if (P) lap('radar');
+    if (!ko) {
+      this._drawHeadingTape(p, radar);
+      if (P) lap('heading');
+      this._drawAirspeed(p);
+      this._drawAltitude(p);
+      if (P) lap('tapes');
+      if (!compact) this._drawThrottle(p);
+      this._drawHealth(p);
+      if (compact) this._drawCompactWeapons(p); else this._drawWeapons(p);
+      if (P) lap('gauges');
+      if (!compact) { this._drawRadar(radar, p); this._drawScore(frame); }
+      if (P) lap('radar');
+    }
     this._prepTarget(frame.target, gc);                  // target box and info block first: squadmate labels avoid them
-    this._drawAllies(frame.allies, compact ? frame.touchRects : null);
-    this._drawContacts(frame.contacts);
+    if (!ko) { this._drawAllies(frame.allies, compact ? frame.touchRects : null); this._drawContacts(frame.contacts); }
     this._drawTarget(frame.target);
     if (P) lap('markers');
     this._drawWarnings(frame.warnings || DEF_WARN, p);
     this._bossOff = frame.boss ? this.L.bossH : 0;
     this._drawBoss(frame.boss);
-    this._drawMessages(frame.messages);
+    if (frame.duel) this._drawDuel(frame.duel, compact);
+    if (!ko) this._drawMessages(frame.messages);
     this._drawRadio(frame.radio);
-    this._drawPills(frame);
-    if (!compact) this._drawInputStatus(frame.input || DEF_INPUT);
+    if (!ko) this._drawPills(frame);
+    if (!compact && !ko) this._drawInputStatus(frame.input || DEF_INPUT);
     this._drawHitFlash(frame.hitFlash);
     ctx.globalAlpha = 1;
     if (P) lap('text');
@@ -1155,6 +1160,25 @@ export class HUD {
   }
 
   /** Boss health bar: name over `bars` segments; the rightmost live segment drains, broken ones stay empty. */
+  /** M21's final phase: fighting-game health bars, the player's on the left and the boss's on the right, each draining
+   *  toward the centre; along the bottom (touch layout: under the heading tape, clear of the sticks). */
+  _drawDuel(d, compact) {
+    const ctx = this.ctx, L = this.L, s = L.s;
+    const half = Math.round(Math.min(L.bossW * 0.6, this.w * 0.3)), gap = Math.round(24 * s), bh = Math.round(10 * s);
+    const y = compact ? L.pillY + L.bossNameH + Math.round(4 * s) : this.h - Math.round(46 * s);
+    ctx.font = L.fSmall;
+    const bar = (side, name, frac, col) => {
+      const x0 = side < 0 ? L.cx - gap / 2 - half : L.cx + gap / 2, f = clamp(frac || 0, 0, 1);
+      ctx.fillStyle = COL.seg; ctx.fillRect(x0, y, half, bh);
+      ctx.fillStyle = col;
+      if (side < 0) ctx.fillRect(x0 + half * (1 - f), y, half * f, bh); else ctx.fillRect(x0, y, half * f, bh);
+      ctx.beginPath(); ctx.rect(x0, y, half, bh); this._stroke(COL.greenSoft, L.lwThin);
+      this._text(name, side < 0 ? x0 : x0 + half, y - Math.round(4 * s), COL.pale, side < 0 ? 'left' : 'right', 'bottom');
+    };
+    bar(-1, d.player.name, d.player.frac, d.player.frac < 0.35 ? COL.red : COL.green);
+    bar(1, d.boss.name, d.boss.frac, COL.red);
+  }
+
   _drawBoss(b) {
     if (!b) return;
     const ctx = this.ctx, L = this.L, s = L.s;

@@ -14,6 +14,7 @@ export const MUSIC_SLOTS = [
   { id: 'icebreaker', label: 'Icebreaker', where: 'Mission 11' },
   { id: 'mainspring', label: 'Mainspring', where: 'Her entrances, M16' },
   { id: 'finale', label: 'Finale', where: 'Mission 21' },
+  { id: 'finale2', label: 'Finale II', where: 'M21 final phase' },
 ];
 export const MAX_BYTES = 150 * 1024 * 1024;   // a file larger than this is refused (lossless audio of a long track)
 export const LONG_SECS = 600;                 // longer tracks get a memory note: decoded audio is ~11 MB per stereo minute

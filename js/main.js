@@ -64,6 +64,13 @@ const SEP_R = 350, SEP_PUSH = 400;
 // these roles, as a flattened ellipsoid over the wings and fuselage (SOLID_SPAN x the drawn radius across, SOLID_THICK x
 // it top to bottom), and ships (naval surface units, allied ones too), as their hull box plus SOLID_MARGIN m.
 const SOLID_ROLES = new Set(['awacs', 'transport', 'bomber']);
+// M21's final phase (missions[].finalBlast; PW "Kings"): when the boss's third bar empties (FINAL_AT of its health left)
+// it can't be hurt for FINAL_SAFE s and the missiles on it lose their lock; FINAL_BLAST s in, a thunderglass blast goes
+// off over the fight and the music cuts; the HUD flickers out over FINAL_FLICKER s into the knockout layout, and then
+// the boss gets FINAL_REFILL[difficulty].boss x its full health as a new pool and the player its heal (full, +50 or
+// none); FINAL_MUSIC s after the blast the 'finale2' track starts.
+const FINAL_AT = 0.25, FINAL_BLAST = 1.8, FINAL_FLICKER = 1.0, FINAL_SAFE = 3.2, FINAL_MUSIC = 3;
+const FINAL_REFILL = { easy: { boss: 0.5, heal: 'full' }, normal: { boss: 0.5, heal: 50 }, hard: { boss: 0.75, heal: 0 }, mercenary: { boss: 1, heal: 0 } };
 const SOLID_SPAN = 0.9, SOLID_THICK = 0.25, SOLID_MARGIN = 3;
 const HARDPOINTS = 4, HARDPOINT_RELOAD = 5;   // four standard-missile hardpoints (stands in for PW special-weapon slots), s per hardpoint
 const FLARE_RELOAD = 7;                         // s (PW: infinite flares, 7 s reload)
@@ -601,6 +608,7 @@ class Game {
     const p = this.player;
     p.reset({ position: new THREE.Vector3(0, 800, 0), heading: 0, health: 100 });
     this.downed = false; this.deadReason = null;   // (die)
+    this.final = null;                              // (M21's final phase: startFinal)
     p.quaternion.identity();
     p.speed = 230; p.throttle = 0.72;
     p.velocity.set(0, 0, -p.speed);
@@ -667,7 +675,7 @@ class Game {
     // radio and soundtrack: the mission's script and clips (js/radio.js), its track and the ones its phases or cues use
     this._bossMark = null;
     this.comms.resetMission(M, this);
-    const extraTracks = M.phases.map((P) => P.music).concat(this.comms.script.filter((e) => e.music && e.music.track).map((e) => e.music.track)).filter(Boolean);
+    const extraTracks = M.phases.map((P) => P.music).concat(this.comms.script.filter((e) => e.music && e.music.track).map((e) => e.music.track), M.finalBlast ? ['finale2'] : []).filter(Boolean);
     this.music.keepOnly([missionTrack(M), ...extraTracks]);   // other tracks' decoded audio (~60 MB each) is released
     this.music.setTrack(missionTrack(M), { restart: true, fade: 1.5 });   // every sortie (a retry too) from the top
     this.music.prefetch(extraTracks);
@@ -760,7 +768,7 @@ class Game {
     this.missionDoneT = 0.001;
     this.player.immortal = true;           // nothing can shoot the player down from here on (Weapons: immortals take no hits)
     this.score += 3000 + 1000 * this.missionIndex;
-    this.message('MISSION COMPLETE', true, 5.5);
+    if (!this.mission.finalBlast) this.message('MISSION COMPLETE', true, 5.5);   // (the campaign's end: no banner, as in PW)
     // the script's completion lines replace the stock AWACS call; queued flavor and chatter are dropped (js/radio.js)
     this.comms.complete(Math.min(this.phaseIndex + 1, this.mission.phases.length));
     if (!this.comms.hasCompleteLines) this.say('missionComplete', 3);
@@ -1039,6 +1047,33 @@ class Game {
         L[j].brain.sep.x -= dx * k; L[j].brain.sep.y -= dy * k; L[j].brain.sep.z -= dz * k;
       }
     }
+  }
+  /** M21's final phase begins (FINAL_*): the boss's third bar is gone. It can't be hurt for now and every missile on it
+   *  loses its lock; updateFinal runs the blast, the knockout, the refills and the music. */
+  startFinal(boss) {
+    const key = Object.keys(DIFFICULTY).find((k) => DIFFICULTY[k] === this.diff) || 'normal';
+    this.final = { t: 0, boss, key, blasted: false, blastAt: 0, refilled: false, music: false, pool: 0, hurt: boss.applyDamage };
+    boss.applyDamage = () => false;
+    this.weapons.breakLock(boss, Infinity);
+  }
+  updateFinal(dt) {
+    const F = this.final, p = this.player, B = F.boss;
+    F.t += dt;
+    if (!F.blasted && F.t >= FINAL_BLAST) {   // the blast over the fight (a lone Glassfall blast), the music cut
+      F.blasted = true; F.blastAt = F.t;
+      const q = B.alive ? B.position : p.position;
+      this.glassfall.blast((p.position.x + q.x) / 2, (p.position.z + q.z) / 2);
+      this.music.cue({ action: 'cut', fade: 0.15 });
+      this.chase.addShake(1);
+    }
+    if (F.blasted && !F.refilled && F.t - F.blastAt >= FINAL_FLICKER) {   // the last round: the refills (FINAL_REFILL)
+      F.refilled = true;
+      const R = FINAL_REFILL[F.key] || FINAL_REFILL.normal;
+      if (B.alive) { B.health = F.pool = (B.maxHealth || B.health) * R.boss; }
+      if (p.alive) p.health = R.heal === 'full' ? 100 : Math.min(100, p.health + R.heal);
+    }
+    if (F.hurt && F.t >= FINAL_SAFE) { B.applyDamage = F.hurt; F.hurt = null; }   // fair game again
+    if (F.blasted && !F.music && F.t - F.blastAt >= FINAL_MUSIC) { F.music = true; this.music.cue({ action: 'play', track: 'finale2', fade: 0.3 }); }
   }
   /** The death reason if `pos` is inside a solid body (SOLID_*: a large aircraft or a ship), else null. */
   solidHit(pos) {
@@ -1986,7 +2021,9 @@ class Game {
         const f = boss.health / (boss.maxHealth || 1);
         if (f <= 0.5) this.comms.boss(50);
         if (f <= 0.25) this.comms.boss(25);
+        if (this.mission.finalBlast && !this.final && f <= FINAL_AT && p.alive) this.startFinal(boss);
       } }
+    if (this.final) this.updateFinal(dt);
     if (this.missionDoneT > 0) {
       this.missionDoneT += dt;
       // the debrief waits for the script's completion lines (up to the radio's cap), then the queue goes
@@ -2803,6 +2840,21 @@ class Game {
       B.name = boss.name; B.bars = boss.bossBars; B.frac = THREE.MathUtils.clamp(boss.health / (boss.maxHealth || 1), 0, 1);
       f.boss = B;
     } else f.boss = null;
+    // M21's final phase: the HUD flickers out at the blast into the knockout layout, with fighting-game health bars for
+    // the boss and the player in place of the boss bar (none on Mercenary)
+    { const F = this.final, since = F && F.blasted ? F.t - F.blastAt : -1;
+      f.knockout = since >= FINAL_FLICKER;
+      f.hudFlicker = since >= 0 && since < FINAL_FLICKER ? (since < 0.1 ? 1 : (Math.random() < 0.45 ? 0 : 0.3 + 0.7 * Math.random()) * (1 - since / FINAL_FLICKER)) : 1;
+      f.duel = null;
+      if (f.knockout) {
+        f.boss = null;
+        if (F.key !== 'mercenary' && F.boss.alive) {
+          const D = f._duel || (f._duel = { boss: { name: '', frac: 1 }, player: { name: 'WINGNUT', frac: 1 } });
+          D.boss.name = F.boss.name; D.boss.frac = THREE.MathUtils.clamp(F.boss.health / (F.pool || 1), 0, 1);
+          D.player.frac = THREE.MathUtils.clamp(p.health / 100, 0, 1);
+          f.duel = D;
+        }
+      } }
     this.hudThreats(dt); f.threatGlass = this.todGlass || 0;   // (the red Glassfall sky: the arcs run stronger)
     f.warnings.missileIncoming = !!this.missileIncoming; f.warnings.pullUp = !!this.pullUp; f.warnings.stall = !!this.stall; f.warnings.overG = false;
     f.radio = this.radio;

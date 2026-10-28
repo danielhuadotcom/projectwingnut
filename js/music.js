@@ -264,11 +264,12 @@ export class Music {
 // ---------------------------------------------------------------------------------------------------------------------
 /** Named soundtrack tracks. 'ceiling' = "Ceiling Unlimited" (embedded: the title and menus, M2, M3); 'epic' = "Sortie"
  *  (the main theme: most missions and INFINITY), 'night' = "Night Shift" (night missions) and 'mainspring' (her theme)
- *  stream from assets/music/ (js/music_tracks.js). 'opener' (M1), 'icebreaker' (M11) and 'finale' (M21) have no audio of their own: they
+ *  stream from assets/music/ (js/music_tracks.js). 'opener' (M1), 'icebreaker' (M11), 'finale' (M21) and 'finale2' (M21's last phase,
+ *  standing in for 'finale') have no audio of their own: they
  *  play the track STANDS_IN names until the player gives them a file (setCustom). A track that cannot load (offline,
  *  the old single-file build) plays FALLBACK instead. */
-export const TRACKS = ['ceiling', 'night', 'mainspring', 'epic', 'opener', 'icebreaker', 'finale'];
-const STANDS_IN = { opener: 'epic', icebreaker: 'epic', finale: 'mainspring' };
+export const TRACKS = ['ceiling', 'night', 'mainspring', 'epic', 'opener', 'icebreaker', 'finale', 'finale2'];
+const STANDS_IN = { opener: 'epic', icebreaker: 'epic', finale: 'mainspring', finale2: 'finale' };
 const FALLBACK = 'ceiling';
 const AFTER_FADE = 0.05;        // s: fade-in of a track that starts once the previous one has faded out (its intro lands)
 const REPLACED = '~replaced';   // setCustom: the key the audio a file replaced plays under until the new audio takes over

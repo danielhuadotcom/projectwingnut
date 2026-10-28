@@ -371,9 +371,19 @@ export class Glassfall {
     this._detonate(this.center.x + Math.sin(a) * r, this.center.z - Math.cos(a) * r);
   }
   _detonate(x, z) {
-    const g = this.game, y = Math.max(g.world.getHeight(x, z), 0);
+    const g = this.game;
     this.det++; this.lastDet = this.t; this.stats.detonations++;
     if (g.onGlassfallDetonation) g.onGlassfallDetonation(this.det, this.mode);   // the radio script's detonation lines and music cut
+    this.blast(x, z, 0);
+    // the sky: one step toward the red variant (fully red on the last detonation), on the next frame (update)
+    this.skyStep = this.det / this.total;
+    if (this.det === 1) g.message('GLASSFALL', true, 4);
+  }
+  /** One thunderglass blast at (x, z), effects only (dome, ring, flash, bloom, shake, audio), y m over the ground: a
+   *  Glassfall detonation, or a lone blast outside the event (M21's final-phase blast, Game.updateFinal). */
+  blast(x, z, y = 0) {
+    const g = this.game;
+    y += Math.max(g.world.getHeight(x, z), 0);
     // pooled blast: the free one, else the oldest
     let B = this.blasts[0];
     for (const o of this.blasts) { if (o.t < 0) { B = o; break; } if (o.t > B.t) B = o; }
@@ -388,9 +398,6 @@ export class Glassfall {
     g.audio.explosion(Math.min(d * 0.08, 220));                   // the crack
     g.audio.explosion(Math.min(700 + d * 0.15, 1300));            // and the deep rumble rolling in after it
     g.weapons.explode(_v.set(x, y + 20, z), 3);
-    // the sky: one step toward the red variant (fully red on the last detonation), on the next frame (update)
-    this.skyStep = this.det / this.total;
-    if (this.det === 1) g.message('GLASSFALL', true, 4);
   }
   _updateBlasts(dt) {
     const g = this.game;
