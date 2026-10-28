@@ -44,7 +44,9 @@
 //     two 5 s missile hardpoints, so their converted counts are halved. Every spawn also scales by the difficulty's
 //     enemyHp (Easy 0.8, Normal 1, Hard 1.15, Mercenary 1.3). armed: true (default) = gun + missiles, 'gun' = gun only,
 //     false = unarmed. bars = boss health bar segments (shown on the HUD boss bar). ace: true = a named ace (callsign
-//     entries): aces and types with bars fly js/ai.js EnemyBrain's break discipline against missiles.
+//     entries): aces and types with bars fly js/ai.js EnemyBrain's break discipline against missiles. duel: true = the
+//     final duel's pilot (M21's Mainspring): js/ai.js EnemyBrain's duel mode (quicker, wilder tail defense, off-boresight
+//     and over-the-shoulder missile shots).
 //   GROUND_TYPES.hp is raw game damage (a player missile does 65): 1 missile for AA, SAMs, C-RAM, radars, small buildings
 //     and boats, 2 for armor, bunkers and hangars, 3 for railgun turrets. Ships pool hull and weapon mounts into one hitbox
 //     so capital ships stay playable. refHp = the reference durability figure, kept for information only.
@@ -163,7 +165,7 @@ export const AIRCRAFT_TYPES = {
   'Q07 MAINSPRING': { role: 'prototype', ace: true, hp: 260, speedKmh: 3200, roll: 180, pitch: 95,  yaw: 15, color: 0x7d1212, accent: 0xe0a020, ai: { kmh: [300, 1000, 1800], roll: 300, pitch: 85, yaw: 25 }, note: "Mainspring leading Chime in a Q07 (Su-37-class) painted as hers (Lightning Rod, Icebreaker): an ace, not a boss: about 8 missiles (260 HP); post-stall flips to dodge missiles. She pulls out with the last of Chime." },
   'Q04 MAINSPRING': { role: 'prototype', ace: true, armed: 'gun', bars: 3, hp: 530, speedKmh: 2500, roll: 200, pitch: 100, yaw: 12, color: 0x7d1212, accent: 0xe0a020, ai: { kmh: [null, 1000, 1800], roll: 250, pitch: 65, yaw: 25 }, note: "Mainspring in a gun-only Orrery duelist, launched off a Morrow Deep rig (Graveyard Shift boss); shot down, she ejects. Reference AI HP 150; fought as 3 bars of about 3 missiles on Normal (530 HP, not doubled: 9 missiles). Heavy gun barrages. Only cruise and max AI speeds are set." },
   'Q10 MAINSPRING': { role: 'prototype', ace: true, bars: 3, hp: 710, speedKmh: 3600, roll: 250, pitch: 120, yaw: 20, color: 0x7d1212, accent: 0xe0a020, ai: { kmh: [400, 950, 1800], roll: 250, pitch: 60, yaw: 25 }, note: 'Mainspring back in a new Q10 over the Toolshed ruins (Backswing boss). Reference AI HP 100; 3 bars of about 3.6 missiles on Normal (710 HP, not doubled: 11 missiles). Guns, then micromissile swarms; post-stall tricks. Speed, pitch and yaw estimated.' },
-  'Q12 MAINSPRING': { role: 'prototype', ace: true, bars: 4, missileReload: 5 / 3, hp: 1540, speedKmh: 4000, roll: 350, pitch: 150, yaw: 15, color: 0x7d1212, accent: 0xe0a020, ai: { kmh: [300, 1000, 1800], roll: 300, pitch: 70, yaw: 25 }, note: "Mainspring, Chime Squadron's commander, in the Q12 at the top of the Orrery's dial (Unwound final boss). Reference AI HP 400; 1540 HP, not doubled: on Normal 4 bars of about 6 missiles (24 total; Easy 19, Hard 28, Mercenary 31). Micromissiles, then cluster bombs." },
+  'Q12 MAINSPRING': { role: 'prototype', ace: true, bars: 4, duel: true, missileReload: 5 / 3, hp: 1540, speedKmh: 4000, roll: 350, pitch: 150, yaw: 15, color: 0x7d1212, accent: 0xe0a020, ai: { kmh: [300, 1000, 1800], roll: 300, pitch: 70, yaw: 25 }, note: "Mainspring, Chime Squadron's commander, in the Q12 at the top of the Orrery's dial (Unwound final boss). Reference AI HP 400; 1540 HP, not doubled: on Normal 4 bars of about 6 missiles (24 total; Easy 19, Hard 28, Mercenary 31). Micromissiles, then cluster bombs." },
 };
 
 // ------------------------------------------------------------------------------------------------------------------------

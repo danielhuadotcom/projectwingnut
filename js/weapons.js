@@ -54,6 +54,7 @@ import * as THREE from 'https://cdnjs.cloudflare.com/ajax/libs/three.js/0.170.0/
 
 const AIRCRAFT_RADIUS = 7;      // m — collision sphere (same as aircraft.js AIRCRAFT_RADIUS; hardcoded on purpose)
 const G = 9.81;
+const OTS_SPEED = 90;   // m/s: an over-the-shoulder missile's speed off the rail (fireMissile opts.toward)
 
 const SMOKE_STRIDE = 24;        // floats per smoke particle (see _puff for the layout)
 const POINT_STRIDE = 20;        // floats per additive glow particle (see _glow)
@@ -919,7 +920,7 @@ export class Weapons {
     this.bulletGravity = G * 0.6;            // m/s^2 (arcade: 0.6 g, was 0.3 g)
     this.bulletDamage = 4;
     this.bulletRadius = AIRCRAFT_RADIUS;     // hit sphere radius (m) for shooters whose team is not in gunHitRadius
-    this.gunHitRadius = { player: 24, enemy: 6 };   // m, hit sphere radius by SHOOTER team (arcade-generous for the player; was 16)
+    this.gunHitRadius = { player: 48, enemy: 6 };   // m, hit sphere radius by SHOOTER team (arcade-generous for the player; was 16, then 24)
     // x target.hitRadius for big (drawn-larger) AIRCRAFT, by shooter team, so the player's rounds are as forgiving on
     // bombers / gunships as on fighters (ground targets keep their hull sphere). Per-aircraft gunHitRadius = x1.
     this.gunHitScale = { player: 1.5 };
@@ -1642,8 +1643,10 @@ export class Weapons {
   // ===============================================================================================
   // Missiles
   // ===============================================================================================
-  /** Launch a missile from the next rail. target: Aircraft|null (null = unguided). Returns the Missile or null. */
-  fireMissile(aircraft, target = null) {
+  /** Launch a missile from the next rail. target: Aircraft|null (null = unguided). opts.toward: leave the rail already
+   *  pointing at the target (an over-the-shoulder shot: a boss firing at a jet behind it), at OTS_SPEED m/s. Returns
+   *  the Missile or null. */
+  fireMissile(aircraft, target = null, opts = null) {
     if (!aircraft || aircraft.holdFire === true || Weapons._isDead(aircraft)) return null;
     if (typeof aircraft.missiles === 'number' && aircraft.missiles <= 0) return null;
     const st = this._state(aircraft);
@@ -1669,6 +1672,12 @@ export class Weapons {
       if (m.target) _fwd.subVectors(m.target.position, m.position).normalize(); else _fwd.set(0, 1, 0);
       if (!(_fwd.y >= 0.35)) { _fwd.y = 0.35; _fwd.normalize(); }
       m.velocity.copy(_fwd).multiplyScalar(45);
+      m.quaternion.setFromUnitVectors(_v0.set(0, 0, -1), _fwd);
+    } else if (opts && opts.toward && m.target) {
+      // over the shoulder: off the rail already turned toward the target, slow until the motor lights
+      m.position.copy(rail);
+      _fwd.subVectors(m.target.position, m.position).normalize();
+      m.velocity.copy(_fwd).multiplyScalar(OTS_SPEED);
       m.quaternion.setFromUnitVectors(_v0.set(0, 0, -1), _fwd);
     } else {
       this._forward(aircraft, _fwd);

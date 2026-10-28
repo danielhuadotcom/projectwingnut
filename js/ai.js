@@ -47,6 +47,21 @@ const COBRA_CD = 6, COBRA_CD_VAR = 4;
 // Regular aces (ace: true, no bars) fly the same Cobra, tuned down: a COBRA_CD_ACE + 0-COBRA_CD_ACE_VAR s cooldown, and per
 // incoming missile they go for it only with odds COBRA_P_ACE + COBRA_P_ACE_SKILL x skill (bosses always do).
 const COBRA_CD_ACE = 12, COBRA_CD_ACE_VAR = 6, COBRA_P_ACE = 0.4, COBRA_P_ACE_SKILL = 0.3;
+// Tail defense (bandits, not squadmates or passive types): a hostile behind the wing line (TAIL_CONE) inside TAIL_RANGE
+// m with its nose on us (TAIL_NOSE) for a reaction time (TAIL_REACT + TAIL_REACT_SKILL x (1 - skill) s, x 0.7-1.3) ends a
+// sit-on-the-tail stalemate. Ordinary bandits answer a spell with odds TAIL_ODDS + TAIL_ODDS_SKILL x skill: a sustained
+// break turn into the attacker's side for TAIL_TURN s, reversing once halfway (a scissors) with odds TAIL_FLIP, then
+// TAIL_GAP s before the next; the pursuit afterwards turns back at the attacker, so it becomes a one- or two-circle
+// turning fight. Steady turns, no jinks: a gun solution stays possible. Aces and bosses always answer and pick from a
+// wider set (break turn, vertical pull, split-S), and with the attacker closing inside TAIL_COBRA_RANGE they may Cobra
+// (the limit break, sharing its cooldown) to bleed speed and make the attacker overshoot. The duel pilot (type duel:
+// M21's Mainspring) reacts within TAIL_REACT_DUEL s, from DUEL_RANGE m and any rear-hemisphere aspect, flies shorter,
+// more varied maneuvers, and shoots back: missiles up to DUEL_SHOT rad off the nose, and over the shoulder at a jet
+// behind it (DUEL_OTS_* range, every DUEL_OTS_CD s + 0-DUEL_OTS_VAR).
+const TAIL_RANGE = 1500, TAIL_CONE = -0.5, TAIL_NOSE = 0.9, TAIL_REACT = 1.2, TAIL_REACT_SKILL = 1.6;
+const TAIL_ODDS = 0.45, TAIL_ODDS_SKILL = 0.45, TAIL_TURN = [4, 7], TAIL_GAP = [2, 4];
+const TAIL_FLIP = { plain: 0.2, ace: 0.4, duel: 0.6 }, TAIL_COBRA_RANGE = [250, 1100], TAIL_COBRA_P = { ace: 0.35, boss: 0.55, duel: 0.7 };
+const TAIL_REACT_DUEL = 0.5, DUEL_RANGE = 2500, DUEL_SHOT = 0.6, DUEL_OTS_MIN = 500, DUEL_OTS_MAX = 3000, DUEL_OTS_CD = 6, DUEL_OTS_VAR = 4;
 // Altitude game (bandits only, EnemyBrain.altGame): out of a close turning fight a bandit wants 300-800 m (by skill) over
 // its target; holding flights orbit there, slot-waiters stack above it, attackers dive in from it and zoom back up.
 export const ALT_CEILING = 4500;  // m ASL: hard cap, enforced in the steering. Highest terrain is ~2.6 km; matches the
@@ -138,6 +153,10 @@ export class EnemyBrain {
     this._pull = 0; this._tired = 0; this._gunT = 0; this._gunDelay = -1; this._cobraGo = false;
     this._cobraCd = 0; this._cobraTti = COBRA_TTI; this._recover = 0;   // (rerolled per Cobra)
     this.cobras = 0;                // stats: boss Cobras flown
+    this.duel = false;              // (resolved from the type: duel: true, TAIL_*/DUEL_* above)
+    this._tailT = 0; this._tailDelay = -1; this._tailAns = false; this._tbT = 0; this._tbCd = 0; this._tbDir = 1;
+    this._tbKind = 'turn'; this._tbFlip = -1; this._otsCd = 0; this._shotAngle0 = this.shotAngle;
+    this.tailBreaks = 0; this.tailCobras = 0; this.otsShots = 0;   // stats
   }
 
   /** Roll how this brain will answer missile m (break discipline above). */
@@ -149,6 +168,22 @@ export class EnemyBrain {
     this._mslPlan = r < pMiss ? 0 : r < pMiss + pEarly ? 1 : 2;
     this._mslTti = (0.9 + 0.6 * s) * (0.45 + 0.8 * Math.random());              // timed: break once the tti is under this
     this._cobraGo = this._boss || Math.random() < COBRA_P_ACE + COBRA_P_ACE_SKILL * s;
+  }
+
+  /** Begin a tail break against attacker W (TAIL_*): which maneuver, which way, how long, and whether it reverses. */
+  _startTailBreak(W) {
+    const ac = this.ac, r = Math.random();
+    ac.getRight(_tmp);
+    this._tbDir = _rel.subVectors(W.position, ac.position).dot(_tmp) > 0 ? 1 : -1;   // into the attacker's side
+    const room = this._agl > 1500 && ac.position.y < ALT_CEILING - 600;
+    this._tbKind = !this.breakDiscipline ? 'turn' : this.duel ? (r < 0.45 ? 'turn' : r < 0.75 ? 'vertical' : room ? 'split' : 'turn')
+      : (r < 0.6 ? 'turn' : r < 0.85 ? 'vertical' : room ? 'split' : 'turn');
+    if (this._tbKind === 'vertical' && ac.position.y > ALT_CEILING - 700) this._tbKind = 'turn';
+    this._tbT = (TAIL_TURN[0] + (TAIL_TURN[1] - TAIL_TURN[0]) * Math.random()) * (this.duel ? 0.6 : this._tbKind === 'turn' ? 1 : 0.7);
+    const flip = this.duel ? TAIL_FLIP.duel : this.breakDiscipline ? TAIL_FLIP.ace : TAIL_FLIP.plain;
+    this._tbFlip = this._tbKind === 'turn' && Math.random() < flip ? this._tbT * 0.5 : -1;
+    this._tbCd = this._tbT + (this.duel ? 0.5 + Math.random() : TAIL_GAP[0] + (TAIL_GAP[1] - TAIL_GAP[0]) * Math.random());
+    this.tailBreaks++;
   }
 
   /** Room for a Cobra: clear of the ground (and not about to pop toward it), under the ceiling, and fast enough that
@@ -380,6 +415,8 @@ export class EnemyBrain {
       this.breakDiscipline = !(this instanceof WingmanBrain) && !!T && (T.ace === true || T.bars > 0);
       this._boss = !!T && T.bars > 0;   // bosses misjudge less and recover faster than the other aces
       if (this.breakDiscipline) this._cobraTti = COBRA_TTI + COBRA_TTI_VAR * Math.random();
+      this.duel = !(this instanceof WingmanBrain) && !!T && T.duel === true;
+      this.shotAngle = this.duel ? DUEL_SHOT : this._shotAngle0;
     }
     if (!this.breakDiscipline) {
       if (this instanceof WingmanBrain) breakNow = missileInbound && (this.skill < 0.55 || minTti < 0.9 + this.skill * 0.6);
@@ -438,12 +475,46 @@ export class EnemyBrain {
         && gx * _fwd.x + gy * _fwd.y + gz * _fwd.z > 0.86 * Math.sqrt(goalD * goalD + gy * gy)) lowTerrain = false;
     } else this._diving = false;
     const outOfBounds = Math.abs(ac.position.x) > this.worldHalf * 0.9 || Math.abs(ac.position.z) > this.worldHalf * 0.9;
+    // Tail defense (TAIL_*): is a hostile sitting on our tail, and do we answer it (a tail break below, or a Cobra here)?
+    let tailCobra = false, tailD = Infinity, tailed = false;
+    if (!this.passive && !(this instanceof WingmanBrain)) {
+      const W = this.threat || target;   // (the player, for a bandit hunting a squadmate)
+      if (W && W.alive) {
+        _rel.subVectors(W.position, ac.position); tailD = _rel.length();
+        if (tailD < (this.duel ? DUEL_RANGE : TAIL_RANGE) && _rel.dot(_fwd) < (this.duel ? 0 : TAIL_CONE) * tailD) {
+          W.getForward(_pFwd); tailed = this.duel || -_pFwd.dot(_rel) > TAIL_NOSE * tailD;
+        }
+      }
+      this._tbCd -= dt; if (this._tbT > 0) this._tbT -= dt;
+      if (tailed) this._tailT += dt; else { this._tailT = Math.max(0, this._tailT - 2 * dt); if (this._tailT === 0) this._tailDelay = -1; }
+      if (tailed && this._tailDelay < 0) {
+        this._tailDelay = (this.duel ? TAIL_REACT_DUEL : TAIL_REACT + TAIL_REACT_SKILL * (1 - this.skill)) * (0.7 + 0.6 * Math.random());
+        this._tailAns = this.breakDiscipline || Math.random() < TAIL_ODDS + TAIL_ODDS_SKILL * this.skill;
+      }
+      if (tailed && this._tailAns && this._tailT >= this._tailDelay && this._tbT <= 0 && this._tbCd <= 0 && !missileInbound
+        && !lowTerrain && (this.state === 'pursue' || this.state === 'extend')) {
+        _vr.subVectors(W.velocity, ac.velocity);
+        const closing = _vr.dot(_rel) < 0, P = this.duel ? TAIL_COBRA_P.duel : this._boss ? TAIL_COBRA_P.boss : TAIL_COBRA_P.ace;
+        if (this.breakDiscipline && closing && this._cobraCd <= 0 && tailD > TAIL_COBRA_RANGE[0] && tailD < TAIL_COBRA_RANGE[1]
+          && this._recover <= 0 && Math.random() < P && this._cobraRoom()) tailCobra = true;
+        else this._startTailBreak(W);
+        this._tailDelay = -1; this._tailT = 0;   // the next answer waits a fresh reaction time
+      }
+    }
     // Boss limit break (COBRA_*): the maneuver flies the jet (no steering, no guns) until it ends; the ground or the
     // ceiling cut it short
     if (this.breakDiscipline) {
       let fly = ac.postStall;
       if (fly) { if (lowTerrain || ac.position.y > ALT_CEILING + 150) ac.abortPostStall(); }
-      else if (missileInbound && this._cobraGo && this._cobraCd <= 0 && !lowTerrain && this._threatMsl.age >= this._mslNotice && minTti < this._cobraTti && this._cobraRoom()) {
+      else if (tailCobra) {   // a Cobra to break a tail: the attacker overshoots (no missile to spoof)
+        if (ac.startPostStall({ dur: COBRA_DUR * (0.9 + 0.2 * Math.random()), spins: 1, dir: Math.random() < 0.5 ? -1 : 1 })) {
+          if (weapons.vaporBurst) weapons.vaporBurst(ac);
+          this._cobraCd = this._boss ? COBRA_CD + COBRA_CD_VAR * Math.random() : COBRA_CD_ACE + COBRA_CD_ACE_VAR * Math.random();
+          this._recover = COBRA_DUR * 1.1 + COBRA_RECOVER; this._tired = 0; this._pull = 0; this.cobras++; this.tailCobras++;
+          this._tbCd = TAIL_GAP[0] + (TAIL_GAP[1] - TAIL_GAP[0]) * Math.random();
+          this.state = 'pursue'; this.stateTime = 0; this.burst = 0; fly = true;
+        }
+      } else if (missileInbound && this._cobraGo && this._cobraCd <= 0 && !lowTerrain && this._threatMsl.age >= this._mslNotice && minTti < this._cobraTti && this._cobraRoom()) {
         if (ac.startPostStall({ dur: COBRA_DUR * (0.9 + 0.2 * Math.random()), spins: 1, dir: Math.random() < 0.5 ? -1 : 1 })) {
           weapons.breakLock(ac, COBRA_LOCK * (0.85 + 0.3 * Math.random()));
           if (weapons.vaporBurst) weapons.vaporBurst(ac);
@@ -501,8 +572,21 @@ export class EnemyBrain {
       if (this.state === 'extend' && (alt ? this.stateTime > 8 || (this.stateTime > 2.5 && ac.position.y > this._wantAlt(target) - 100)
         || (this.stateTime > 3 && ac.speed < 125 * (ac.speedScale || 1)) : this.stateTime > 4)) { this.state = 'pursue'; this.stateTime = 0; }
       if (!targetAlive && !this.passive) this.state = 'patrol';
+      if (this._tbT > 0 && (this.state === 'evade' || missileInbound)) this._tbT = 0;   // a missile defense takes over
 
-      if (this.state === 'transit') {
+      if (this._tbT > 0) {
+        // tail break (TAIL_*): a sustained turn into the attacker's side, a pull into the vertical, or a split-S
+        if (this._tbFlip > 0 && this._tbT < this._tbFlip) { this._tbDir = -this._tbDir; this._tbFlip = -1; }
+        if (this._tbKind === 'vertical') { ac.getUp(_up); _pt.copy(ac.position).addScaledVector(_up, 900).addScaledVector(_fwd, 200); }
+        else if (this._tbKind === 'split') { _pt.copy(ac.position).addScaledVector(WORLD_UP, -900).addScaledVector(_fwd, 300); }
+        else {
+          ac.getRight(_tmp);
+          _pt.copy(ac.position).addScaledVector(_tmp, 700 * this._tbDir).addScaledVector(_fwd, 250);
+          _pt.y = ac.position.y + (this._agl < 900 ? 150 : -30);
+        }
+        this.steerToward(_pt, 0.8 + 0.2 * this.skill);
+        this.throttleTarget = this._tbKind === 'split' ? 0.3 : 1;
+      } else if (this.state === 'transit') {
         if (goal === null) {
           const H = this.leashHome;
           if (H !== null) {
@@ -612,6 +696,14 @@ export class EnemyBrain {
     }
     if (this.burst > 0) { this.burst -= dt; fireGun = ac.alive && targetAlive && angleToTarget < this.gunHold && dist < this.gunHoldRange; }
     if (fireGun && !this.passive && this.gunsOnly !== 'none') weapons.fireGun(ac);
+    // duel pilot: an over-the-shoulder missile at a jet behind it (DUEL_OTS_*), within the usual rationing
+    if (this.duel) {
+      this._otsCd -= dt;
+      if (this._otsCd <= 0 && targetAlive && !lowTerrain && angleToTarget > 1.6 && dist > DUEL_OTS_MIN && dist < DUEL_OTS_MAX
+        && ac.missiles > 0 && this.canLaunchAt(target, weapons) && weapons.fireMissile(ac, target, { toward: true })) {
+        noteLaunch(target, weapons); this._otsCd = DUEL_OTS_CD + DUEL_OTS_VAR * Math.random(); this.otsShots++;
+      }
+    }
     if (!lowTerrain && this.altCap) this._capAlt();
 
     // Throttle toward target
