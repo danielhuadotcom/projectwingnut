@@ -50,7 +50,6 @@ export const DIALOGUE_LINES = [
   {"id":"m11_4","mission":11,"speaker":"MAINSPRING","trigger":{"after":"m11_3","on":"phase","n":4},"text":"Chime strikes the hour.","note":"cool, commanding"},
   {"id":"m11_5","mission":11,"speaker":"WSO","trigger":{"after":"m11_4","on":"phase","n":4},"text":"Oh, hell!","note":"Fearful, exasperated"},
   {"id":"m11_6","mission":11,"speaker":"MAINSPRING","trigger":{"after":"m11_5","on":"phase","n":4},"text":"Chime One, Tally. Chime Squadron, weapons free. Find the bent screw and pull it.","note":"confident"},
-  {"id":"m11_6b","mission":11,"speaker":"MUSIC","trigger":{"after":"m11_6"},"text":"","note":"","music":{"action":"play","track":"mainspring","fade":1}},
   {"id":"m11_7","mission":11,"speaker":"WSO","trigger":{"after":"m11_6"},"text":"Bring it on!","note":"Defiant"},
   {"id":"m11_8","mission":11,"speaker":"MAINSPRING","trigger":{"on":"complete"},"text":"You cost me good pilots today. I hope you're proud.","note":"icy, accusing"},
   {"id":"m12_1","mission":12,"speaker":"WSO","trigger":{"on":"start"},"text":"Midnight raid on an oil rig. Mum would be so proud.","note":"off-duty, dry"},

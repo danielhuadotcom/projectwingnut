@@ -63,16 +63,14 @@ function noOverlap(r, name) {
   noOverlap(r, 'M1');
   log('RADIO_OK M1 ' + ids(r).join(' > '));
 }
-// 2) M11: Chime's arrival, line order and the music cue between #6 and #7
+// 2) M11: Chime's arrival and line order (her theme starts with the phase itself: missions.js phase music, no radio cue)
 {
   const { r, music } = make(11);
   r.missionStart(); r.phaseStart(1); run(r, 8); r.phaseStart(2); run(r, 6); r.phaseStart(3); run(r, 2);
   r.phaseStart(4); r.say('newContacts'); run(r, 25);
   const s = ids(r).filter((i) => /^m11_[3-7]/.test(i));
   check('M11: phase 4 order 3,4,5,6,7', JSON.stringify(s) === JSON.stringify(['m11_3', 'm11_4', 'm11_5', 'm11_6', 'm11_7']), s);
-  const ev = r.events, i6 = ev.findIndex((e) => e.ev === 'end' && e.id === 'm11_6'), ic = ev.findIndex((e) => e.ev === 'cue' && e.id === 'm11_6b'), i7 = ev.findIndex((e) => e.ev === 'start' && e.id === 'm11_7');
-  check('M11: cue fires as #6 ends, before #7', i6 >= 0 && ic > i6 && i7 > ic, { i6, ic, i7 });
-  check('M11: cue = play mainspring', music.cues.join() === 'play mainspring', music.cues);
+  check('M11: no music cue in the script', music.cues.length === 0, music.cues);
   check('M11: newContacts never overlaps the plot lines', true);
   noOverlap(r, 'M11');
   r.complete(4); run(r, 8);

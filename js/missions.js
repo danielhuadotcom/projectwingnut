@@ -657,7 +657,7 @@ export const MISSIONS = [
         { kind: 'air', type: 'EIDER-8B', count: 2, formation: 'pair', position: 'high', distance: 6900, after: 30, task: 'engage' },
         { kind: 'air', type: 'NV-16', count: 4, formation: 'vee', position: 'behind', distance: 4000, after: 40, task: 'engage' },
       ] },
-      { label: 'Chime strikes the hour', endAtRemaining: 2, groups: [   // won with two left: Mainspring pulls the survivors out
+      { label: 'Chime strikes the hour', music: 'mainspring', endAtRemaining: 2, groups: [   // won with two left: Mainspring pulls the survivors out
         { kind: 'air', type: 'Q07 CHIME', count: 1, formation: 'pair', position: 230, distance: 9000, task: 'engage', mainspring: true },   // unnamed: one of the jets that get away
         { kind: 'air', type: 'Q07 CHIME', count: 3, formation: 'vee', position: 230, distance: 8800, task: 'engage', flight: 4 },
         { kind: 'air', type: 'Q11 CHIME', count: 4, formation: 'vee', position: 225, distance: 9000, task: 'engage', flight: 4 },

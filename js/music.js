@@ -280,6 +280,7 @@ const REPLACED = '~replaced';   // setCustom: the key the audio a file replaced 
  *   cue(action)               a radio-script MUSIC cue: { action: 'play', track, fade } | { action: 'cut', fade } |
  *                             { action: 'resume', fade } (back to the mission's track)
  *   prefetch(names)           fetch streamed tracks' files ahead of need (before unlock too)
+ *   predecode(names)          decode tracks ahead of need, so switching to them is instant
  *   setCustom(name, data)     the player's own file for a track (null: the built-in one again), heard at once
  * A track still loading keeps the current one playing and takes over (crossfade) once decoded, if still wanted; a track
  * that has no data or fails to load resolves to 'ceiling' (embedded), so a cue never errors and never leaves silence.
@@ -325,6 +326,9 @@ export class MusicDirector {
   }
   _note(what) { this.log.push({ t: Math.round(performance.now()), what }); if (this.log.length > 40) this.log.shift(); }
   prefetch(names) { for (const n of names || []) { const r = this.resolve(n), m = this._player(r); if (m && !m.ready && !m.data.load) m.fetchBytes('opus'); } }
+  /** Decode tracks ahead of need (after unlock; a no-op before), so a switch to them starts at once (a phase's music
+   *  starts as the phase spawns). Pair with keepOnly so they stay decoded. */
+  predecode(names) { for (const n of names || []) { const m = this._player(this.resolve(n)); if (m && !m.ready) m.preload(); } }
   /** Memory: keep decoded audio only for these tracks (the mission's, its phases' and cues' tracks) plus whatever is
    *  playing or being switched to; every other decoded track is released now, and a track switched away from later is
    *  released once it stops (unless kept). A released track decodes again when next played (the current one keeps

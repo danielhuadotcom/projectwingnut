@@ -47,7 +47,6 @@ export const DIALOGUE = [
   {"id":"m11_4","speaker":"MAINSPRING","pri":"plot","after":"m11_3","on":"phase","n":4,"mission":11,"text":"Chime strikes the hour.","dur":1.695},
   {"id":"m11_5","speaker":"WSO","pri":"plot","after":"m11_4","on":"phase","n":4,"mission":11,"text":"Oh, hell!","dur":0.659},
   {"id":"m11_6","speaker":"MAINSPRING","pri":"plot","after":"m11_5","on":"phase","n":4,"mission":11,"text":"Chime One, Tally. Chime Squadron, weapons free. Find the bent screw and pull it.","dur":5.009},
-  {"id":"m11_6b","speaker":"MUSIC","pri":"cue","after":"m11_6","mission":11,"music":{"action":"play","track":"mainspring","fade":1}},
   {"id":"m11_7","speaker":"WSO","pri":"plot","after":"m11_6","mission":11,"text":"Bring it on!","dur":0.714},
   {"id":"m11_8","speaker":"MAINSPRING","pri":"plot","on":"complete","mission":11,"text":"You cost me good pilots today. I hope you're proud.","dur":2.936},
   {"id":"m12_1","speaker":"WSO","pri":"flavor","on":"start","mission":12,"text":"Midnight raid on an oil rig. Mum would be so proud.","dur":3.257},
