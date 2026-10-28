@@ -19,7 +19,7 @@
 //
 // The scheduler runs on its own clock (update(dt)) with each clip's known length, so its decisions are the same with or
 // without audio (headless tests, a muted or locked AudioContext): a line without a decoded clip still holds the channel
-// and shows its subtitle for its length.
+// and shows its subtitle for its length. A line whose clip is still loading or decoding waits for it up to CLIP_WAIT s.
 //
 // Story rules handled here: the WSO takes AWACS's tactical calls 60 % of the time where the pool has a version (in a
 // noAwacs mission every time, and AWACS says nothing); the WSO goes silent below the mission's wsoBlackout boss health;
@@ -35,7 +35,8 @@ const PLOT_HOLD = 1.0;      // s extra after a plot line, unless the next line i
 const BREAK_IN = 0.12;      // s of radio click between a cut line and the critical call breaking in
 const CRIT_EVERY = 5;       // s: a critical call breaks into a line at most this often
 const CRIT_TTL = 2.5, AMBIENT_TTL = 3;
-const DEBRIEF_CAP = 8;      // s past the completion hold the debrief waits for plot lines
+const DEBRIEF_CAP = 8;
+const CLIP_WAIT = 2;        // s a line whose clip is still loading or decoding may wait for it (else it plays silent, subtitled)      // s past the completion hold the debrief waits for plot lines
 const WSO_SHARE = 0.6;      // share of pool-backed AWACS calls the WSO takes
 const LABELS = { AWACS: 'AWACS CLAUDE', WSO: 'WSO SPANNER', MAINSPRING: 'MAINSPRING' };
 // AWACS event keys: priority class, default cooldown (s)
@@ -262,6 +263,7 @@ export class Radio {
       if (q.after && !this.done[q.after] && !this.dropped[q.after]) continue;   // waits for its head
       if (q.with) continue;
       if (!this._gateOpen(q)) continue;
+      if (t - q.qt < CLIP_WAIT && this._clipPending(q)) continue;               // its clip is nearly there
       if (criticalOnly && q.pri !== 'critical') continue;
       if (q.pri !== 'flavor') hasHigher = true;
       if (!best || rank(q) < rank(best) || (rank(q) === rank(best) && q.seq < best.seq)) best = q;
@@ -329,6 +331,7 @@ export class Radio {
     const e = this.byId[it.id];
     if (e && e.mission && (this.done[it.id] || this.started[it.id])) return false;   // a mission's story line plays once
     it.seq = front ? -1e6 + this._seq++ : this._seq++;
+    it.qt = this.t;
     this.queue.push(it);
     this._log('queue', it.id, it);
     return true;
@@ -391,6 +394,14 @@ export class Radio {
         if (p && typeof p.then === 'function') p.then(done, () => done(null));
       } catch (e) { done(null); }
     }
+  }
+  /** The item's clip is on its way (fetching, or decoding with an AudioContext to decode on): see CLIP_WAIT. A first
+   *  sortie's opening AWACS call comes in the same frame as the gesture that starts the clip decode. */
+  _clipPending(q) {
+    if (q.awacs) return !!(this.awacs && this.awacs.clipPending && this.awacs.clipPending(q.awacs[0], q.awacs[1]));
+    const c = CLIPS.get(q.id);
+    if (!c) return false;
+    return c.state === 'fetch' || c.state === 'decoding' || (c.state === 'fetched' && !!(this.awacs && this.awacs.fx && this.awacs.fx.ctx));
   }
   /** Decoded buffer for a queue item, or null (the line then plays silently with its subtitle). */
   _buffer(q) {

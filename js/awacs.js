@@ -212,6 +212,7 @@ export class Awacs {
       }
     };
     await Promise.all([worker(), worker(), worker(), worker()]);
+    this._decodeDone = true;
     if (this._disposed) { for (const c of todo) c.buffer = null; return false; }
     return this._decoded === this._clipCount;
   }
@@ -271,6 +272,8 @@ export class Awacs {
   // ---- direct transmissions (js/radio.js schedules them; no queue, cooldown or subtitle here) ----------------------
   /** Decoded buffer of AWACS event `key`, variant i (0-based), or null (not decoded yet / no such clip). */
   clipBuffer(key, i) { const e = this._events[key]; const c = e && e.clips[i]; return (c && c.buffer) || null; }
+  /** True while the clip is still being decoded (preload() under way): worth a short wait rather than a silent line. */
+  clipPending(key, i) { return !!this._decodePromise && !this._decodeDone && !this.clipBuffer(key, i); }
   /** The AudioContext the radio chain plays on (null before unlock), creating the chain if needed. */
   context() { const ctx = this.fx && this.fx.ctx; if (!ctx || this._disposed) return null; this._ensureGraph(ctx); return ctx; }
   /** Put `buffer` on air now through the radio chain (squelch click, voice, squelch tail), first breaking off whatever
