@@ -60,6 +60,11 @@ const LOCK_TIME = 0.5;
 // ends, the rest after a turn (s). Separation (Game.separateBandits): radius and the largest aim-point offset (m).
 const SQUAD_SLOTS = 2, SLOT_TURN = [12, 20], SLOT_MIN_PASS = 4, SLOT_REST = 6;
 const SEP_R = 350, SEP_PUSH = 400;
+// Solid bodies the player crashes into like terrain (Game.solidHit; fighters and the like pass through): aircraft of
+// these roles, as a flattened ellipsoid over the wings and fuselage (SOLID_SPAN x the drawn radius across, SOLID_THICK x
+// it top to bottom), and ships (naval surface units, allied ones too), as their hull box plus SOLID_MARGIN m.
+const SOLID_ROLES = new Set(['awacs', 'transport', 'bomber']);
+const SOLID_SPAN = 0.9, SOLID_THICK = 0.25, SOLID_MARGIN = 3;
 const HARDPOINTS = 4, HARDPOINT_RELOAD = 5;   // four standard-missile hardpoints (stands in for PW special-weapon slots), s per hardpoint
 const FLARE_RELOAD = 7;                         // s (PW: infinite flares, 7 s reload)
 const GUN_LEAD_RANGE = 1800;                    // m: lead pipper inside this (rounds reach ~2.3 km, weaker past ~1.1 km)
@@ -1033,6 +1038,27 @@ class Game {
       }
     }
   }
+  /** The death reason if `pos` is inside a solid body (SOLID_*: a large aircraft or a ship), else null. */
+  solidHit(pos) {
+    for (let i = 0; i < this.enemies.length; i++) {
+      const e = this.enemies[i]; if (!e.alive || !e.solid) continue;
+      const R = (e.modelRadius || 0) * (e.visualScale || 1);
+      _v.subVectors(pos, e.position); if (_v.lengthSq() > R * R) continue;
+      _v.applyQuaternion(_q.copy(e.quaternion).invert());
+      const a = R * SOLID_SPAN, b = R * SOLID_THICK;
+      if ((_v.x / a) ** 2 + (_v.y / b) ** 2 + (_v.z / a) ** 2 < 1) return 'MIDAIR COLLISION';
+    }
+    const T = this.ground.targets;
+    for (let i = 0; i < T.length; i++) {
+      const t = T[i]; if (!t.alive || !t.naval) continue;
+      const r = t.hitRadius + SOLID_MARGIN;
+      _v.subVectors(pos, t.position); if (_v.lengthSq() > r * r) continue;
+      const c = Math.cos(t.heading), s = Math.sin(t.heading), S = t.size;
+      const lx = _v.x * c - _v.z * s, lz = _v.x * s + _v.z * c;      // into the hull's frame (rotation about Y by -heading)
+      if (Math.abs(lx) < S[0] / 2 + SOLID_MARGIN && Math.abs(_v.y) < S[1] / 2 + SOLID_MARGIN && Math.abs(lz) < S[2] / 2 + SOLID_MARGIN) return 'HIT A SHIP';
+    }
+    return null;
+  }
   /** Role setter for directBandits: hunt the player, or the squadmate with fewer hunters (its _hunters count). */
   setRole(e, hunt, isNew) {
     const b = e.brain, A = this.allies;
@@ -1338,6 +1364,7 @@ class Game {
     ac.brain.leashHome = ac.brain.passive ? this._leashHome || (this._leashHome = new THREE.Vector3()) : null;
     ac.brain.setTransitGoal(null);                       // pooled: a leaker's goal must not carry over
     ac.holdFire = false;                                 // pooled: attack slots (updateGame) decide who may fire
+    ac.solid = SOLID_ROLES.has(type.role);               // large aircraft: the player crashes into them (solidHit)
     ac.withdrawing = false; ac.untargetable = false;     // pooled: a phase won early sends its survivors home (withdrawRemaining)
     ac.typeKey = typeName;                               // the type; name is the HUD label (groups[].label may disguise it)
     ac.name = this._spawnLabel || typeName;
@@ -1816,7 +1843,8 @@ class Game {
         if (this.audio.aoaLimiter && (p.aoaOff || p._aoa.rel < 0.3)) this.audio.aoaLimiter(p.aoaOff);
       }
       const h = Math.max(world.getHeight(p.position.x, p.position.z), 0);
-      if (p.position.y < h + 2.5) { p.position.y = h + 2.5; if (!this.bench) this.die(h > 0.5 ? 'TERRAIN IMPACT' : 'HIT THE WATER'); }
+      if (!this.bench) { const solid = this.solidHit(p.position); if (solid) this.die(solid); }   // ships, large aircraft (before
+      if (p.position.y < h + 2.5) { p.position.y = h + 2.5; if (!this.bench) this.die(h > 0.5 ? 'TERRAIN IMPACT' : 'HIT THE WATER'); }   // the sea: a hull sits in it)
       if (this.tunnel && p.alive) {
         const inside = this.tunnel.isInside(p.position);
         if (inside && !this.inTunnel) this.say('tunnelEnter', 3, 20);
