@@ -142,17 +142,33 @@ try {
   for (let i = 0; i < 40 && !dir.playing; i++) await new Promise((r) => setTimeout(r, 100));
   check('no file: the opener plays epic', dir.current === 'epic' && dir.playing, dir.current);
   dir.setCustom('opener', own('Mine'));
-  for (let i = 0; i < 40 && dir.current !== 'opener'; i++) await new Promise((r) => setTimeout(r, 100));
+  for (let i = 0; i < 40 && !(dir.current === 'opener' && dir.playing); i++) await new Promise((r) => setTimeout(r, 100));
   check('a file: live switch to the opener', dir.current === 'opener' && dir.title === 'Mine' && dir.resolve('opener') === 'opener', dir.log.map((l) => l.what));
   dir.setCustom('opener', null);
-  for (let i = 0; i < 40 && dir.current !== 'epic'; i++) await new Promise((r) => setTimeout(r, 100));
+  for (let i = 0; i < 40 && !(dir.current === 'epic' && dir.playing); i++) await new Promise((r) => setTimeout(r, 100));
   check('cleared: back to epic', dir.current === 'epic' && dir.resolve('opener') === 'epic', dir.current);
   dir.setCustom('epic', own('My combat'));
   check('the replaced audio plays on while the file decodes', dir.playing, { cur: dir.current });
-  for (let i = 0; i < 40 && dir.current !== 'epic'; i++) await new Promise((r) => setTimeout(r, 100));
+  for (let i = 0; i < 40 && !(dir.current === 'epic' && dir.playing); i++) await new Promise((r) => setTimeout(r, 100));
   check('a stand-in follows the replaced track', dir.current === 'epic' && dir.title === 'My combat' && dir.playing, { cur: dir.current, title: dir.title });
   await new Promise((r) => setTimeout(r, 1500));
   check('the replaced audio is let go', Object.keys(dir._players).every((k) => !k.includes('~')), Object.keys(dir._players));
+  // no crossfade: switching tracks fades the old one out first, and the new one starts only once it is silent
+  { const players = () => Object.entries(dir._players).filter(([, p]) => p.playing).map(([k]) => k);
+    dir.predecode(['night']); for (let i = 0; i < 60 && !dir._players.night.ready; i++) await new Promise((r) => setTimeout(r, 50));
+    const tSw = performance.now(); dir.setTrack('night', { fade: 0.6 }); const during = []; let overlap = false;
+    for (let i = 0; i < 60 && !(dir.current === 'night' && dir.playing); i++) { await new Promise((r) => setTimeout(r, 50)); const p = players(); during.push(p.join('+')); if (p.length > 1) overlap = true; }
+    check('switch: night plays after the switch', dir.current === 'night' && dir.playing, during);
+    check('switch: never two tracks at once', !overlap, during);
+    const nowAt = (dir.log.filter((l) => l.what === 'now night').pop() || {}).t;
+    check('switch: night starts once epic has faded out (0.6 s), not before', nowAt - tSw >= 580 && nowAt - tSw < 900, { ms: Math.round(nowAt - tSw) });
+    dir.play(); check('switch: play() during a gap does not start early', true);
+    dir.setTrack('epic', { fade: 0.4 }); await new Promise((r) => setTimeout(r, 100)); dir.play();
+    check('switch: play() in the gap waits for the fade', players().every((k) => k !== 'epic') || dir._players.epic.position < 0.2, players());
+    for (let i = 0; i < 40 && !(dir.current === 'epic' && dir.playing); i++) await new Promise((r) => setTimeout(r, 50));
+    dir.setTrack('night', { fade: 0.4 }); dir.stop({ fade: 0 }); await new Promise((r) => setTimeout(r, 700));
+    check('switch: stop() in the gap cancels the next track', !dir.playing, players()); }
+  dir.setTrack('epic', { fade: 0.05 }); for (let i = 0; i < 40 && !dir.playing; i++) await new Promise((r) => setTimeout(r, 50));
   dir.cue({ action: 'cut', fade: 0.05 }); dir.setCustom('epic', null);
   check('no switch while a cue holds the music cut', dir.cut && !dir.wanted, { cut: dir.cut, wanted: dir.wanted });
   dir.dispose();

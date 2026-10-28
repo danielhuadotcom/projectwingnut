@@ -12,7 +12,7 @@
 // player's own file (load(): js/custom_music.js), which loops whole.
 //
 // MusicDirector (below) owns one Music per named track (TRACKS) and switches between them: the mission's track, story
-// cues from the radio script (crossfade to a track, cut to silence, resume), title-screen muffling and radio ducking.
+// cues from the radio script (switch to a track, cut to silence, resume), title-screen muffling and radio ducking.
 // Typical use:  const music = new Music(audioFX);  ...on first gesture: audioFX.unlock(); music.play();
 //               pause menu: music.setMuffled(true) · radio chatter: music.duck(true/false) · game over: music.stop()
 import { MUSIC } from './music_data.js';
@@ -270,19 +270,22 @@ export class Music {
 export const TRACKS = ['ceiling', 'night', 'mainspring', 'epic', 'opener', 'icebreaker', 'finale'];
 const STANDS_IN = { opener: 'epic', icebreaker: 'epic', finale: 'mainspring' };
 const FALLBACK = 'ceiling';
+const AFTER_FADE = 0.05;        // s: fade-in of a track that starts once the previous one has faded out (its intro lands)
 const REPLACED = '~replaced';   // setCustom: the key the audio a file replaced plays under until the new audio takes over
 
 /**
  * The soundtrack: which track plays, and the switches between tracks. Same surface as Music for the game's everyday
  * calls (play / stop / duck / setMuffled / setVolume / dispose; play() with no name is the "make sure something plays"
  * call of the first-gesture handlers, a no-op while a cue holds the music cut), plus:
- *   setTrack(name, { fade })  the mission's track: crossfade to it (no-op if it already plays) and remember it
+ *   setTrack(name, { fade })  the mission's track: switch to it (no-op if it already plays) and remember it
  *   cue(action)               a radio-script MUSIC cue: { action: 'play', track, fade } | { action: 'cut', fade } |
  *                             { action: 'resume', fade } (back to the mission's track)
  *   prefetch(names)           fetch streamed tracks' files ahead of need (before unlock too)
  *   predecode(names)          decode tracks ahead of need, so switching to them is instant
  *   setCustom(name, data)     the player's own file for a track (null: the built-in one again), heard at once
- * A track still loading keeps the current one playing and takes over (crossfade) once decoded, if still wanted; a track
+ * Switches never overlap two tracks: the old one fades out over the switch's fade, then the new one starts (from silence
+ * it fades in over the fade instead). A track still loading keeps the current one playing and takes over once decoded,
+ * if still wanted; a track
  * that has no data or fails to load resolves to 'ceiling' (embedded), so a cue never errors and never leaves silence.
  */
 export class MusicDirector {
@@ -298,6 +301,7 @@ export class MusicDirector {
     this.current = null;         // resolved track name whose Music plays (or is starting)
     this.wanted = null;          // resolved track name we are switching to (may still be loading)
     this.cut = false;            // a cue silenced the music (Glassfall)
+    this._gap = null;            // resolved track waiting for the previous one to fade out before it starts
     this.log = [];               // recent switches { t, what } for tests and tools (capped)
     this._keep = null;           // keepOnly(): resolved track names whose decoded audio stays in memory (null = all)
     this._keepNames = null;      // keepOnly()'s requested names (resolved again after setCustom)
@@ -332,23 +336,23 @@ export class MusicDirector {
   /** Memory: keep decoded audio only for these tracks (the mission's, its phases' and cues' tracks) plus whatever is
    *  playing or being switched to; every other decoded track is released now, and a track switched away from later is
    *  released once it stops (unless kept). A released track decodes again when next played (the current one keeps
-   *  playing meanwhile, then crossfades). keepOnly(null) keeps everything again. */
+   *  playing meanwhile, then hands over). keepOnly(null) keeps everything again. */
   keepOnly(names) {
     this._keepNames = names ? names.filter(Boolean) : null;
     this._keep = names ? new Set(this._keepNames.map((n) => this.resolve(n))) : null;
     for (const k in this._players) this._trim(k);
   }
   /** The player's own file for a track ({ title, load() }: js/custom_music.js), or null for the built-in track. If the
-   *  change alters what plays now (that track, or a slot standing in for it), the music crossfades to the new audio. */
+   *  change alters what plays now (that track, or a slot standing in for it), the music switches to the new audio. */
   setCustom(name, data) {
     if (this._disposed || !TRACKS.includes(name)) return;
-    const live = !this.cut && !!(this.wanted || this.playing);
+    const live = !this.cut && !!(this.wanted || this._gap || this.playing);
     const old = this._players[name];
     if (data) this._data[name] = data; else if (this._builtin[name]) this._data[name] = this._builtin[name]; else delete this._data[name];
     if (old) {
       delete this._players[name];
       if (this.wanted === name) this.wanted = null;
-      // the replaced audio keeps playing under a key of its own until the new audio has decoded, then crossfades out
+      // the replaced audio keeps playing under a key of its own until the new audio has decoded, then fades out
       if (this.current === name && live) { this.current = name + REPLACED; this._players[this.current] = old; }
       else { if (this.current === name) this.current = null; old.dispose(); }
     }
@@ -363,12 +367,12 @@ export class MusicDirector {
     if (m && m.release()) this._note('release ' + name);
   }
 
-  /** No name: keep (or start) what should play. A name: crossfade to that track (see the class comment). */
+  /** No name: keep (or start) what should play. A name: switch to that track (see the class comment). */
   play(name, opts = {}) {
     if (this._disposed) return;
     if (typeof name === 'object' && name !== null) { opts = name; name = undefined; }
     if (name === undefined) {
-      if (this.cut) return;
+      if (this.cut || this._gap) return;   // (between two tracks: the next one starts by itself)
       if (!this.current) { this.current = this.wanted || this.resolve(this.track); this.wanted = null; }
       const m = this._player(this.current);   // (a track still loading takes over by itself once decoded)
       if (m && !m.playing) m.play(opts);
@@ -386,7 +390,7 @@ export class MusicDirector {
   /** A radio-script MUSIC cue. */
   cue(c) {
     if (!c || this._disposed) return;
-    if (c.action === 'cut') { this.cut = true; this.wanted = null; const m = this.current && this._players[this.current]; if (m) m.stop({ fade: c.fade ?? 0.15 }); this._note('cut'); return; }
+    if (c.action === 'cut') { this.cut = true; this.wanted = null; this._gap = null; const m = this.current && this._players[this.current]; if (m) m.stop({ fade: c.fade ?? 0.15 }); this._note('cut'); return; }
     if (c.action === 'resume') { this.cut = false; this._req = this.track; this._switch(this.resolve(this.track), c.fade ?? 4, { skipIntro: true, force: true }); this._note('resume ' + this.track); return; }
     if (c.action === 'play') { this.cut = false; this._req = c.track; this._switch(this.resolve(c.track), c.fade ?? 2, {}); this._note('play ' + c.track); }
   }
@@ -396,16 +400,24 @@ export class MusicDirector {
     const m = this._player(r);
     if (!m) return;
     this.wanted = r;
+    // no crossfade: the old track fades out over `fade`, then the new one starts from the top (from silence it fades in
+    // over `fade` instead)
     const go = () => {
       if (this._disposed || this.wanted !== r || this.cut) return;
       const old = this.current && this.current !== r ? this._players[this.current] : null;
       const oldName = old ? this.current : null;
+      const wait = old && old.playing ? Math.max(0.05, fade) : 0;
       if (old) old.stop({ fade: Math.max(0.05, fade) });
       this.current = r; this.wanted = null;
       if (oldName && oldName.endsWith(REPLACED)) { delete this._players[oldName]; setTimeout(() => old.dispose(), Math.max(0.05, fade) * 1000 + 300); }
       else if (oldName) this._trim(oldName);  // (its fading voice holds the buffer until it ends)
-      if (!m.playing) m.play({ fadeIn: Math.max(0.03, fade), skipIntro: !!opts.skipIntro });
-      this._note('now ' + r);
+      const start = () => {
+        if (this._disposed || this.current !== r || this.cut || m.playing) return;
+        m.play({ fadeIn: wait ? AFTER_FADE : Math.max(0.03, fade), skipIntro: !!opts.skipIntro });
+        this._note('now ' + r);
+      };
+      if (wait) { this._gap = r; setTimeout(() => { if (this._gap !== r) return; this._gap = null; start(); }, wait * 1000); }   // (stop / another switch cancels it)
+      else { this._gap = null; start(); }
     };
     if (m.ready || !this.audioFX || !this.audioFX.ctx) { go(); return; }        // decoded (or no context yet: play() defers)
     m.preload().then((ok) => {
@@ -413,7 +425,7 @@ export class MusicDirector {
       else if (this.wanted === r) { this.wanted = null; if (r !== FALLBACK) this._switch(FALLBACK, fade, opts); }   // failed: fall back
     });
   }
-  stop(opts = {}) { this.wanted = null; for (const k in this._players) this._players[k].stop(opts); }
+  stop(opts = {}) { this.wanted = null; this._gap = null; for (const k in this._players) this._players[k].stop(opts); }
   duck(on) { this._ducked = !!on; for (const k in this._players) this._players[k].duck(on); }
   setMuffled(on) { this._muffled = !!on; for (const k in this._players) this._players[k].setMuffled(on); }
   setVolume(v) { if (!Number.isFinite(+v)) return; this._volume = clamp01(+v); for (const k in this._players) this._players[k].setVolume(v); }

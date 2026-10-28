@@ -57,7 +57,7 @@
 //     after a Glassfall, M16 (after M15) and M21 (after M20).
 //     music (optional) = the soundtrack track (js/music.js TRACKS): on a mission, its track (default 'night' for time
 //     'night', else 'epic'; 'opener', 'icebreaker' and 'finale' are M1's, M11's and
-//     M21's custom-music slots); on a phase, a crossfade to that track as the phase starts (Mainspring's encounters).
+//     M21's custom-music slots); on a phase, a switch to that track as the phase starts (Mainspring's encounters).
 //     noAwacs (optional) = true: AWACS stays off the radio, and the WSO takes every call it would make (M21).
 //     wsoBlackout (optional) = boss health fraction (0-1) below which the WSO says nothing more (M21: 0.5).
 //     phases[].endAtRemaining (optional) = N (1-8): the phase is won once N or fewer of its required enemies are left;
