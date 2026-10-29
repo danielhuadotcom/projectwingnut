@@ -64,12 +64,12 @@ const SEP_R = 350, SEP_PUSH = 400;
 // these roles, as a flattened ellipsoid over the wings and fuselage (SOLID_SPAN x the drawn radius across, SOLID_THICK x
 // it top to bottom), and ships (naval surface units, allied ones too), as their hull box plus SOLID_MARGIN m.
 const SOLID_ROLES = new Set(['awacs', 'transport', 'bomber']);
-// M21's final phase (missions[].finalBlast; PW "Kings"): when the boss's third bar empties (FINAL_AT of its health left)
-// it can't be hurt for FINAL_SAFE s and the missiles on it lose their lock; FINAL_BLAST s in, a thunderglass blast goes
+// M21's final phase (missions[].finalBlast; PW "Kings"): when the boss's health runs out it doesn't die (guardFinal): it
+// can't be hurt for FINAL_SAFE s and the missiles on it lose their lock; FINAL_BLAST s in, a thunderglass blast goes
 // off over the fight and the music cuts; the HUD flickers out over FINAL_FLICKER s into the knockout layout, and then
 // the boss gets FINAL_REFILL[difficulty].boss x its full health as a new pool and the player its heal (full, +50 or
 // none); FINAL_MUSIC s after the blast the 'finale2' track starts.
-const FINAL_AT = 0.25, FINAL_BLAST = 1.8, FINAL_FLICKER = 1.0, FINAL_SAFE = 3.2, FINAL_MUSIC = 3;
+const FINAL_BLAST = 1.8, FINAL_FLICKER = 1.0, FINAL_SAFE = 3.2, FINAL_MUSIC = 3;
 const FINAL_REFILL = { easy: { boss: 0.5, heal: 'full' }, normal: { boss: 0.5, heal: 50 }, hard: { boss: 0.75, heal: 0 }, mercenary: { boss: 1, heal: 0 } };
 const SOLID_SPAN = 0.9, SOLID_THICK = 0.25, SOLID_MARGIN = 3;
 const HARDPOINTS = 4, HARDPOINT_RELOAD = 5;   // four standard-missile hardpoints (stands in for PW special-weapon slots), s per hardpoint
@@ -608,7 +608,7 @@ class Game {
     const p = this.player;
     p.reset({ position: new THREE.Vector3(0, 800, 0), heading: 0, health: 100 });
     this.downed = false; this.deadReason = null;   // (die)
-    this.final = null;                              // (M21's final phase: startFinal)
+    this.final = null; this._finalBoss = null;      // (M21's final phase: guardFinal, startFinal)
     p.quaternion.identity();
     p.speed = 230; p.throttle = 0.72;
     p.velocity.set(0, 0, -p.speed);
@@ -1048,9 +1048,24 @@ class Game {
       }
     }
   }
-  /** M21's final phase begins (FINAL_*): the boss's third bar is gone. It can't be hurt for now and every missile on it
-   *  loses its lock; updateFinal runs the blast, the knockout, the refills and the music. */
+  /** M21: the boss's lethal hit before the final phase leaves it at 1 HP and starts the phase instead (startFinal). The
+   *  guard stays on the (pooled) airframe but only acts for this boss in a finalBlast mission before the phase starts. */
+  guardFinal(boss) {
+    this._finalBoss = boss;
+    if (boss._finalGuard) return;
+    const base = Object.getPrototypeOf(boss).applyDamage;
+    boss._finalGuard = true;
+    boss.applyDamage = (amount) => {
+      if (this._finalBoss === boss && this.mission.finalBlast && !this.final && boss.alive && boss.health - amount <= 0 && this.player.alive) {
+        boss.health = 1; this.startFinal(boss); return false;
+      }
+      return base.call(boss, amount);
+    };
+  }
+  /** M21's final phase begins (FINAL_*): the boss's health ran out. It can't be hurt for now and every missile on it loses
+   *  its lock; her 25 % line plays now; updateFinal runs the blast, the knockout, the refills and the music. */
   startFinal(boss) {
+    this.comms.boss(25);
     const key = Object.keys(DIFFICULTY).find((k) => DIFFICULTY[k] === this.diff) || 'normal';
     this.final = { t: 0, boss, key, blasted: false, blastAt: 0, refilled: false, music: false, pool: 0, hurt: boss.applyDamage };
     boss.applyDamage = () => false;
@@ -2020,8 +2035,9 @@ class Game {
         if (this._bossMark !== boss.bornAt) { this._bossMark = boss.bornAt; this.comms.bossMarks = {}; }   // a new boss: fresh marks
         const f = boss.health / (boss.maxHealth || 1);
         if (f <= 0.5) this.comms.boss(50);
-        if (f <= 0.25) this.comms.boss(25);
-        if (this.mission.finalBlast && !this.final && f <= FINAL_AT && p.alive) this.startFinal(boss);
+        const holdFinal = this.mission.finalBlast && !this.final;   // (M21: her 25 % line waits for the final phase's start)
+        if (f <= 0.25 && !holdFinal) this.comms.boss(25);
+        if (holdFinal && this._finalBoss !== boss) this.guardFinal(boss);
       } }
     if (this.final) this.updateFinal(dt);
     if (this.missionDoneT > 0) {

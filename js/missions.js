@@ -60,7 +60,7 @@
 //     music (optional) = the soundtrack track (js/music.js TRACKS): on a mission, its track (default 'night' for time
 //     'night', else 'epic'; 'opener', 'icebreaker' and 'finale' are M1's, M11's and
 //     M21's custom-music slots); on a phase, a switch to that track as the phase starts (Mainspring's encounters).
-//     finalBlast (optional) = true: the campaign's last duel (M21): when the boss's third bar empties, a thunderglass blast
+//     finalBlast (optional) = true: the campaign's last duel (M21): when the boss's health runs out, a thunderglass blast
 //     knocks out most of the HUD, the boss gets a new health pool and the player a heal by difficulty (js/main.js FINAL_*).
 //     noAwacs (optional) = true: AWACS stays off the radio, and the WSO takes every call it would make (M21).
 //     wsoBlackout (optional) = boss health fraction (0-1) below which the WSO says nothing more (M21: 0.5).
@@ -949,7 +949,7 @@ export const MISSIONS = [
     setting: 'city dusk', location: 'Lanternport at sundown', clock: '18:00', time: 'evening',
     red: true,   // under the Glassfall's red sky (js/timeofday.js glassfallPreset)
     music: 'finale',   // plays 'mainspring' until the player sets a file for the slot
-    finalBlast: true,  // at her last bar: the blast, the HUD knockout, the refills, the 'finale2' track (js/main.js FINAL_*)
+    finalBlast: true,  // her health out: the blast, the HUD knockout, the refills, the 'finale2' track (js/main.js FINAL_*)
     noAwacs: true, wsoBlackout: 0.5,   // only the WSO and Mainspring on the radio; the WSO blacks out at half her health
     wingmen: [],   // the duel is flown alone
     startBack: 2000,   // m behind the sortie frame: a quiet lead-in before first contact
