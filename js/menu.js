@@ -304,6 +304,9 @@ const LINK_ROWS = linkRow('padwiz', 'Custom controller layout', 'Bind each actio
 const MUSIC_BOX = '<div class="m-music" data-music><p class="m-subh">Your music</p>' +
   '<p class="m-desc m-music-lede">Use your own audio files in place of the soundtrack. Files stay on this device; each one loops whole.</p>' +
   '<div class="m-music-rows"></div><input type="file" class="m-musfile" accept="audio/*,.mp3,.m4a,.aac,.ogg,.oga,.opus,.flac,.wav,.webm" hidden></div>';
+// Build stamp (tools/build.mjs defines __WINGNUT_BUILD__: the commit's short hash), shown under Settings
+// eslint-disable-next-line no-undef
+const BUILD = typeof __WINGNUT_BUILD__ === 'string' ? __WINGNUT_BUILD__ : 'dev';
 const gap = (a0, a1, b0, b1) => Math.max(0, b0 - a1, a0 - b1);   // distance between two intervals (0 = overlapping)
 function media(q) { try { return typeof matchMedia === 'function' && matchMedia(q).matches; } catch { return false; } }
 const missionNo = (m, i) => pad2(m && m.id != null ? m.id : i + 1);
@@ -765,6 +768,7 @@ export class Menu {
         ${head('Options · auto-saved', 'Settings', 'm-set-h', false)}
         <div class="m-tabs" role="tablist" aria-label="Settings sections"><i class="m-g m-g-lb m-tabg" aria-hidden="true"></i>${tabs}<i class="m-g m-g-rb m-tabg" aria-hidden="true"></i></div>
         <div class="m-body m-scroll">${panels}</div>
+        <p class="m-build">Build ${esc(BUILD)}</p>
         ${hintFoot([['ud', 'Select'], ['lr', 'Adjust'], ['back', 'Back']])}
       </div></section>`;
   }

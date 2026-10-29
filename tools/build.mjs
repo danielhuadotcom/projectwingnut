@@ -12,6 +12,7 @@
 import { buildSync } from 'esbuild'; // devDependency, pinned in package.json (npm ci)
 import { readFileSync, writeFileSync, mkdirSync, cpSync, readdirSync, rmSync } from 'node:fs';
 import { MUSIC_TRACKS } from '../js/music_tracks.js';
+import { execSync } from 'node:child_process';
 mkdirSync('dist', { recursive: true });
 const pageArg = process.argv.indexOf('--page');
 const page = readFileSync(pageArg > 0 ? process.argv[pageArg + 1] : 'src/page.html', 'utf8');
@@ -25,9 +26,20 @@ const appHead = '<link rel="manifest" href="manifest.webmanifest"><meta name="th
   + '<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"><meta name="apple-mobile-web-app-title" content="Wingnut">';
 const BLANK_ICON = '<link rel="icon" href="data:,">';
 const minify = process.argv.includes('--min');
+// build stamp (Settings shows it): the commit's short hash (CI: GITHUB_SHA), '-dirty' for a local build with uncommitted
+// changes; dev.html (unbundled) shows 'dev'
+function buildStamp() {
+  if (process.env.GITHUB_SHA) return process.env.GITHUB_SHA.slice(0, 7);
+  try {
+    const h = execSync('git rev-parse --short=7 HEAD', { encoding: 'utf8' }).trim();
+    const dirty = execSync('git status --porcelain --untracked-files=no', { encoding: 'utf8' }).trim() !== '';
+    return h + (dirty ? '-dirty' : '');
+  } catch { return 'unknown'; }
+}
+const BUILD = buildStamp();
 const bundle = buildSync({
   entryPoints: ['js/main.js'], bundle: true, format: 'esm', external: ['https://*'], target: 'es2022', logLevel: 'warning',
-  minifyWhitespace: minify, minifySyntax: minify, write: false,
+  minifyWhitespace: minify, minifySyntax: minify, write: false, define: { __WINGNUT_BUILD__: JSON.stringify(BUILD) },
 }).outputFiles[0].text;
 const inline = bundle.replace(/<\/script/gi, '<\\/script').replace(/<!--/g, '<\\!--');
 // replacer function: a replacement *string* would expand $&, $', $`, $$ and $1 occurring in the bundle
@@ -44,4 +56,4 @@ let streamed = 0;
 for (const f of readdirSync('assets/dialogue')) if (f.endsWith('.mp3')) { cpSync(`assets/dialogue/${f}`, `dist/assets/dialogue/${f}`); streamed++; }
 for (const t of Object.values(MUSIC_TRACKS)) for (const u of [t.opusUrl, t.mp3Url]) if (u) { cpSync(u, `dist/${u}`); streamed++; }
 writeFileSync('dev.html', skeletonHead + page.replace('<!--SCRIPT-->', '<script type="module" src="js/main.js"></script>') + skeletonTail);
-console.log(`bundle ${(bundle.length / 1024).toFixed(0)} KB, artifact ${(artifact.length / 1024).toFixed(0)} KB, ${streamed} streamed audio files in dist/assets/`);
+console.log(`build ${BUILD}, bundle ${(bundle.length / 1024).toFixed(0)} KB, artifact ${(artifact.length / 1024).toFixed(0)} KB, ${streamed} streamed audio files in dist/assets/`);
