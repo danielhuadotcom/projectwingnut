@@ -75,6 +75,10 @@ export const AOA_COOLDOWN = 2.5;   // s
 // Stalled (freeStall, and the AOA limiter when slow): horizontal velocity bleed per s, BASE always, BRAKE instead with the
 // airbrake out, plus BROADSIDE x sin^2 of the angle between the nose and the path. Lets the jet stop over the ground.
 export const STALL_HBLEED = { BASE: 0.15, BRAKE: 0.8, BROADSIDE: 0.6 };
+// Stalled nose-high (freeStall): share of the pull lost, and the nose-down nudge (rad/s): a hover on the engine is
+// allowed, but the jet is steered out of it. Pushing keeps at least STALL_PUSH_AUTH of full authority in a stall (the
+// easy way out: push the nose down).
+export const STALL_PULL_CUT = 0.75, STALL_NOSE_DROP = 0.45, STALL_PUSH_AUTH = 0.7;
 
 // ---------------------------------------------------------------------------------------------
 // Scratch objects (no per-frame allocation in hot paths)
@@ -1341,7 +1345,11 @@ export class Aircraft {
     const pitchMax = F.PITCH_RATE * H.pitch * auth * hiK * brakeK * stallK;
     const rollMax = F.ROLL_RATE * H.roll * (0.45 + 0.55 * auth) * stallK;
     const yawMax = F.YAW_RATE * H.yaw * auth * stallK;
-    const pitchCmd = c.pitch * pitchMax * (c.pitch < 0 ? F.PUSH_FACTOR : 1);
+    // freeStall, stalled with the nose above the horizon (stallNose 0..1): the pull loses most of its bite and the nose is
+    // nudged down (below), so holding the stick back can't park the jet nose-high at the stall
+    const stallNose = this.freeStall ? (1 - smoothstep(vStall * 0.95, vStall * 1.15, speed)) * smoothstep(0.1, 0.4, this.getForward(_v4).y) : 0;
+    const pushMax = this.freeStall ? Math.max(pitchMax, F.PITCH_RATE * H.pitch * STALL_PUSH_AUTH * hiK * brakeK) : pitchMax;
+    const pitchCmd = c.pitch < 0 ? c.pitch * pushMax * F.PUSH_FACTOR : c.pitch * pitchMax * (1 - STALL_PULL_CUT * stallNose);
     const rollCmd = c.roll * rollMax + (stall ? Math.min(1, (vStall - speed) / (vStall * 0.4) + 0.35) * 1.1 * Math.sin(this.time * 1.7 + 0.6) : 0);
     // slight turn into the bank so a banked jet drifts around even without pull; a stalled jet wallows
     const depart = stall ? Math.min(1, (vStall - speed) / (vStall * 0.4) + 0.35) : 0;
@@ -1378,6 +1386,11 @@ export class Aircraft {
           if (len > 1e-4) _v4.set(ax / len, ay / len, 0); else _v4.set(-1, 0, 0);
           q.multiply(_q1.setFromAxisAngle(_v4, still * 1.2 * Math.max(len, 0.5) * dt));
         } else if (len > 1e-4) q.multiply(_q1.setFromAxisAngle(_v4.set(ax / len, ay / len, 0), still * 1.2 * len * dt));
+      }
+      if (stallNose > 0.001) {                                       // nose-high stall: the nose is nudged toward the ground
+        _v4.set(0, -1, 0).applyQuaternion(_q2.copy(q).invert());
+        const ax = _v4.y, ay = -_v4.x, len = Math.hypot(ax, ay);
+        if (len > 1e-4) q.multiply(_q1.setFromAxisAngle(_v4.set(ax / len, ay / len, 0), STALL_NOSE_DROP * stallNose * len * dt));
       }
     } else if (slow > 0.001) {
       _v4.set(0, -1, 0).applyQuaternion(_q2.copy(q).invert());      // world down in the local frame

@@ -56,12 +56,16 @@ const COBRA_CD_ACE = 12, COBRA_CD_ACE_VAR = 6, COBRA_P_ACE = 0.4, COBRA_P_ACE_SK
 // wider set (break turn, vertical pull, split-S), and with the attacker closing inside TAIL_COBRA_RANGE they may Cobra
 // (the limit break, sharing its cooldown) to bleed speed and make the attacker overshoot. The duel pilot (type duel:
 // M21's Mainspring) reacts within TAIL_REACT_DUEL s, from DUEL_RANGE m and any rear-hemisphere aspect, flies shorter,
-// more varied maneuvers, and shoots back: missiles up to DUEL_SHOT rad off the nose, and over the shoulder at a jet
-// behind it (DUEL_OTS_* range, every DUEL_OTS_CD s + 0-DUEL_OTS_VAR).
+// more varied maneuvers (DUEL_REVERSE_*, DUEL_BRAKE_* too), and shoots back: missiles up to DUEL_SHOT rad off the nose,
+// and over the shoulder at a jet behind it (DUEL_OTS_* range, every DUEL_OTS_CD s + 0-DUEL_OTS_VAR).
 const TAIL_RANGE = 1500, TAIL_CONE = -0.5, TAIL_NOSE = 0.9, TAIL_REACT = 1.2, TAIL_REACT_SKILL = 1.6;
 const TAIL_ODDS = 0.45, TAIL_ODDS_SKILL = 0.45, TAIL_TURN = [4, 7], TAIL_GAP = [2, 4];
 const TAIL_FLIP = { plain: 0.2, ace: 0.4, duel: 0.6 }, TAIL_COBRA_RANGE = [250, 1100], TAIL_COBRA_P = { ace: 0.35, boss: 0.55, duel: 0.7 };
-const TAIL_REACT_DUEL = 0.5, DUEL_RANGE = 2500, DUEL_SHOT = 0.6, DUEL_OTS_MIN = 500, DUEL_OTS_MAX = 3000, DUEL_OTS_CD = 6, DUEL_OTS_VAR = 4;
+const TAIL_REACT_DUEL = 0.5, DUEL_RANGE = 4000, DUEL_SHOT = 0.6, DUEL_OTS_MIN = 500, DUEL_OTS_MAX = 4000, DUEL_OTS_CD = 3.5, DUEL_OTS_VAR = 2;
+// duel pilot's extra tail breaks: a reversal (a hard turn into the attacker, held until it is within DUEL_REVERSE_FRONT
+// rad of the nose or DUEL_REVERSE_MAX s: a head-on pass, in her off-boresight envelope) and, with the attacker closing
+// inside DUEL_BRAKE_RANGE m, a brake check (throttle off, airbrake out, DUEL_BRAKE_TIME s) to make it overshoot
+const DUEL_REVERSE_FRONT = 0.9, DUEL_REVERSE_MAX = 7, DUEL_BRAKE_RANGE = 900, DUEL_BRAKE_TIME = [1.5, 2.5];
 // Altitude game (bandits only, EnemyBrain.altGame): out of a close turning fight a bandit wants 300-800 m (by skill) over
 // its target; holding flights orbit there, slot-waiters stack above it, attackers dive in from it and zoom back up.
 export const ALT_CEILING = 4500;  // m ASL: hard cap, enforced in the steering. Highest terrain is ~2.6 km; matches the
@@ -155,7 +159,7 @@ export class EnemyBrain {
     this.cobras = 0;                // stats: boss Cobras flown
     this.duel = false;              // (resolved from the type: duel: true, TAIL_*/DUEL_* above)
     this._tailT = 0; this._tailDelay = -1; this._tailAns = false; this._tbT = 0; this._tbCd = 0; this._tbDir = 1;
-    this._tbKind = 'turn'; this._tbFlip = -1; this._otsCd = 0; this._shotAngle0 = this.shotAngle;
+    this._tbKind = 'turn'; this._tbFlip = -1; this._tbW = null; this._otsCd = 0; this._shotAngle0 = this.shotAngle;
     this.tailBreaks = 0; this.tailCobras = 0; this.otsShots = 0;   // stats
   }
 
@@ -171,15 +175,18 @@ export class EnemyBrain {
   }
 
   /** Begin a tail break against attacker W (TAIL_*): which maneuver, which way, how long, and whether it reverses. */
-  _startTailBreak(W) {
+  _startTailBreak(W, d = Infinity, closing = false) {
     const ac = this.ac, r = Math.random();
     ac.getRight(_tmp);
     this._tbDir = _rel.subVectors(W.position, ac.position).dot(_tmp) > 0 ? 1 : -1;   // into the attacker's side
+    this._tbW = W;
     const room = this._agl > 1500 && ac.position.y < ALT_CEILING - 600;
-    this._tbKind = !this.breakDiscipline ? 'turn' : this.duel ? (r < 0.45 ? 'turn' : r < 0.75 ? 'vertical' : room ? 'split' : 'turn')
-      : (r < 0.6 ? 'turn' : r < 0.85 ? 'vertical' : room ? 'split' : 'turn');
+    if (this.duel) this._tbKind = closing && d < DUEL_BRAKE_RANGE && r < 0.45 ? 'brake'
+      : r < 0.45 ? 'reverse' : r < 0.65 ? 'turn' : r < 0.85 ? 'vertical' : room ? 'split' : 'reverse';
+    else this._tbKind = !this.breakDiscipline ? 'turn' : (r < 0.6 ? 'turn' : r < 0.85 ? 'vertical' : room ? 'split' : 'turn');
     if (this._tbKind === 'vertical' && ac.position.y > ALT_CEILING - 700) this._tbKind = 'turn';
-    this._tbT = (TAIL_TURN[0] + (TAIL_TURN[1] - TAIL_TURN[0]) * Math.random()) * (this.duel ? 0.6 : this._tbKind === 'turn' ? 1 : 0.7);
+    this._tbT = this._tbKind === 'reverse' ? DUEL_REVERSE_MAX : this._tbKind === 'brake' ? DUEL_BRAKE_TIME[0] + (DUEL_BRAKE_TIME[1] - DUEL_BRAKE_TIME[0]) * Math.random()
+      : (TAIL_TURN[0] + (TAIL_TURN[1] - TAIL_TURN[0]) * Math.random()) * (this.duel ? 0.6 : this._tbKind === 'turn' ? 1 : 0.7);
     const flip = this.duel ? TAIL_FLIP.duel : this.breakDiscipline ? TAIL_FLIP.ace : TAIL_FLIP.plain;
     this._tbFlip = this._tbKind === 'turn' && Math.random() < flip ? this._tbT * 0.5 : -1;
     this._tbCd = this._tbT + (this.duel ? 0.5 + Math.random() : TAIL_GAP[0] + (TAIL_GAP[1] - TAIL_GAP[0]) * Math.random());
@@ -497,7 +504,7 @@ export class EnemyBrain {
         const closing = _vr.dot(_rel) < 0, P = this.duel ? TAIL_COBRA_P.duel : this._boss ? TAIL_COBRA_P.boss : TAIL_COBRA_P.ace;
         if (this.breakDiscipline && closing && this._cobraCd <= 0 && tailD > TAIL_COBRA_RANGE[0] && tailD < TAIL_COBRA_RANGE[1]
           && this._recover <= 0 && Math.random() < P && this._cobraRoom()) tailCobra = true;
-        else this._startTailBreak(W);
+        else this._startTailBreak(W, tailD, closing);
         this._tailDelay = -1; this._tailT = 0;   // the next answer waits a fresh reaction time
       }
     }
@@ -577,15 +584,21 @@ export class EnemyBrain {
       if (this._tbT > 0) {
         // tail break (TAIL_*): a sustained turn into the attacker's side, a pull into the vertical, or a split-S
         if (this._tbFlip > 0 && this._tbT < this._tbFlip) { this._tbDir = -this._tbDir; this._tbFlip = -1; }
-        if (this._tbKind === 'vertical') { ac.getUp(_up); _pt.copy(ac.position).addScaledVector(_up, 900).addScaledVector(_fwd, 200); }
-        else if (this._tbKind === 'split') { _pt.copy(ac.position).addScaledVector(WORLD_UP, -900).addScaledVector(_fwd, 300); }
+        const K = this._tbKind, W = this._tbW;
+        if (K === 'reverse' && W && W.alive) {   // into the attacker until it is ahead (a head-on pass), then the pursuit
+          _rel.subVectors(W.position, ac.position);
+          if (_rel.dot(_fwd) > Math.cos(DUEL_REVERSE_FRONT) * _rel.length()) this._tbT = 0;
+        }
+        if (K === 'vertical') { ac.getUp(_up); _pt.copy(ac.position).addScaledVector(_up, 900).addScaledVector(_fwd, 200); }
+        else if (K === 'split') { _pt.copy(ac.position).addScaledVector(WORLD_UP, -900).addScaledVector(_fwd, 300); }
+        else if (K === 'brake') { ac.getRight(_tmp); _pt.copy(ac.position).addScaledVector(_fwd, 1200).addScaledVector(_tmp, 120 * this._tbDir); }
         else {
           ac.getRight(_tmp);
-          _pt.copy(ac.position).addScaledVector(_tmp, 700 * this._tbDir).addScaledVector(_fwd, 250);
+          _pt.copy(ac.position).addScaledVector(_tmp, 700 * this._tbDir).addScaledVector(_fwd, K === 'reverse' ? 120 : 250);
           _pt.y = ac.position.y + (this._agl < 900 ? 150 : -30);
         }
-        this.steerToward(_pt, 0.8 + 0.2 * this.skill);
-        this.throttleTarget = this._tbKind === 'split' ? 0.3 : 1;
+        this.steerToward(_pt, K === 'brake' ? 0.5 : K === 'reverse' ? 1 : 0.8 + 0.2 * this.skill);
+        this.throttleTarget = K === 'brake' ? -1 : K === 'split' ? 0.3 : K === 'reverse' ? 0.5 : 1;
       } else if (this.state === 'transit') {
         if (goal === null) {
           const H = this.leashHome;

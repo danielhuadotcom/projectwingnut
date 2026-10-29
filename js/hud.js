@@ -1163,17 +1163,18 @@ export class HUD {
   /** M21's final phase: fighting-game health bars, the player's on the left and the boss's on the right, each draining
    *  toward the centre; along the bottom (touch layout: under the heading tape, clear of the sticks). */
   _drawDuel(d, compact) {
-    const ctx = this.ctx, L = this.L, s = L.s;
-    const half = Math.round(Math.min(L.bossW * 0.6, this.w * 0.3)), gap = Math.round(24 * s), bh = Math.round(10 * s);
-    const y = compact ? L.pillY + L.bossNameH + Math.round(4 * s) : this.h - Math.round(46 * s);
-    ctx.font = L.fSmall;
+    // the last big piece of HUD left: wide, tall bars with large names (touch layout: smaller, under the heading tape)
+    const ctx = this.ctx, L = this.L, s = L.s, k = compact ? 0.6 : 1;
+    const half = Math.round(Math.min(this.w * (compact ? 0.3 : 0.4), 620 * s)), gap = Math.round(36 * s * k), bh = Math.round(24 * s * k);
+    const y = compact ? L.pillY + Math.round(22 * s) : this.h - Math.round(64 * s) - bh;
+    ctx.font = compact ? L.fMed : `700 ${Math.round(18 * s)}px ${FONT}`;
     const bar = (side, name, frac, col) => {
       const x0 = side < 0 ? L.cx - gap / 2 - half : L.cx + gap / 2, f = clamp(frac || 0, 0, 1);
       ctx.fillStyle = COL.seg; ctx.fillRect(x0, y, half, bh);
       ctx.fillStyle = col;
       if (side < 0) ctx.fillRect(x0 + half * (1 - f), y, half * f, bh); else ctx.fillRect(x0, y, half * f, bh);
-      ctx.beginPath(); ctx.rect(x0, y, half, bh); this._stroke(COL.greenSoft, L.lwThin);
-      this._text(name, side < 0 ? x0 : x0 + half, y - Math.round(4 * s), COL.pale, side < 0 ? 'left' : 'right', 'bottom');
+      ctx.beginPath(); ctx.rect(x0, y, half, bh); this._stroke(COL.pale, Math.max(1.5, L.lwThin * 1.6));
+      this._text(name, side < 0 ? x0 : x0 + half, y - Math.round(6 * s), COL.pale, side < 0 ? 'left' : 'right', 'bottom');
     };
     bar(-1, d.player.name, d.player.frac, d.player.frac < 0.35 ? COL.red : COL.green);
     bar(1, d.boss.name, d.boss.frac, COL.red);
